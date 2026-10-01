@@ -22,10 +22,13 @@
 
 目标：不等界面，先能在真实环境里用，攒真实请求数据给后面的用量面板。
 
-- 新 crate `crates/tern-cli`，`tern serve --config tern.json`
-- 配置文件默认路径 `%APPDATA%\tern\tern.json`，带 `tern init` 生成样例
-- 日志：`env_logger`，默认 info，key 已在 `ProviderSpec` 的 Debug 里遮蔽
-- 验收：本机用 Claude Code + Codex 各跑一个真实会话
+- [x] 新 crate `crates/tern-cli`，二进制名 `tern`：`serve` / `init` / `check`
+- [x] 配置文件默认路径 `%APPDATA%\tern\tern.json`，`TERN_CONFIG` / `--config` 覆盖；`init` 生成样例和随机 accessToken
+- [x] 日志：`env_logger`，默认 info，`RUST_LOG` 覆盖；key 已在 `ProviderSpec` 的 Debug 里遮蔽
+- [x] 启动时提醒：占位符 key、未设 accessToken、订阅类认证（命令行版无 TokenProvider）
+- [ ] 验收：本机用 Claude Code + Codex 各跑一个真实会话
+
+参数解析是手写的，没用 clap（只有三个子命令；env_logger 也关了 humantime / regex 默认特性）。
 
 ## 阶段 5：用量采集与存储（面板的数据底座）
 

@@ -1,0 +1,27 @@
+[package]
+name = "tern-cli"
+description = "Command-line runner for the tern gateway"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tern"
+path = "src/main.rs"
+
+# 参数只有三个子命令和几个开关，手写解析，不引入 clap
+[dependencies]
+tern-gateway = { path = "../tern-gateway" }
+anyhow = "1.0"
+dirs = "6.0"
+# 关掉 humantime / regex：时间戳不需要人类可读格式，RUST_LOG 按模块前缀过滤就够
+env_logger = { version = "0.11", default-features = false, features = ["auto-color"] }
+log = "0.4"
+# 与 tern-gateway 一致开启 preserve_order，样例配置按书写顺序输出
+serde_json = { version = "1.0", features = ["preserve_order"] }
+tokio = { version = "1", features = ["rt-multi-thread", "signal"] }
+uuid = { version = "1.11", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"

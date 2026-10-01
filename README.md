@@ -13,8 +13,20 @@ Codex ───────OpenAI Responses─────┘                ├
 协议转换层取自 [cc-switch](https://github.com/farion1231/cc-switch)（MIT），
 同步方式见 [UPSTREAM.md](UPSTREAM.md)；进度与后续计划见 [ROADMAP.md](ROADMAP.md)。
 
-> 当前状态：网关库可用，还没有可执行程序和界面。下面的配置示例是网关跑起来之后
-> agent 侧怎么接。
+> 当前状态：命令行版可用，还没有界面和用量记录。
+
+## 快速开始
+
+```powershell
+cargo build --release -p tern-cli
+.\target\release\tern.exe init      # 生成 %APPDATA%\tern\tern.json，含随机 accessToken
+notepad $env:APPDATA\tern\tern.json # 把 sk-REPLACE_ME 换成真实 key
+.\target\release\tern.exe check     # 校验配置、列出供应商
+.\target\release\tern.exe serve     # 启动，Ctrl+C 退出
+```
+
+`--config <文件>` 或环境变量 `TERN_CONFIG` 指定其他配置文件；`serve --listen 127.0.0.1:15801`
+临时换端口；`RUST_LOG=debug` 看详细日志。订阅类认证（Copilot / ChatGPT / xAI）命令行版暂不支持。
 
 ## 路由规则
 
@@ -95,8 +107,8 @@ Gateway::new(config)?.serve(async { tokio::signal::ctrl_c().await.ok(); }).await
 ## 开发
 
 ```powershell
-cargo test -p tern-gateway
-cargo clippy -p tern-gateway --all-targets
+cargo test --workspace
+cargo clippy --workspace --all-targets
 ```
 
 `crates/tern-gateway/src/proxy/` 与上游逐字节一致，不要直接改，也不要整体 `cargo fmt`；
