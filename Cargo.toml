@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/tern-gateway"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85.0"
+license = "MIT"
+
+[profile.dev]
+debug = 1
+incremental = false
