@@ -52,3 +52,13 @@ git -C D:\4rchive\Code\cc-switch diff 68ef3b99 HEAD -- src-tauri/src/proxy/provi
 ```powershell
 git -C D:\4rchive\Code\cc-switch diff 68ef3b99 HEAD --stat -- src-tauri/src/proxy
 ```
+
+## tern-store（改写自上游）
+
+| tern | 上游来源 |
+|---|---|
+| `tern-store/src/pricing.rs` | `proxy/usage/calculator.rs` 的计价公式；`services/usage_stats.rs` 的 `model_pricing_candidates` / `should_try_pricing_prefix_match` 模型名匹配 |
+| `tern-store/src/builtin_pricing.json` | `database/schema.rs` 的 `seed_model_pricing`（提交 `68ef3b9`），另加本机 cc-switch 库里种子之外的 12 条 |
+| `tern-store/src/models_dev.rs` | 前端 `src/lib/modelsDevPricing.ts` 的 `flattenModels` / `toModelPricing` |
+
+跟进上游价格变化：重新导出 `builtin_pricing.json`，内置价格只影响之后的新请求。

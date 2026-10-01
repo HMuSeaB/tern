@@ -1,4 +1,4 @@
-//! 命令行参数解析。只有三个子命令，手写比引入 clap 轻。
+//! 命令行参数解析。子命令不多，手写比引入 clap 轻。
 
 use std::ffi::OsString;
 use std::net::SocketAddr;
@@ -8,59 +8,120 @@ pub const USAGE: &str = "\
 tern：面向编码 agent 的本地协议翻译网关
 
 用法:
-  tern serve [--config <文件>] [--listen <地址:端口>]   启动网关，Ctrl+C 退出
-  tern init  [--config <文件>] [--force]               生成样例配置（含随机 accessToken）
-  tern check [--config <文件>]                         校验配置并列出供应商
+  tern serve [--listen <地址:端口>]          启动网关并记录用量，Ctrl+C 退出
+  tern init  [--force]                       生成样例配置（含随机 accessToken）
+  tern check                                 校验配置并列出供应商
+  tern usage [--days <N>] [--by <维度>] [--recent <N>]
+                                             查看用量；维度: provider model role client day
+  tern price list [<模型名>]                 列出价格（给模型名时显示实际匹配到的那条）
+  tern price set <模型名> <输入> <输出> [<缓存读> [<缓存写>]]
+                                             手填价格，美元 / 百万 token
+  tern price rm <模型名>                     删除手填的价格
+  tern price sync [--file <api.json>]        从 models.dev 同步价格
 
-选项:
+通用选项:
   -c, --config <文件>   配置文件，默认 %APPDATA%\\tern\\tern.json，也可用环境变量 TERN_CONFIG
-      --listen <地址>   覆盖配置里的监听地址，如 127.0.0.1:15801
-      --force           init 时覆盖已存在的配置文件
+      --db <文件>       用量数据库，默认与配置文件同目录的 usage.db，也可用环境变量 TERN_DB
   -h, --help            显示帮助
   -V, --version         显示版本
 
 日志级别用 RUST_LOG 调整，如 RUST_LOG=debug";
 
+/// 所有子命令都认的路径参数
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Paths {
+    pub config: Option<PathBuf>,
+    pub db: Option<PathBuf>,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Serve {
-        config: Option<PathBuf>,
+        paths: Paths,
         listen: Option<SocketAddr>,
     },
     Init {
-        config: Option<PathBuf>,
+        paths: Paths,
         force: bool,
     },
     Check {
-        config: Option<PathBuf>,
+        paths: Paths,
+    },
+    Usage {
+        paths: Paths,
+        days: u32,
+        by: Option<String>,
+        recent: usize,
+    },
+    Price {
+        paths: Paths,
+        action: PriceAction,
     },
     Help,
     Version,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum PriceAction {
+    List { model: Option<String> },
+    Set { model: String, values: Vec<String> },
+    Remove { model: String },
+    Sync { file: Option<PathBuf> },
+}
+
+pub const BREAKDOWNS: &[&str] = &["provider", "model", "role", "client", "day"];
+
 pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, String> {
-    let mut args = args.into_iter();
+    let mut args = args.into_iter().peekable();
     let Some(sub) = args.next() else {
         return Ok(Command::Help);
     };
     let sub = sub
         .into_string()
         .map_err(|s| format!("无法识别的子命令 {}", s.to_string_lossy()))?;
-
-    let mut config = None;
-    let mut listen = None;
-    let mut force = false;
-
     match sub.as_str() {
         "-h" | "--help" | "help" => return Ok(Command::Help),
         "-V" | "--version" => return Ok(Command::Version),
-        "serve" | "init" | "check" => {}
+        "serve" | "init" | "check" | "usage" | "price" => {}
         other => return Err(format!("未知子命令 {other}")),
     }
+
+    // price 的第二级动作
+    let action = if sub == "price" {
+        match args.peek().map(|a| a.to_string_lossy().into_owned()) {
+            Some(a) if matches!(a.as_str(), "list" | "set" | "rm" | "sync") => {
+                args.next();
+                Some(a)
+            }
+            Some(a) if a.starts_with('-') => Some("list".to_string()),
+            None => Some("list".to_string()),
+            Some(other) => {
+                return Err(format!("price 没有 {other} 动作（list / set / rm / sync）"))
+            }
+        }
+    } else {
+        None
+    };
+    let scope = action
+        .as_deref()
+        .map_or(sub.clone(), |a| format!("price {a}"));
+
+    let mut paths = Paths::default();
+    let mut listen = None;
+    let mut force = false;
+    let mut days = 7u32;
+    let mut by = None;
+    let mut recent = 10usize;
+    let mut file = None;
+    let mut positional: Vec<String> = Vec::new();
 
     while let Some(arg) = args.next() {
         // 路径参数可能不是合法 UTF-8，值保持 OsString；开关名一定是 ASCII
         let flag = arg.to_string_lossy().into_owned();
+        if !flag.starts_with('-') || flag == "-" || is_number(&flag) {
+            positional.push(flag);
+            continue;
+        }
         let (name, inline) = match flag.split_once('=') {
             Some((name, value)) if name.starts_with("--") => (name.to_string(), Some(value)),
             _ => (flag.clone(), None),
@@ -71,10 +132,18 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, String
                 None => args.next().ok_or_else(|| format!("{name} 缺少{what}")),
             }
         };
+        let number = |raw: OsString, what: &str| -> Result<u64, String> {
+            let raw = raw.to_string_lossy();
+            raw.parse::<u64>()
+                .ok()
+                .filter(|n| *n > 0)
+                .ok_or_else(|| format!("{what} 必须是正整数: {raw}"))
+        };
 
-        match (sub.as_str(), name.as_str()) {
+        match (scope.as_str(), name.as_str()) {
             (_, "-h" | "--help") => return Ok(Command::Help),
-            (_, "-c" | "--config") => config = Some(PathBuf::from(value("文件路径")?)),
+            (_, "-c" | "--config") => paths.config = Some(PathBuf::from(value("文件路径")?)),
+            (_, "--db") => paths.db = Some(PathBuf::from(value("文件路径")?)),
             ("serve", "--listen") => {
                 let raw = value("监听地址")?;
                 let raw = raw.to_string_lossy();
@@ -84,15 +153,101 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, String
                     })?);
             }
             ("init", "--force") if inline.is_none() => force = true,
-            _ => return Err(format!("{sub} 不支持参数 {flag}")),
+            ("usage", "--days") => {
+                days = u32::try_from(number(value("天数")?, "--days")?).unwrap_or(u32::MAX)
+            }
+            ("usage", "--recent") => {
+                // 0 表示不显示最近请求
+                let raw = value("条数")?;
+                let raw = raw.to_string_lossy();
+                recent = raw
+                    .parse()
+                    .map_err(|_| format!("--recent 必须是非负整数: {raw}"))?;
+            }
+            ("usage", "--by") => {
+                let raw = value("维度")?.to_string_lossy().into_owned();
+                if !BREAKDOWNS.contains(&raw.as_str()) {
+                    return Err(format!("--by 只支持 {}", BREAKDOWNS.join(" / ")));
+                }
+                by = Some(raw);
+            }
+            ("price sync", "--file") => file = Some(PathBuf::from(value("文件路径")?)),
+            _ => return Err(format!("{scope} 不支持参数 {flag}")),
         }
     }
 
+    let no_positional = |positional: &[String]| -> Result<(), String> {
+        match positional.first() {
+            Some(extra) => Err(format!("{scope} 不接受参数 {extra}")),
+            None => Ok(()),
+        }
+    };
+
     Ok(match sub.as_str() {
-        "serve" => Command::Serve { config, listen },
-        "init" => Command::Init { config, force },
-        _ => Command::Check { config },
+        "serve" => {
+            no_positional(&positional)?;
+            Command::Serve { paths, listen }
+        }
+        "init" => {
+            no_positional(&positional)?;
+            Command::Init { paths, force }
+        }
+        "check" => {
+            no_positional(&positional)?;
+            Command::Check { paths }
+        }
+        "usage" => {
+            no_positional(&positional)?;
+            Command::Usage {
+                paths,
+                days,
+                by,
+                recent,
+            }
+        }
+        _ => {
+            let action = match action.as_deref() {
+                Some("set") => {
+                    if !(3..=5).contains(&positional.len()) {
+                        return Err(
+                            "用法: tern price set <模型名> <输入> <输出> [<缓存读> [<缓存写>]]"
+                                .into(),
+                        );
+                    }
+                    let model = positional.remove(0);
+                    PriceAction::Set {
+                        model,
+                        values: positional,
+                    }
+                }
+                Some("rm") => match positional.as_slice() {
+                    [model] => PriceAction::Remove {
+                        model: model.clone(),
+                    },
+                    _ => return Err("用法: tern price rm <模型名>".into()),
+                },
+                Some("sync") => {
+                    no_positional(&positional)?;
+                    PriceAction::Sync { file }
+                }
+                _ => {
+                    if positional.len() > 1 {
+                        return Err("用法: tern price list [<模型名>]".into());
+                    }
+                    PriceAction::List {
+                        model: positional.pop(),
+                    }
+                }
+            };
+            Command::Price { paths, action }
+        }
     })
+}
+
+/// `price set m -1 ...` 里的负数要当成位置参数，交给价格校验报错
+fn is_number(arg: &str) -> bool {
+    arg.strip_prefix('-')
+        .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit() || c == '.'))
 }
 
 #[cfg(test)]
@@ -112,18 +267,31 @@ mod tests {
     }
 
     #[test]
-    fn serve_accepts_config_and_listen_in_both_forms() {
+    fn serve_accepts_config_db_and_listen_in_both_forms() {
         assert_eq!(
-            p(&["serve", "-c", "a.json", "--listen=127.0.0.1:1"]),
+            p(&[
+                "serve",
+                "-c",
+                "a.json",
+                "--listen=127.0.0.1:1",
+                "--db",
+                "u.db"
+            ]),
             Ok(Command::Serve {
-                config: Some("a.json".into()),
+                paths: Paths {
+                    config: Some("a.json".into()),
+                    db: Some("u.db".into()),
+                },
                 listen: Some("127.0.0.1:1".parse().unwrap()),
             })
         );
         assert_eq!(
             p(&["serve", "--config=b.json", "--listen", "0.0.0.0:2"]),
             Ok(Command::Serve {
-                config: Some("b.json".into()),
+                paths: Paths {
+                    config: Some("b.json".into()),
+                    db: None,
+                },
                 listen: Some("0.0.0.0:2".parse().unwrap()),
             })
         );
@@ -134,11 +302,107 @@ mod tests {
         assert_eq!(
             p(&["init", "--force"]),
             Ok(Command::Init {
-                config: None,
+                paths: Paths::default(),
                 force: true
             })
         );
-        assert_eq!(p(&["check"]), Ok(Command::Check { config: None }));
+        assert_eq!(
+            p(&["check"]),
+            Ok(Command::Check {
+                paths: Paths::default()
+            })
+        );
+    }
+
+    #[test]
+    fn usage_defaults_and_flags() {
+        assert_eq!(
+            p(&["usage"]),
+            Ok(Command::Usage {
+                paths: Paths::default(),
+                days: 7,
+                by: None,
+                recent: 10,
+            })
+        );
+        assert_eq!(
+            p(&["usage", "--days", "30", "--by=model", "--recent", "3"]),
+            Ok(Command::Usage {
+                paths: Paths::default(),
+                days: 30,
+                by: Some("model".into()),
+                recent: 3,
+            })
+        );
+        assert_eq!(
+            p(&["usage", "--recent", "0"]),
+            Ok(Command::Usage {
+                paths: Paths::default(),
+                days: 7,
+                by: None,
+                recent: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn price_actions() {
+        let paths = Paths::default;
+        assert_eq!(
+            p(&["price"]),
+            Ok(Command::Price {
+                paths: paths(),
+                action: PriceAction::List { model: None }
+            })
+        );
+        assert_eq!(
+            p(&["price", "list", "relay/claude-opus-5"]),
+            Ok(Command::Price {
+                paths: paths(),
+                action: PriceAction::List {
+                    model: Some("relay/claude-opus-5".into())
+                }
+            })
+        );
+        assert_eq!(
+            p(&["price", "set", "step-5", "0.2", "0.8", "0.04"]),
+            Ok(Command::Price {
+                paths: paths(),
+                action: PriceAction::Set {
+                    model: "step-5".into(),
+                    values: vec!["0.2".into(), "0.8".into(), "0.04".into()],
+                }
+            })
+        );
+        assert_eq!(
+            p(&["price", "set", "m", "-1", "2"]),
+            Ok(Command::Price {
+                paths: paths(),
+                action: PriceAction::Set {
+                    model: "m".into(),
+                    values: vec!["-1".into(), "2".into()],
+                }
+            })
+        );
+        assert_eq!(
+            p(&["price", "rm", "m"]),
+            Ok(Command::Price {
+                paths: paths(),
+                action: PriceAction::Remove { model: "m".into() }
+            })
+        );
+        assert_eq!(
+            p(&["price", "sync", "--file", "api.json", "-c", "t.json"]),
+            Ok(Command::Price {
+                paths: Paths {
+                    config: Some("t.json".into()),
+                    db: None
+                },
+                action: PriceAction::Sync {
+                    file: Some("api.json".into())
+                }
+            })
+        );
     }
 
     #[test]
@@ -149,6 +413,14 @@ mod tests {
             &["init", "--force=yes"],
             &["serve", "--listen", "localhost"],
             &["serve", "--config"],
+            &["serve", "extra"],
+            &["usage", "--days", "0"],
+            &["usage", "--by", "week"],
+            &["price", "set", "m", "1"],
+            &["price", "rm"],
+            &["price", "list", "a", "b"],
+            &["price", "list", "--file", "x"],
+            &["price", "delete", "m"],
             &["start"],
         ] {
             assert!(p(args).is_err(), "{args:?}");

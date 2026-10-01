@@ -4,7 +4,9 @@
 //! 但不从上游搬运：那几个文件和 Tauri、SQLite、托盘状态缠在一起。tern 的版本只做
 //! 一件事——收到请求、路由到供应商、改写请求、转换响应。
 //!
-//! 暂不包含（后续阶段）：故障转移与熔断、用量记录、Copilot 动态端点 / 模型解析、
+//! 用量只产出事件（见 [`usage`]），存储由宿主通过 [`UsageSink`] 接入。
+//!
+//! 暂不包含（后续阶段）：故障转移与熔断、Copilot 动态端点 / 模型解析、
 //! 原生 Anthropic 上游的请求头大小写保持（cc-switch 用 hyper 原始写入实现）。
 
 mod aggregate;
@@ -12,6 +14,7 @@ mod errors;
 mod handlers;
 mod response;
 mod upstream;
+pub mod usage;
 
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
@@ -26,6 +29,7 @@ use crate::proxy::providers::codex_chat_history::CodexChatHistoryStore;
 use crate::proxy::providers::gemini_shadow::GeminiShadowStore;
 use crate::proxy::ProxyError;
 use crate::router::ModelRouter;
+pub use usage::UsageSink;
 
 /// 上游请求走哪个代理
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,6 +122,7 @@ pub(crate) struct GatewayState {
     pub access_token: Option<String>,
     pub timeouts: Timeouts,
     pub tokens: Option<Arc<dyn TokenProvider>>,
+    pub usage: Option<Arc<dyn UsageSink>>,
     /// Codex → Chat 时补全工具调用历史
     pub chat_history: Arc<CodexChatHistoryStore>,
     /// Claude → Gemini 时保存思维签名
@@ -159,6 +164,7 @@ impl Gateway {
                     stream_idle: Duration::from_secs(config.stream_idle_timeout_secs),
                 },
                 tokens: None,
+                usage: None,
                 chat_history: Arc::new(CodexChatHistoryStore::default()),
                 gemini_shadow: Arc::new(GeminiShadowStore::default()),
             }),
@@ -171,6 +177,15 @@ impl Gateway {
         match Arc::get_mut(&mut self.state) {
             Some(state) => state.tokens = Some(tokens),
             None => log::warn!("[Gateway] 网关已在运行，忽略 token provider"),
+        }
+        self
+    }
+
+    /// 接入用量记录。必须在 `serve` / `app` 之前调用。
+    pub fn with_usage_sink(mut self, sink: Arc<dyn UsageSink>) -> Self {
+        match Arc::get_mut(&mut self.state) {
+            Some(state) => state.usage = Some(sink),
+            None => log::warn!("[Gateway] 网关已在运行，忽略 usage sink"),
         }
         self
     }

@@ -10,16 +10,38 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+
 use crate::provider::ProviderSpec;
 use crate::proxy::ProxyError;
 
 /// Claude Code 用 `[1m]` 后缀声明 100 万上下文，上游不认这个本地标记
 const ONE_M_CONTEXT_MARKER: &str = "[1m]";
 
+/// 模型名是怎么被路由的
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteKind {
+    /// 写了已知供应商前缀：`provider/model`
+    Explicit,
+    /// 没有可识别的前缀，落到了 `defaultProvider`
+    Fallback,
+}
+
+impl RouteKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RouteKind::Explicit => "explicit",
+            RouteKind::Fallback => "fallback",
+        }
+    }
+}
+
 /// 一次路由的结果
 #[derive(Debug, Clone)]
 pub struct Route {
     pub provider: Arc<ProviderSpec>,
+    pub kind: RouteKind,
     /// 去掉 `provider/` 前缀和 `[1m]` 后缀之后的上游模型名
     pub upstream_model: String,
     /// 原模型名带 `[1m]`，Anthropic 上游需要补 `context-1m` beta 头
@@ -103,6 +125,7 @@ impl ModelRouter {
                 }
                 return Ok(Route {
                     provider: provider.clone(),
+                    kind: RouteKind::Explicit,
                     upstream_model: upstream_model.to_string(),
                     one_m_context,
                 });
@@ -117,6 +140,7 @@ impl ModelRouter {
         {
             Some(provider) => Ok(Route {
                 provider: provider.clone(),
+                kind: RouteKind::Fallback,
                 upstream_model: model.to_string(),
                 one_m_context,
             }),
@@ -170,6 +194,7 @@ mod tests {
             .unwrap();
         assert_eq!(route.provider.id, "openrouter");
         assert_eq!(route.upstream_model, "anthropic/claude-sonnet-5");
+        assert_eq!(route.kind, RouteKind::Explicit);
         assert!(!route.one_m_context);
     }
 
@@ -188,6 +213,7 @@ mod tests {
         let bare = r.resolve("claude-haiku-4-5").unwrap();
         assert_eq!(bare.provider.id, "deepseek");
         assert_eq!(bare.upstream_model, "claude-haiku-4-5");
+        assert_eq!(bare.kind, RouteKind::Fallback);
 
         let unknown = r.resolve("moonshotai/kimi-k3").unwrap();
         assert_eq!(unknown.provider.id, "deepseek");

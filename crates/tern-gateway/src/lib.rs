@@ -12,6 +12,9 @@ pub mod provider;
 pub mod proxy;
 pub mod router;
 
+pub use gateway::usage::{
+    ClientKind, ErrorKind, Outcome, RequestRole, TokenCounts, UsageEvent, UsageSink,
+};
 pub use gateway::{Gateway, GatewayConfig, ManagedToken, TokenProvider, UpstreamProxy};
 pub use provider::{ApiFormat, KeyHeader, ProviderAuth, ProviderSpec};
-pub use router::{ModelRouter, Route};
+pub use router::{ModelRouter, Route, RouteKind};

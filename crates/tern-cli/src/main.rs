@@ -1,16 +1,23 @@
-//! tern 命令行：`tern init` 生成样例配置，`tern serve` 启动网关。
+//! tern 命令行：`tern init` 生成样例配置，`tern serve` 启动网关并记录用量，
+//! `tern usage` / `tern price` 查看用量、维护价格。
 
 mod args;
 mod config;
+mod report;
+mod table;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 
-use anyhow::{Context, Result};
-use tern_gateway::{Gateway, GatewayConfig, ProviderAuth};
+use anyhow::{bail, Context, Result};
+use tern_gateway::{Gateway, GatewayConfig, Outcome, ProviderAuth};
+use tern_store::{Inserted, ModelPrice, PriceSource, Store};
 
-use crate::args::Command;
+use crate::args::{Command, Paths, PriceAction};
+
+const DB_FILE_NAME: &str = "usage.db";
 
 fn main() -> ExitCode {
     // 默认 info；RUST_LOG 可覆盖，如 RUST_LOG=tern_gateway=debug
@@ -36,9 +43,22 @@ fn main() -> ExitCode {
 
 fn run(command: Command) -> Result<()> {
     match command {
-        Command::Serve { config, listen } => serve(&resolve_config(config)?, listen),
-        Command::Init { config, force } => init(&resolve_config(config)?, force),
-        Command::Check { config } => check(&resolve_config(config)?),
+        Command::Serve { paths, listen } => {
+            let config = resolve_config(&paths)?;
+            serve(&config, &resolve_db(&paths, &config), listen)
+        }
+        Command::Init { paths, force } => init(&resolve_config(&paths)?, force),
+        Command::Check { paths } => check(&resolve_config(&paths)?),
+        Command::Usage {
+            paths,
+            days,
+            by,
+            recent,
+        } => {
+            let store = open_existing_store(&paths)?;
+            report::usage(&store, days, by.as_deref(), recent)
+        }
+        Command::Price { paths, action } => price(&paths, action),
         Command::Help => {
             println!("{}", args::USAGE);
             Ok(())
@@ -51,9 +71,9 @@ fn run(command: Command) -> Result<()> {
 }
 
 /// `--config` 优先，其次环境变量 `TERN_CONFIG`，最后是系统配置目录
-fn resolve_config(arg: Option<PathBuf>) -> Result<PathBuf> {
-    if let Some(path) = arg {
-        return Ok(path);
+fn resolve_config(paths: &Paths) -> Result<PathBuf> {
+    if let Some(path) = &paths.config {
+        return Ok(path.clone());
     }
     match std::env::var_os("TERN_CONFIG").filter(|v| !v.is_empty()) {
         Some(path) => Ok(PathBuf::from(path)),
@@ -61,7 +81,34 @@ fn resolve_config(arg: Option<PathBuf>) -> Result<PathBuf> {
     }
 }
 
-fn serve(path: &Path, listen: Option<SocketAddr>) -> Result<()> {
+/// `--db` 优先，其次环境变量 `TERN_DB`，最后是配置文件同目录的 `usage.db`
+fn resolve_db(paths: &Paths, config: &Path) -> PathBuf {
+    if let Some(path) = &paths.db {
+        return path.clone();
+    }
+    if let Some(path) = std::env::var_os("TERN_DB").filter(|v| !v.is_empty()) {
+        return PathBuf::from(path);
+    }
+    config
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .join(DB_FILE_NAME)
+}
+
+/// 查询类命令：数据库不存在时提示先运行 serve，而不是建一个空库
+fn open_existing_store(paths: &Paths) -> Result<Store> {
+    let db = resolve_db(paths, &resolve_config(paths)?);
+    if !db.exists() {
+        bail!(
+            "用量数据库 {} 不存在。先用 `tern serve` 跑一段时间，或用 --db 指定位置",
+            db.display()
+        );
+    }
+    Store::open(&db).with_context(|| format!("打开用量数据库 {} 失败", db.display()))
+}
+
+fn serve(path: &Path, db: &Path, listen: Option<SocketAddr>) -> Result<()> {
     let mut config = config::load(path)?;
     if let Some(listen) = listen {
         config.listen = listen;
@@ -72,12 +119,31 @@ fn serve(path: &Path, listen: Option<SocketAddr>) -> Result<()> {
     }
     log::info!("[tern] 供应商: {}", provider_ids(&config));
 
-    let gateway = Gateway::new(config).context("配置无效")?;
+    let store =
+        Arc::new(Store::open(db).with_context(|| format!("打开用量数据库 {} 失败", db.display()))?);
+    let multipliers = config.providers.iter().filter_map(|spec| {
+        spec.cost_multiplier
+            .as_deref()
+            .map(|value| (spec.id.as_str(), value))
+    });
+    for error in store.set_multipliers(multipliers) {
+        log::warn!("[tern] {error}");
+    }
+    log::info!(
+        "[tern] 用量记录到 {}（{} 条价格）",
+        db.display(),
+        store.prices().len()
+    );
+    let (recorder, recorder_handle) = tern_store::spawn_recorder(store, log_usage);
+
+    let gateway = Gateway::new(config)
+        .context("配置无效")?
+        .with_usage_sink(recorder);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("创建 tokio 运行时失败")?;
-    runtime.block_on(async move {
+    let result = runtime.block_on(async move {
         gateway
             .serve(async {
                 if let Err(e) = tokio::signal::ctrl_c().await {
@@ -89,6 +155,143 @@ fn serve(path: &Path, listen: Option<SocketAddr>) -> Result<()> {
             })
             .await
             .context("网关启动失败（端口被占用时可用 --listen 换一个）")
+    });
+    // 先停运行时：进行中的流被丢弃时会补记 aborted，然后再让写入线程把队列写完
+    drop(runtime);
+    recorder_handle.stop();
+    result
+}
+
+/// 每条请求一行摘要
+fn log_usage(event: &tern_gateway::UsageEvent, inserted: &Inserted) {
+    let provider = event.provider_id.as_deref().unwrap_or("-");
+    let model = event
+        .response_model
+        .as_deref()
+        .or(event.upstream_model.as_deref())
+        .unwrap_or(&event.client_model);
+    let role = event.role.as_str();
+    match (event.outcome, inserted) {
+        (_, Inserted::Duplicate) => {}
+        (Outcome::Failed, _) => log::warn!(
+            "[usage] ✗ {provider} {model} ({role}) HTTP {} {} {}ms",
+            event.status,
+            event.error_kind.map(|k| k.as_str()).unwrap_or("-"),
+            event.duration_ms
+        ),
+        (outcome, Inserted::Row { cost, .. }) => {
+            let tokens = event.tokens.unwrap_or_default();
+            let cost = match (cost, event.tokens) {
+                (Some(cost), _) => report::money(*cost),
+                (None, Some(_)) => "未定价".to_string(),
+                (None, None) => "-".to_string(),
+            };
+            log::info!(
+                "[usage] {}{provider} {model} ({role}) in {} out {} cache {} {cost} {}ms",
+                if outcome == Outcome::Aborted {
+                    "中断 "
+                } else {
+                    ""
+                },
+                report::tokens(tokens.fresh_input),
+                report::tokens(tokens.output),
+                report::tokens(tokens.cache_read),
+                event.duration_ms
+            );
+        }
+    }
+}
+
+fn price(paths: &Paths, action: PriceAction) -> Result<()> {
+    let db = resolve_db(paths, &resolve_config(paths)?);
+    let store =
+        Store::open(&db).with_context(|| format!("打开用量数据库 {} 失败", db.display()))?;
+    match action {
+        PriceAction::List { model } => report::prices(&store, model.as_deref()),
+        PriceAction::Set { model, mut values } => {
+            values.resize(4, "0".to_string());
+            let values = [&values[0], &values[1], &values[2], &values[3]].map(String::as_str);
+            let price = ModelPrice::parse(&model, "", values, PriceSource::User)?;
+            let repriced = store.upsert_prices(std::slice::from_ref(&price))?;
+            println!(
+                "已设置 {}：输入 {} / 输出 {} / 缓存读 {} / 缓存写 {}（美元 / 百万 token）",
+                price.model_id, price.input, price.output, price.cache_read, price.cache_write
+            );
+            if repriced > 0 {
+                println!("给 {repriced} 条之前未定价的记录补上了花费");
+            }
+        }
+        PriceAction::Remove { model } => {
+            if store.delete_user_price(&model)? {
+                println!("已删除 {model} 的手填价格");
+            } else {
+                println!("{model} 没有手填价格（内置价格不能删除，可以用 price set 覆盖）");
+            }
+        }
+        PriceAction::Sync { file } => sync_models_dev(&store, file.as_deref())?,
+    }
+    Ok(())
+}
+
+/// 同名模型优先取这些官方供应商在 models.dev 上的价格
+const MODELS_DEV_PREFERRED: &[&str] = &[
+    "anthropic",
+    "openai",
+    "google",
+    "deepseek",
+    "moonshotai",
+    "moonshotai-cn",
+    "zhipuai",
+    "zai",
+    "alibaba",
+    "xai",
+    "minimax",
+    "minimax-cn",
+    "stepfun",
+    "xiaomi",
+    "mistral",
+];
+
+fn sync_models_dev(store: &Store, file: Option<&Path>) -> Result<()> {
+    let json = match file {
+        Some(path) => std::fs::read_to_string(path)
+            .with_context(|| format!("读取 {} 失败", path.display()))?,
+        None => {
+            println!("下载 {} …", tern_store::models_dev::API_URL);
+            download(tern_store::models_dev::API_URL)
+                .context("下载失败。网络不通时可以先用浏览器保存 api.json，再用 --file 导入")?
+        }
+    };
+    let prices = tern_store::models_dev::parse(&json, MODELS_DEV_PREFERRED)
+        .context("models.dev 返回的不是预期的 JSON")?;
+    if prices.is_empty() {
+        bail!("models.dev 数据里没有可用的文本模型价格");
+    }
+    let repriced = store.upsert_prices(&prices)?;
+    store.set_meta("models_dev_synced_at", &chrono::Utc::now().to_rfc3339())?;
+    println!("同步了 {} 个模型的价格", prices.len());
+    if repriced > 0 {
+        println!("给 {repriced} 条之前未定价的记录补上了花费");
+    }
+    println!("手填的价格优先级更高，不会被覆盖");
+    Ok(())
+}
+
+/// 跟随系统代理（HTTPS_PROXY 等），与网关的默认行为一致
+fn download(url: &str) -> Result<String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let response = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .timeout(std::time::Duration::from_secs(60))
+            .build()?
+            .get(url)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(response.text().await?)
     })
 }
 

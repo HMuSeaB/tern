@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use super::errors::{error_response, ErrorContext};
 use super::response::{self, ResponseContext};
 use super::upstream::{self, UpstreamRequest};
+use super::usage::{self, RequestMeta};
 use super::GatewayState;
 use crate::adapter::{prepare_request, RequestContext};
 use crate::provider::ApiFormat;
@@ -79,6 +80,7 @@ async fn forward(
     body: Bytes,
 ) -> Response {
     let mut error_ctx = ErrorContext::default();
+    let mut meta = RequestMeta::new(client_format, uri.path());
     match try_forward(
         state,
         client_format,
@@ -86,17 +88,25 @@ async fn forward(
         &mut headers,
         body,
         &mut error_ctx,
+        &mut meta,
     )
     .await
     {
-        Ok(response) => response,
+        Ok(response) => usage::track(state.usage.as_ref(), meta, response),
         Err(error) => {
             log::warn!(
                 "[Gateway] 请求失败 (provider={}, model={}): {error}",
                 error_ctx.provider.as_deref().unwrap_or("-"),
                 error_ctx.model.as_deref().unwrap_or("-"),
             );
-            error_response(client_format, &error, &error_ctx)
+            let response = error_response(client_format, &error, &error_ctx);
+            usage::record_failure(
+                state.usage.as_ref(),
+                meta,
+                response.status().as_u16(),
+                &error,
+            );
+            response
         }
     }
 }
@@ -108,6 +118,7 @@ async fn try_forward(
     headers: &mut HeaderMap,
     body: Bytes,
     error_ctx: &mut ErrorContext,
+    meta: &mut RequestMeta,
 ) -> Result<Response, ProxyError> {
     check_access(state, headers)?;
 
@@ -121,9 +132,16 @@ async fn try_forward(
         .unwrap_or_default()
         .to_string();
     error_ctx.model = Some(requested_model.clone());
+    meta.client_model = requested_model.clone();
+    meta.stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
+    // 角色要看原始请求（子代理标记、工具列表），转换成上游协议后就认不出了
+    meta.role = usage::infer_role(meta.client, uri.path(), headers, &body);
     let route = state.router().resolve(&requested_model)?;
     let spec = route.provider.clone();
     error_ctx.provider = Some(spec.id.clone());
+    meta.provider_id = Some(spec.id.clone());
+    meta.route_kind = Some(route.kind);
+    meta.upstream_model = Some(route.upstream_model.clone());
     error_ctx.upstream_format = Some(spec.effective_api_format());
     body["model"] = Value::String(route.upstream_model.clone());
 
@@ -138,6 +156,7 @@ async fn try_forward(
     let client_session_id = session
         .client_provided
         .then_some(session.session_id.as_str());
+    meta.session_id = client_session_id.map(str::to_string);
     let client_stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let upstream_format = spec.effective_api_format();
 

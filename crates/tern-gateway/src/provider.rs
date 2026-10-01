@@ -206,6 +206,9 @@ pub struct ProviderSpec {
     /// Codex OAuth 的 FAST 模式（`service_tier = "priority"`）
     #[serde(default)]
     pub codex_fast_mode: bool,
+    /// 成本倍率（十进制字符串，如中转站的 `"0.3"`）。网关本身不用，供用量计价
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_multiplier: Option<String>,
 }
 
 impl ProviderSpec {
@@ -228,6 +231,7 @@ impl ProviderSpec {
             prompt_cache_routing: PromptCacheRouting::Auto,
             max_output_tokens: None,
             codex_fast_mode: false,
+            cost_multiplier: None,
         }
     }
 
