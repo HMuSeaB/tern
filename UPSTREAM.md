@@ -32,10 +32,19 @@
 | `adapter/auth.rs` | `ClaudeAdapter::get_auth_headers`、`proxy/providers/gemini.rs` 的 OAuth 解析 |
 | `adapter/endpoint.rs` | `ClaudeAdapter/CodexAdapter::build_url`、`forwarder.rs` 的 `rewrite_*_endpoint` |
 
+`crates/tern-gateway/src/gateway/` 是重写的转发层，整体不与上游同源，只有以下几处逻辑取自上游：
+
+| tern | 上游来源 |
+|---|---|
+| `gateway/aggregate.rs` | `proxy/handlers.rs` 的 `responses_sse_to_response_value` 到 `merge_tool_call_delta`（逐字搬运，仅改可见性）及其测试 |
+| `gateway/response.rs` | `handlers.rs` 各 `handle_*_transform` 的分支选择；`response_processor.rs` 的 hop-by-hop 头清理 |
+| `gateway/upstream.rs` | `forwarder.rs` 的请求头构建段（Codex / Copilot 指纹头、anthropic-version / beta、Codex OAuth 会话头） |
+| `gateway/errors.rs` | `handlers.rs` 的 `codex_proxy_error_json` |
+
 上游改了上述位置时，用下面的命令查看差异，再决定是否移植：
 
 ```powershell
-git -C D:\4rchive\Code\cc-switch diff 68ef3b99 HEAD -- src-tauri/src/proxy/providers/claude.rs src-tauri/src/proxy/providers/codex.rs src-tauri/src/proxy/providers/gemini.rs
+git -C D:\4rchive\Code\cc-switch diff 68ef3b99 HEAD -- src-tauri/src/proxy/providers/claude.rs src-tauri/src/proxy/providers/codex.rs src-tauri/src/proxy/providers/gemini.rs src-tauri/src/proxy/handlers.rs src-tauri/src/proxy/forwarder.rs
 ```
 
 ## 跟进上游
