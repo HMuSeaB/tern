@@ -55,3 +55,30 @@ export interface Panel {
   failures: FailureGroup[];
   recent: RecentRequest[];
 }
+
+/** config_summary 命令的返回 */
+export interface ConfigSummary {
+  path: string;
+  listen: string;
+  default_provider: string | null;
+  providers: ProviderSummary[];
+  warnings: string[];
+}
+
+export interface ProviderSummary {
+  id: string;
+  name: string;
+  base_url: string;
+  api_format: string;
+  /** 第三方网关：Claude Code 的联网工具会失效 */
+  web_tools_at_risk: boolean;
+  auth_kind: string;
+}
+
+/** server_status / server_start / server_stop 的返回 */
+export interface ServerStatus {
+  running: boolean;
+  listen: string | null;
+  provider_count: number;
+  last_error: string | null;
+}

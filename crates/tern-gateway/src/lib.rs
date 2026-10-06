@@ -4,6 +4,7 @@
 //! 模块路径保持 `crate::proxy::...` 不变，以便继续从上游 cherry-pick 修复。
 
 pub mod adapter;
+pub mod ccswitch_import;
 pub mod gateway;
 pub mod provider;
 // 转换层里仍有不少函数只被 cc-switch 的故障转移 / 用量 / Copilot 优化器使用。

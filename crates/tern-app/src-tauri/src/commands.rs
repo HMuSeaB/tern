@@ -134,6 +134,157 @@ pub fn open_db(state: State<'_, AppState>) -> Result<String> {
     Ok(path)
 }
 
+// ---------------------------------------------------------------------------
+// 首次运行：从 cc-switch 导入
+// ---------------------------------------------------------------------------
+
+/// 首次运行判定：没有配置、或供应商列表为空都算。
+#[tauri::command]
+pub fn first_run() -> bool {
+    crate::config::is_first_run()
+}
+
+/// 生成一份空样例配置（带随机 accessToken）。不导入时用户从这里开始。
+#[tauri::command]
+pub fn write_sample_config() -> Result<String> {
+    let path = crate::config::config_path()?;
+    crate::config::write_sample(&path).map_err(|e| crate::error::AppError::Config(e.to_string()))
+}
+
+/// 探测 cc-switch 数据库，返回"如果导入会发生什么"。
+///
+/// 纯只读：不写盘、不备份、不改任何状态。和执行用的
+/// [`import_from_cc_switch`] 分开，是因为确认必须发生在写入之前——
+/// 用户要先看见"将复制 N 个凭据"这句话，再决定要不要继续。
+#[derive(Debug, Serialize)]
+pub struct CcSwitchPreview {
+    /// cc-switch 数据库路径
+    pub db_path: String,
+    /// 数据库不存在时为 false，前端据此隐藏导入按钮
+    pub found: bool,
+    /// 可导入的供应商
+    pub providers: Vec<CcSwitchProviderPreview>,
+    /// 搬不过来但用户该知道的（缺地址 / 缺凭据 / JSON 坏）
+    pub skipped: Vec<String>,
+    /// 这些供应商里哪些是第三方网关（导入后联网工具会失效）
+    pub third_party_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CcSwitchProviderPreview {
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    pub api_format: String,
+}
+
+#[tauri::command]
+pub fn import_preview() -> Result<CcSwitchPreview> {
+    let db = tern_gateway::ccswitch_import::default_cc_switch_db()
+        .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
+    if !db.exists() {
+        return Ok(CcSwitchPreview {
+            db_path: db.display().to_string(),
+            found: false,
+            providers: Vec::new(),
+            skipped: Vec::new(),
+            third_party_count: 0,
+        });
+    }
+
+    let report = tern_gateway::ccswitch_import::import_providers(&db, "claude")
+        .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
+    Ok(preview_of(&db, report))
+}
+
+/// 真正落盘。用户看过 [`import_preview`] 的结果并确认后才该调到这里。
+#[tauri::command]
+pub fn import_from_cc_switch(state: State<'_, AppState>) -> Result<CcSwitchPreview> {
+    let db = tern_gateway::ccswitch_import::default_cc_switch_db()
+        .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
+    if !db.exists() {
+        return Ok(CcSwitchPreview {
+            db_path: db.display().to_string(),
+            found: false,
+            providers: Vec::new(),
+            skipped: Vec::new(),
+            third_party_count: 0,
+        });
+    }
+
+    let report = tern_gateway::ccswitch_import::import_providers(&db, "claude")
+        .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
+
+    // 写之前先备份：导入覆盖的是整个 providers 列表，用户手改过的东西不该无声消失
+    let config_path = crate::config::config_path()?;
+    if config_path.exists() {
+        let backup = config_path.with_extension("json.bak");
+        if let Err(error) = std::fs::copy(&config_path, &backup) {
+            log::warn!("[tern-app] 备份 {config_path:?} 失败: {error}");
+        }
+    }
+
+    // 保留用户已有的 accessToken / listen，只替换供应商列表
+    let mut config = crate::config::load(&config_path)
+        .unwrap_or_else(|_| tern_gateway::GatewayConfig::new(Vec::new()));
+    config.providers = report.specs.clone();
+    if config.access_token.as_deref().unwrap_or("").trim().is_empty() {
+        config.access_token = Some(format!("tern-{}", uuid::Uuid::new_v4().simple()));
+    }
+    std::fs::write(&config_path, serde_json::to_string_pretty(&config)? + "\n")
+        .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
+
+    // 导入后库路径可能变了，丢掉旧的只读连接，下次查询重新打开
+    state.invalidate_db();
+    log::info!(
+        "[tern-app] 从 cc-switch 导入 {} 个供应商到 {}",
+        report.specs.len(),
+        config_path.display()
+    );
+
+    Ok(preview_of(&db, report))
+}
+
+fn preview_of(
+    db: &std::path::Path,
+    report: tern_gateway::ccswitch_import::ImportReport,
+) -> CcSwitchPreview {
+    let providers = report
+        .specs
+        .iter()
+        .map(|spec| CcSwitchProviderPreview {
+            id: spec.id.clone(),
+            name: spec.name.clone(),
+            base_url: spec.effective_base_url(),
+            api_format: spec.effective_api_format().to_string(),
+        })
+        .collect::<Vec<_>>();
+
+    let third_party_count = report
+        .specs
+        .iter()
+        .filter(|spec| {
+            matches!(
+                tern_gateway::assess(spec),
+                tern_gateway::WebToolsSupport::ThirdParty
+            )
+        })
+        .count();
+
+    CcSwitchPreview {
+        db_path: db.display().to_string(),
+        found: true,
+        providers,
+        skipped: report
+            .skipped
+            .iter()
+            .map(|(id, reason)| format!("{id}: {reason}"))
+            .collect(),
+        third_party_count,
+    }
+}
+
+
 #[tauri::command]
 pub fn panel_summary(state: State<'_, AppState>) -> Result<PanelDto> {
     state.with_db(|db| {

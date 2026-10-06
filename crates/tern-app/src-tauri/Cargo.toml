@@ -4,7 +4,9 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "tern 桌面面板：本地网关的用量可视化"
+description = "tern 桌面面板：本地网关的用量与开关"
+# 有多个 bin 时必须指定默认跑哪个，否则 tauri dev / cargo run 都会问
+default-run = "tern-app"
 
 [lib]
 name = "tern_app_lib"
@@ -28,6 +30,11 @@ log.workspace = true
 thiserror = "2.0"
 chrono = "0.4"
 dirs = "6.0"
+anyhow = "1.0"
+# 内嵌网关：serve 是长期阻塞的 async 任务，必须有独立多线程运行时
+tokio = { version = "1", features = ["rt-multi-thread", "signal", "macros", "sync", "time"] }
+# 首次启动生成随机 accessToken
+uuid = { version = "1.11", features = ["v4"] }
 # bundled：不依赖系统 sqlite3，与 tern-store 保持一致
 rusqlite = { version = "0.31", features = ["bundled"] }
 

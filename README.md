@@ -13,9 +13,14 @@ Codex ───────OpenAI Responses─────┘                ├
 协议转换层取自 [cc-switch](https://github.com/farion1231/cc-switch)（MIT），
 同步方式见 [UPSTREAM.md](UPSTREAM.md)；进度与后续计划见 [ROADMAP.md](ROADMAP.md)。
 
-> 当前状态：命令行版可用，带用量记录；还没有界面。
+## 两种用法
 
-## 快速开始
+**桌面应用**（推荐给不想碰终端的人）：装好后双击 `tern.exe`，首次启动会问要不要
+从 cc-switch 导入供应商，勾选确认后点「启动」就开始转发。窗口里直接看用量面板。
+
+**命令行**：见下面「快速开始」。
+
+## 快速开始（命令行）
 
 ```powershell
 cargo build --release -p tern-cli
@@ -24,6 +29,9 @@ notepad $env:APPDATA\tern\tern.json # 把 sk-REPLACE_ME 换成真实 key
 .\target\release\tern.exe check     # 校验配置、列出供应商
 .\target\release\tern.exe serve     # 启动，Ctrl+C 退出
 ```
+
+**不想手录供应商**：本机装着 cc-switch 的话，用桌面应用的一键导入，
+或在命令行读它的库做一次性转换（只读，不写 cc-switch）。
 
 `--config <文件>` 或环境变量 `TERN_CONFIG` 指定其他配置文件；`serve --listen 127.0.0.1:15801`
 临时换端口；`RUST_LOG=debug` 看详细日志。订阅类认证（Copilot / ChatGPT / xAI）命令行版暂不支持。
@@ -139,6 +147,12 @@ Gateway::new(config)?.serve(async { tokio::signal::ctrl_c().await.ok(); }).await
 ```powershell
 cargo test --workspace
 cargo clippy --workspace --all-targets
+
+# 桌面应用
+cd crates\tern-app
+pnpm install
+pnpm tauri dev        # 开发
+pnpm tauri build      # 出安装包，产物在 src-tauri\target\release\
 ```
 
 `crates/tern-gateway/src/proxy/` 与上游逐字节一致，不要直接改，也不要整体 `cargo fmt`；
