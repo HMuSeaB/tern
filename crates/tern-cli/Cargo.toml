@@ -14,6 +14,8 @@ path = "src/main.rs"
 [dependencies]
 tern-gateway = { path = "../tern-gateway" }
 tern-store = { path = "../tern-store" }
+# `tern tui` 复用同一份 gateway/store，只是换成终端渲染
+tern-tui = { path = "../tern-tui" }
 anyhow = "1.0"
 chrono = "0.4"
 dirs = "6.0"

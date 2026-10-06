@@ -49,6 +49,16 @@ fn run(command: Command) -> Result<()> {
         }
         Command::Init { paths, force } => init(&resolve_config(&paths)?, force),
         Command::Check { paths } => check(&resolve_config(&paths)?),
+        // 在当前进程内跑：TUI 要接管这个终端的 raw mode 和 alternate screen，
+        // 在当前进程内跑：TUI 要接管这个终端的 raw mode 和 alternate screen，
+        // spawn 子进程会另开窗口或在管道里失败
+        Command::Tui { paths } => {
+            let config = resolve_config(&paths)?;
+            // TUI 用 io::Error（终端操作失败），转成 anyhow 统一往上抛
+            tern_tui::run(Some(config)).map_err(anyhow::Error::from)
+        }
+        Command::Panel => launch_panel(),
+        Command::Import { sql } => import_from_cc_switch(&sql),
         Command::Usage {
             paths,
             days,
@@ -68,6 +78,108 @@ fn run(command: Command) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// 起桌面面板。它与 `tern` 是两个二进制，这里负责找到并拉起它。
+fn launch_panel() -> Result<()> {
+    let exe = std::env::current_exe().context("取不到当前程序路径")?;
+    // 面板装在 tern 旁边：release 构建两者同在 target/release/ 下，
+    // 用户在 PATH 里只有一个 tern 时也要能找到它
+    let panel = exe
+        .parent()
+        .map(|dir| dir.join(panel_binary_name()))
+        .filter(|path| path.exists());
+
+    let Some(panel) = panel else {
+        bail!(
+            "找不到面板程序 {}。它在 Tauri 应用构建后才存在：\n  \
+             cd crates/tern-app && pnpm tauri build\n\
+             或者先用 `tern tui` 看终端版面板（约 10 MB，功能少但立刻能用）",
+            panel_binary_name()
+        );
+    };
+
+    std::process::Command::new(&panel)
+        .spawn()
+        .with_context(|| format!("启动 {} 失败", panel.display()))?;
+    println!("已启动面板 {}", panel.display());
+    Ok(())
+}
+
+fn panel_binary_name() -> &'static str {
+    if cfg!(windows) {
+        "tern-app.exe"
+    } else {
+        "tern-app"
+    }
+}
+
+/// 从 cc-switch 的 SQL 备份导入供应商。保留现有配置的 accessToken / listen，
+/// 只替换供应商列表；写盘前先备份。
+fn import_from_cc_switch(sql: &Path) -> Result<()> {
+    if !sql.exists() {
+        bail!("{} 不存在", sql.display());
+    }
+    let config_path = resolve_config(&Paths::default())?;
+    let mut config = if config_path.exists() {
+        config::load(&config_path)?
+    } else {
+        GatewayConfig::new(Vec::new())
+    };
+
+    let report = tern_gateway::ccswitch_import::import_providers_from_sql(
+        &sql.to_path_buf(),
+        "claude",
+    )
+    .context("解析 SQL 备份失败")?;
+
+    config.providers = report.specs.clone();
+    if config.access_token.as_deref().unwrap_or("").trim().is_empty() {
+        config.access_token = Some(format!("tern-{}", uuid::Uuid::new_v4().simple()));
+    }
+
+    if config_path.exists() {
+        let backup = config_path.with_extension("json.bak");
+        std::fs::copy(&config_path, &backup)
+            .with_context(|| format!("备份原配置到 {} 失败", backup.display()))?;
+        println!("原配置已备份到 {}", backup.display());
+    }
+    std::fs::write(&config_path, serde_json::to_string_pretty(&config)? + "\n")
+        .with_context(|| format!("写入 {} 失败", config_path.display()))?;
+
+    println!(
+        "导入 {} 个供应商到 {}",
+        report.specs.len(),
+        config_path.display()
+    );
+
+    // 跳过清单不能静默：用户需要知道哪些没搬过来、为什么
+    if !report.skipped.is_empty() {
+        println!("\n{} 个导不进来：", report.skipped.len());
+        for (id, reason) in &report.skipped {
+            println!("  {id}: {reason}");
+        }
+    }
+
+    // 第三方网关的联网工具会失效。导入完成时统一说一次，
+    // 比让用户在第一次搜索失败时自己发现要好
+    let third_party = tern_gateway::third_party_providers(&config.providers);
+    if !third_party.is_empty() {
+        println!(
+            "\n注意：其中 {} 个是第三方网关，Claude Code 的 WebSearch / WebFetch 在它们下面会失效",
+            third_party.len()
+        );
+        for spec in third_party.iter().take(5) {
+            println!("  {} → {}", spec.id, spec.effective_base_url());
+        }
+        if third_party.len() > 5 {
+            println!("  … 另有 {} 个", third_party.len() - 5);
+        }
+        println!("（这两个工具不走网关消息通道，tern 无法代为转发）");
+    }
+
+    println!("\n下一步：tern serve");
+    Ok(())
 }
 
 /// `--config` 优先，其次环境变量 `TERN_CONFIG`，最后是系统配置目录

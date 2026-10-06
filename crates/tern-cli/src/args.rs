@@ -11,6 +11,9 @@ tern：面向编码 agent 的本地协议翻译网关
   tern serve [--listen <地址:端口>]          启动网关并记录用量，Ctrl+C 退出
   tern init  [--force]                       生成样例配置（含随机 accessToken）
   tern check                                 校验配置并列出供应商
+  tern tui  [--config <文件>]                终端界面：看账、供应商、网关状态（约 10 MB）
+  tern panel                                 打开桌面面板看详细图表（需要更多内存）
+  tern import <cc-switch.sql>                从 cc-switch 的 SQL 备份导入供应商
   tern usage [--days <N>] [--by <维度>] [--recent <N>]
                                              查看用量；维度: provider model role client day
   tern price list [<模型名>]                 列出价格（给模型名时显示实际匹配到的那条）
@@ -53,6 +56,13 @@ pub enum Command {
         by: Option<String>,
         recent: usize,
     },
+    /// 终端界面。给 SSH / 不想开图形界面的时候用。
+    Tui { paths: Paths },
+    /// 打开桌面面板。单独一个子命令而不是默认动作：它要拉起 webview，
+    /// 内存是 TUI 的几十倍，不该被顺手触发。
+    Panel,
+    /// 从 cc-switch 的 SQL 备份导入供应商
+    Import { sql: PathBuf },
     Price {
         paths: Paths,
         action: PriceAction,
@@ -82,7 +92,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, String
     match sub.as_str() {
         "-h" | "--help" | "help" => return Ok(Command::Help),
         "-V" | "--version" => return Ok(Command::Version),
-        "serve" | "init" | "check" | "usage" | "price" => {}
+        "serve" | "init" | "check" | "usage" | "price" | "tui" | "panel" | "import" => {}
         other => return Err(format!("未知子命令 {other}")),
     }
 
@@ -205,6 +215,20 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, String
                 recent,
             }
         }
+        "tui" => {
+            no_positional(&positional)?;
+            Command::Tui { paths }
+        }
+        "panel" => {
+            no_positional(&positional)?;
+            Command::Panel
+        }
+        "import" => match positional.as_slice() {
+            [sql] => Command::Import {
+                sql: PathBuf::from(sql),
+            },
+            _ => return Err("用法: tern import <cc-switch 的 .sql 备份>".into()),
+        },
         _ => {
             let action = match action.as_deref() {
                 Some("set") => {

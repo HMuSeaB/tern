@@ -4,6 +4,7 @@ members = [
     "crates/tern-gateway",
     "crates/tern-store",
     "crates/tern-cli",
+    "crates/tern-tui",
     "crates/tern-app/src-tauri",
 ]
 
