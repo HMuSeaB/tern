@@ -77,6 +77,22 @@
 Tauri 2 + React + Tailwind，图表用 recharts（cc-switch 现成经验）。
 **先做视觉稿定稿，再写代码**：用静态 HTML + 假数据出 2~3 版对比，选定后再接真实数据。
 
+- [x] `design/` 三版静态视觉稿 + `index.html` 启动页 + `README.md` 数据口径
+  - `a-terminal.html` 工程终端：深色密集、等宽数字、单一青强调
+  - `b-workbench.html` 工作台：浅色默认可切深、teal 强调、表格化请求流
+  - `c-canvas.html` 画布：暖色深底、超大 hero、treemap 主视觉 + 桑基模型流向
+  - 三版共用同一套假数据（一张供应商×模型成本矩阵，行和=供应商总额，列和=模型总额，
+    两端都是 $18.47；`step-5-preview` 未定价 cost=0 只计 token），只比视觉不比重算
+  - 剧情照 cc-switch 真实教训埋：sonnet→opus 映射、12 次限流单独聚类、未定价醒目
+- [ ] **待用户选版**：在这三版里定一版（或提改法）
+- [ ] 新建 `crates/tern-app`（Tauri 2 + React + Tailwind + recharts）
+- [ ] Rust 侧加查询命令：`summary` / `breakdown` / `failures` / `unpriced` / `recent` /
+      `sessions`，前端只拿聚合结果，不拉全量明细
+- [ ] 按选定版式实现首屏件：今日卡、趋势堆叠柱、花在哪（环形/treemap）、
+      缓存省了多少、会话视图、请求流、活跃度热力图、模型流向、失败面板
+- [ ] 深浅双主题、空状态引导、tabular-nums
+- [ ] 验收：本机攒的真实数据能对上 `tern usage` CLI 的输出
+
 面板首屏（草案，待视觉稿确认）：
 1. **今日卡片**：花费、请求数、token 数、缓存命中率，各带与昨日对比
 2. **花费趋势**：按天堆叠柱状图，按供应商着色；可切 7 天 / 30 天 / 自定义

@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>版本 C · 画布 — tern 用量面板视觉稿</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --sans: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+    --mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
+
+    /* 暖色深情底 + 高饱和琥珀强调 */
+    --bg:      #1a1410;
+    --bg-2:    #221b16;
+    --panel:   #2a2420;
+    --line:    #3b322b;
+    --line-2:  #4a3f36;
+    --fg:      #f5ece1;
+    --dim:     #b3a394;
+    --dim-2:   #8a7c6d;
+
+    --amber:   #e8894a;   /* 主强调：暖琥珀 */
+    --amber-2: #f2b06a;
+    --paper:   #d4b483;
+    --clay:    #c2603f;
+    --olive:   #8a9153;
+
+    --warm:    #e8a33d;   --warm-soft: #3a2c12;
+    --bad:     #e5734f;   --bad-soft:  #3a201a;
+    --ok:      #8fb563;   --ok-soft:   #26301c;
+
+    /* 供应商：暖色系不同色相，避免 4 个都是橙糊在一起 */
+    --p-relay:     #e8894a;   /* 琥珀 */
+    --p-openrouter:#d4b483;   /* 驼 */
+    --p-official:  #c2603f;   /* 陶土 */
+    --p-copilot:   #8a9153;   /* 橄榄 */
+  }
+  html, body { background: var(--bg); }
+  body { color: var(--fg); font: 14px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
+  .tnum { font-variant-numeric: tabular-nums; }
+  ::selection { background: var(--amber); color: #1a1410; }
+
+  /* ---- 顶栏：粗描边，不用阴影不用玻璃 ---- */
+  .top { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 18px;
+    padding: 14px 26px; background: var(--bg); border-bottom: 2px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; letter-spacing: -.02em; }
+  .brand .mark { width: 24px; height: 24px; background: var(--amber); border-radius: 4px;
+    display: grid; place-items: center; color: #1a1410; font: 800 14px var(--mono); }
+  .top nav { display: flex; gap: 2px; }
+  .top nav a { color: var(--dim); text-decoration: none; font-size: 13.5px; padding: 6px 12px; border-radius: 0; border-bottom: 2px solid transparent; }
+  .top nav a.on { color: var(--amber); border-bottom-color: var(--amber); }
+  .top nav a:hover { color: var(--fg); }
+  .spacer { flex: 1; }
+  .seg { display: flex; border: 2px solid var(--line); border-radius: 4px; }
+  .seg span { padding: 5px 12px; font: 12px var(--mono); color: var(--dim); cursor: pointer; }
+  .seg span.on { background: var(--amber); color: #1a1410; font-weight: 700; }
+  .seg span:not(.on):hover { color: var(--fg); }
+  .live { font: 12px var(--mono); color: var(--ok); display: flex; align-items: center; gap: 7px; }
+  .live .d { width: 8px; height: 8px; background: var(--ok); border-radius: 50%; }
+
+  main { max-width: 1320px; margin: 0 auto; padding: 26px 26px 70px; }
+
+  /* ---- hero：超大数字，最抓眼的一件 ---- */
+  .heroRow { display: grid; grid-template-columns: 1.15fr 1fr; gap: 18px; margin-bottom: 18px; }
+  @media (max-width: 940px){ .heroRow { grid-template-columns: 1fr; } }
+  .hero { background: var(--panel); border: 2px solid var(--line); border-radius: 6px; padding: 30px 32px; position: relative; overflow: hidden; }
+  .hero::after { content: ""; position: absolute; right: -40px; top: -40px; width: 180px; height: 180px;
+    background: radial-gradient(circle, rgba(232,137,74,.22), transparent 70%); pointer-events: none; }
+  .hero .kick { font: 700 12px var(--mono); letter-spacing: .18em; color: var(--amber); text-transform: uppercase; }
+  .hero .amt { font-size: clamp(56px, 8vw, 92px); font-weight: 800; letter-spacing: -.045em; line-height: .95;
+    margin: 14px 0 6px; font-variant-numeric: tabular-nums; }
+  .hero .amt .cur { font-size: .45em; color: var(--dim); vertical-align: .35em; margin-right: 2px; }
+  .hero .amt .cents { color: var(--dim); }
+  .hero .cmp { color: var(--dim); font-size: 15px; }
+  .hero .cmp b { color: var(--warm); }
+  .hero .meta { display: flex; flex-wrap: wrap; gap: 22px; margin-top: 24px; padding-top: 20px; border-top: 2px solid var(--line); }
+  .hero .meta .m .k { font: 12px var(--mono); color: var(--dim-2); letter-spacing: .06em; text-transform: uppercase; }
+  .hero .meta .m .v { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 3px; }
+  .hero .meta .m .v.small { font-size: 17px; }
+
+  .saved { background: var(--panel); border: 2px solid var(--line); border-radius: 6px; padding: 26px 28px; display: flex; flex-direction: column; }
+  .saved .kick { font: 700 12px var(--mono); letter-spacing: .18em; color: var(--ok); text-transform: uppercase; }
+  .saved .big { font-size: 62px; font-weight: 800; letter-spacing: -.03em; color: var(--ok); line-height: 1; margin: 12px 0 4px;
+    font-variant-numeric: tabular-nums; }
+  .saved .sub { color: var(--dim); font-size: 13.5px; }
+  .saved .rows { margin-top: auto; display: grid; gap: 9px; font-size: 13px; }
+  .saved .rows .r { display: flex; justify-content: space-between; color: var(--dim); }
+  .saved .rows .r b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  /* ---- 卡片：2px 粗边、硬圆角、可叠 ---- */
+  .row { display: grid; gap: 18px; margin-bottom: 18px; }
+  .row.split  { grid-template-columns: 1.5fr 1fr; }
+  .row.half   { grid-template-columns: 1fr 1fr; }
+  .row.third  { grid-template-columns: repeat(3, 1fr); }
+  @media (max-width: 1000px){ .row.split, .row.half, .row.third { grid-template-columns: 1fr; } }
+
+  .card { background: var(--panel); border: 2px solid var(--line); border-radius: 6px; padding: 20px 22px; min-width: 0; }
+  .card.flat { background: var(--bg-2); }
+  .card .head { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+  .card .title { font-size: 15px; font-weight: 700; letter-spacing: -.01em; }
+  .card .title .hint { color: var(--dim-2); font-weight: 400; font-size: 12px; margin-left: 8px; font-family: var(--mono); }
+  .card .head a.act { margin-left: auto; font: 12px var(--mono); color: var(--amber); text-decoration: none; }
+
+  /* ---- treemap ---- */
+  .tree { display: grid; gap: 3px; width: 100%; height: 340px;
+    grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(2, 1fr); }
+  .tree .cell { position: relative; border-radius: 4px; padding: 13px 15px; overflow: hidden;
+    display: flex; flex-direction: column; justify-content: space-between; cursor: default; }
+  .tree .cell .nm { font: 800 13px var(--sans); letter-spacing: -.01em; }
+  .tree .cell .c { font: 700 22px var(--sans); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+  .tree .cell .r { font: 11px var(--mono); opacity: .8; }
+  .tree .cell.big { grid-column: span 3; }
+  .tree .cell .tag { position: absolute; top: 10px; right: 12px; font: 700 10px var(--mono); letter-spacing: .1em;
+    padding: 2px 6px; border-radius: 3px; background: rgba(0,0,0,.28); text-transform: uppercase; }
+  /* 嵌套：供应商格子里放模型小块 */
+  .nested { display: grid; gap: 3px; margin-top: 10px; }
+  .nested .n { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 6px 8px; border-radius: 3px;
+    background: rgba(0,0,0,.16); font-size: 11.5px; }
+  .nested .n span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .nested .n b { font-variant-numeric: tabular-nums; font-family: var(--mono); flex: none; }
+
+  /* ---- 桑基（用曲线当色带 + 曲率圆头）---- */
+  .sankey { width: 100%; display: block; }
+
+  /* ---- 占位热力图 ---- */
+  .heat { display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 15px); gap: 4px; }
+  .heat i { width: 15px; height: 15px; border-radius: 2px; background: var(--bg-2); }
+  .heat .l1 { background: #3f2c18; } .heat .l2 { background: #8a5530; }
+  .heat .l3 { background: var(--p-official); } .heat .l4 { background: var(--amber); }
+  .heatleg { display: flex; gap: 5px; align-items: center; font: 11px var(--mono); color: var(--dim-2); margin-top: 12px; justify-content: flex-end; }
+  .heatleg i { width: 12px; height: 12px; border-radius: 2px; }
+
+  /* ---- 失败横幅 ---- */
+  .failbar { display: grid; gap: 12px; }
+  .frow { display: grid; grid-template-columns: 90px 1fr 54px; align-items: center; gap: 14px; }
+  .frow .k { font: 700 13px var(--sans); }
+  .frow .k .s { display: block; font: 11px var(--mono); color: var(--dim-2); }
+  .frow .track { height: 20px; background: var(--bg-2); border-radius: 3px; overflow: hidden; }
+  .frow .track i { display: block; height: 100%; background: var(--bad); }
+  .frow .cnt { font: 700 16px var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+  .frow .note { grid-column: 1 / -1; font: 11.5px var(--mono); color: var(--dim-2); margin-top: -4px; }
+
+  /* ---- 通知条 ---- */
+  .notices { display: grid; gap: 12px; }
+  .notice { display: flex; align-items: center; gap: 14px; padding: 14px 16px; border-radius: 5px; border: 2px solid; font-size: 13.5px; }
+  .notice .ic { width: 26px; height: 26px; border-radius: 4px; display: grid; place-items: center; font: 800 14px var(--mono); flex: none; }
+  .notice.warn { border-color: var(--warm); background: var(--warm-soft); color: var(--warm); }
+  .notice.warn .ic { background: var(--warm); color: #1a1410; }
+  .notice.err { border-color: var(--bad); background: var(--bad-soft); color: var(--bad); }
+  .notice.err .ic { background: var(--bad); color: #1a1410; }
+  .notice b { font-weight: 700; }
+  .notice a { margin-left: auto; color: inherit; font: 700 12px var(--mono); text-decoration: none; white-space: nowrap;
+    border-bottom: 2px solid currentColor; }
+
+  /* ---- 请求流（卡片列表，非表格）---- */
+  .stream { display: grid; gap: 8px; }
+  .hit { display: grid; grid-template-columns: 6px 1fr auto; gap: 13px; align-items: center;
+    padding: 11px 13px; background: var(--bg-2); border: 2px solid var(--line); border-radius: 4px; }
+  .hit .lamp { width: 6px; align-self: stretch; border-radius: 3px; background: var(--ok); }
+  .hit.abrt .lamp { background: var(--warm); }
+  .hit.fail .lamp { background: var(--bad); }
+  .hit .body .top { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+  .hit .mref { font: 12.5px var(--mono); }
+  .hit .mref .arrow { color: var(--dim-2); margin: 0 5px; }
+  .hit .mref .to { color: var(--warm); }
+  .hit .mref .from { color: var(--dim); }
+  .hit .sub { font: 11.5px var(--mono); color: var(--dim-2); margin-top: 3px; }
+  .hit .right { text-align: right; font-family: var(--mono); }
+  .hit .right .tok { font-size: 12.5px; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .hit .right .cost { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .hit .right .cost.null { color: var(--warm); font-size: 12.5px; }
+  .pill { font: 700 10px var(--mono); letter-spacing: .08em; padding: 2px 7px; border-radius: 3px;
+    border: 1.5px solid var(--line-2); color: var(--dim); text-transform: uppercase; }
+  .pill.sub, .pill.bg { border-color: var(--warm); color: var(--warm); }
+  .badge { font: 700 10px var(--mono); letter-spacing: .06em; padding: 2px 7px; border-radius: 3px; text-transform: uppercase; }
+  .badge.ok { color: var(--ok); border: 1.5px solid var(--ok); }
+  .badge.abrt { color: var(--warm); border: 1.5px solid var(--warm); }
+  .badge.fail { color: var(--bad); border: 1.5px solid var(--bad); background: var(--bad-soft); }
+
+  footer.pf { color: var(--dim-2); font: 12px var(--mono); display: flex; gap: 20px; flex-wrap: wrap; margin-top: 8px; }
+  footer.pf a { color: var(--dim-2); }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="brand"><span class="mark">t</span>tern</div>
+  <nav>
+    <a class="on" href="#">面板</a>
+    <a href="#">会话</a>
+    <a href="#">供应商</a>
+    <a href="#">定价</a>
+  </nav>
+  <div class="spacer"></div>
+  <div class="live"><span class="d"></span>:8787</div>
+  <div class="seg"><span class="on">7D</span><span>30D</span><span>自定义</span></div>
+</header>
+
+<main>
+
+  <!-- hero + 缓存省下 -->
+  <div class="heroRow">
+    <div class="hero">
+      <div class="kick">TODAY · 2026-10-06</div>
+      <div class="amt"><span class="cur">$</span>18<span class="cents">.47</span></div>
+      <div class="cmp">比昨天多花了 <b>$6.15</b> · 昨日 $12.32 <b>+49.9%</b></div>
+      <div class="meta">
+        <div class="m"><div class="k">请求</div><div class="v">214</div></div>
+        <div class="m"><div class="k">Token</div><div class="v">8.42M</div></div>
+        <div class="m"><div class="k">缓存命中</div><div class="v">91.3%</div></div>
+        <div class="m"><div class="k">主供应商</div><div class="v small">litellm-relay</div></div>
+      </div>
+    </div>
+
+    <div class="saved">
+      <div class="kick">CACHE SAVED · 缓存省下</div>
+      <div class="big">$5.31</div>
+      <div class="sub">命中缓存读而不按新鲜输入计价，今天省下的钱</div>
+      <div class="rows">
+        <div class="r"><span>缓存读</span><b>6.14M token</b></div>
+        <div class="r"><span>若按全价输入</span><b>$6.55</b></div>
+        <div class="r"><span>实际缓存读计价</span><b>$1.24</b></div>
+        <div class="r"><span>命中率</span><b>91.3%</b></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 警示条 -->
+  <div class="row">
+    <div class="card notices">
+      <div class="notice warn">
+        <span class="ic">$</span>
+        <span><b>step-5-preview</b> 没定价 —— 今天 8 次请求 1.2M token 全部未计费，成本偏低</span>
+        <a href="#">去定价 →</a>
+      </div>
+      <div class="notice err">
+        <span class="ic">!</span>
+        <span><b>litellm-relay</b> 被限流 12 次 —— 子代理并发超过上游 gateway_concurrency_limit</span>
+        <a href="#">看失败 →</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- 花在哪 treemap -->
+  <div class="row split">
+    <div class="card">
+      <div class="head">
+        <span class="title">花在哪<span class="hint">供应商 → 模型 · 今日 · 面积=花费</span></span>
+        <a class="act" href="#">展开全部 →</a>
+      </div>
+      <div class="tree" id="tree"></div>
+    </div>
+
+    <div class="card">
+      <div class="head"><span class="title">模型流向<span class="hint">客户端模型 → 实际模型</span></span></div>
+      <svg class="sankey" id="sankey" height="360"></svg>
+    </div>
+  </div>
+
+  <!-- 趋势 + 失败 -->
+  <div class="row split">
+    <div class="card">
+      <div class="head">
+        <span class="title">花费趋势<span class="hint">近 7 天 · 按供应商堆叠</span></span>
+        <a class="act" href="#">合计 $18.47 今天</a>
+      </div>
+      <svg id="trend" style="width:100%;display:block" height="230"></svg>
+      <div class="heatleg" id="trendLegend" style="justify-content:flex-start"></div>
+    </div>
+
+    <div class="card">
+      <div class="head"><span class="title">失败<span class="hint">按原因聚类 · 今日 · 不混模型统计</span></span></div>
+      <div class="failbar" id="fails"></div>
+    </div>
+  </div>
+
+  <!-- 请求流 + 热力图 -->
+  <div class="row split">
+    <div class="card">
+      <div class="head"><span class="title">请求流<span class="hint">最近 · 实时滚动</span></span><a class="act" href="#">实时页 →</a></div>
+      <div class="stream" id="stream"></div>
+    </div>
+
+    <div class="card">
+      <div class="head"><span class="title">活跃度<span class="hint">近 14 周</span></span></div>
+      <div class="heat" id="heat"></div>
+      <div class="heatleg">
+        <span>14 周前</span>
+        <i style="background:var(--bg-2)"></i><i style="background:#3f2c18"></i>
+        <i style="background:#8a5530"></i><i style="background:var(--p-official)"></i>
+        <i style="background:var(--amber)"></i><span>今天</span>
+      </div>
+    </div>
+  </div>
+
+  <footer class="pf">
+    <span>版本 C · 画布风 —— 视觉稿，数据为构造</span>
+    <a href="index.html">← 返回选版</a>
+    <a href="a-terminal.html">版本 A</a>
+    <a href="b-workbench.html">版本 B</a>
+    <span>字段口径: tern-store::query</span>
+  </footer>
+</main>
+
+<script>
+/* ===== 共享假数据（与 A / B 一致）===== */
+const PROV = {
+  relay:      { name:"litellm-relay", color:"var(--p-relay)",    fg:"#1a1410" },
+  openrouter: { name:"openrouter",    color:"var(--p-openrouter)", fg:"#1a1410" },
+  official:   { name:"official",      color:"var(--p-official)", fg:"#1a1410" },
+  copilot:    { name:"copilot",       color:"var(--p-copilot)",  fg:"#1a1410" },
+};
+/* 供应商 → 模型（treemap 数据）。
+   权威口径：一张供应商×模型成本矩阵，行和=供应商总额，列和=模型总额，两端都是 18.47。
+   step-5-preview 未定价（cost=0），只计 token。*/
+const TREE = [
+  { id:"relay", name:"litellm-relay", total:9.84, cells:[
+      { name:"cl<SECRET_bea1c54f>-opus-5.5", cost:6.21 },
+      { name:"claude-sonnet-5", cost:1.53 },
+      { name:"cl<SECRET_bea1c54f>-opus-4-1", cost:0.51 },
+      { name:"gpt-5-codex", cost:1.59 }] },
+  { id:"openrouter", name:"openrouter", total:5.61, cells:[
+      { name:"cl<SECRET_bea1c54f>-opus-5.5", cost:3.20 },
+      { name:"claude-sonnet-5", cost:1.74 },
+      { name:"gpt-5-codex", cost:0.67 },
+      { name:"step-5-preview", cost:0, tag:"未定价" }] },
+  { id:"official", name:"official-anthropic", total:2.34, cells:[
+      { name:"cl<SECRET_bea1c54f>-opus-5.5", cost:1.20 },
+      { name:"claude-sonnet-5", cost:0.45 },
+      { name:"cl<SECRET_bea1c54f>-opus-4-1", cost:0.24 },
+      { name:"gpt-5-codex", cost:0.45 }] },
+  { id:"copilot", name:"copilot", total:0.68, cells:[
+      { name:"claude-sonnet-5", cost:0.61 },
+      { name:"gpt-5-codex", cost:0.07 }] },
+];
+const FLOW = [
+  { src:"cl<SECRET_bea1c54f>-sonnet-4-6", dst:"cl<SECRET_bea1c54f>-opus-5.5", n:82, warn:true },
+  { src:"cl<SECRET_bea1c54f>-sonnet-4-6", dst:"cl<SECRET_bea1c54f>-sonnet-5", n:41 },
+  { src:"cl<SECRET_bea1c54f>-opus-5",     dst:"cl<SECRET_bea1c54f>-opus-5.5", n:28, warn:true },
+  { src:"gpt-5-codex",       dst:"gpt-5-codex",      n:22 },
+  { src:"cl<SECRET_bea1c54f>-sonnet-4-6", dst:"step-5-preview",  n: 8, warn:true },
+];
+const SESSIONS = [
+  { title:"重构网关错误处理", cost:"$8.42", m:"cl<SECRET_bea1c54f>-opus-5.5", n:76, id:"…9f2a7c" },
+  { title:"接入 Codex 客户端", cost:"$4.11", m:"gpt-5-codex", n:31, id:"…1b3e40" },
+  { title:"补 tern-store 测试", cost:"$3.05", m:"cl<SECRET_bea1c54f>-sonnet-5", n:58, id:"…77c0d2" },
+  { title:"阶段 5 收尾", cost:"$2.89", m:"cl<SECRET_bea1c54f>-opus-4-1", n:49, id:"…a4f901" },
+];
+const RECENT = [
+  { rm:"cl<SECRET_bea1c54f>-opus-5.5", cm:"cl<SECRET_bea1c54f>-sonnet-4-6", client:"claude", role:"main", tin:1240, tout:820, cost:"$3.41", st:"ok" },
+  { rm:"cl<SECRET_bea1c54f>-opus-5.5", cm:"cl<SECRET_bea1c54f>-sonnet-4-6", client:"claude", role:"sub", tin:48200, tout:2100, cost:"$0.98", st:"ok" },
+  { rm:"gpt-5-codex", cm:"gpt-5-codex", client:"codex", role:"bg", tin:5200, tout:340, cost:"$0.04", st:"abrt" },
+  { rm:null, cm:"cl<SECRET_bea1c54f>-sonnet-4-6", client:"claude", role:"sub", tin:0, tout:0, cost:null, st:"fail" },
+  { rm:"step-5-preview", cm:"cl<SECRET_bea1c54f>-sonnet-4-6", client:"claude", role:"sub", tin:22000, tout:640, cost:null, st:"ok" },
+  { rm:null, cm:"cl<SECRET_bea1c54f>-opus-5", client:"claude", role:"sub", tin:0, tout:0, cost:null, st:"fail" },
+  { rm:"cl<SECRET_bea1c54f>-opus-5.5", cm:"cl<SECRET_bea1c54f>-sonnet-4-6", client:"claude", role:"main", tin:540, tout:210, cost:"$0.05", st:"ok" },
+];
+const FAILS = [
+  { k:"限流", s:"429", n:12, note:"gateway_concurrency_limit · 子代理并发" },
+  { k:"上游过载", s:"529", n:4, note:"overloaded_error" },
+  { k:"连接", s:"—", n:3, note:"connection refused" },
+  { k:"鉴权", s:"401", n:2, note:"invalid api key" },
+];
+const TREND_DAYS = ["09-30","10-01","10-02","10-03","10-04","10-05","10-06"];
+const TREND = {
+  relay:     [8.0,6.7,9.3,4.4,7.1,6.9,9.84],
+  openrouter:[5.2,4.1,5.6,3.2,4.0,4.7,5.61],
+  official:  [2.4,1.8,2.9,1.5,2.0,2.6,2.34],
+  copilot:   [1.0,0.8,1.1,0.6,0.8,0.9,0.68],
+};
+const HEAT = (()=>{ let s=42,o=[]; const r=()=> (s=(s*1103515245+12345)&0x7fffffff)/0x7fffffff;
+  for(let i=0;i<98;i++){const rec=i>90?1:i>70?.7:.4,v=r()*rec;o.push(v>.78?4:v>.58?3:v>.34?2:v>.12?1:0);} return o;})();
+
+/* ===== tools ===== */
+const $=(id)=>document.getElementById(id);
+const fmtTok=(n)=>n>=1e6?(n/1e6).toFixed(2)+"M":n>=1e3?(n/1e3).toFixed(1)+"K":n;
+const NS="http://www.w3.org/2000/svg";
+function el(t,a,p){const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);if(p)p.appendChild(e);return e;}
+
+/* ===== treemap：relay 独占上半横贯，其余 3 个下半均分。total 一律由 cells 求和得出 ===== */
+$("tree").innerHTML = (()=>{
+  const nobj = (c) => `<div class="n"><span>${c.name}${c.cost===0?' <em style="color:var(--warm);font-style:normal;font-size:10px">·未定价</em>':''}</span><b>${c.cost===0?'未定价':'$'+c.cost.toFixed(2)}</b></div>`;
+  const cell = (p, big) => {
+    const total = p.cells.reduce((s,c)=>s+c.cost,0);
+    const head = `<div style="display:flex;justify-content:space-between;align-items:baseline">
+        <div><div class="nm"${big?' style="font-size:15px"':''}>${PROV[p.id].name}</div>
+        ${big?`<div class="r">98 次 · 占 ${(total/18.47*100).toFixed(0)}%</div>`:''}</div>
+        <div class="c"${big?' style="font-size:38px"':''}>$${total.toFixed(2)}</div>
+      </div>`;
+    return `<div class="cell${big?' big':''}" style="background:${PROV[p.id].color};color:${PROV[p.id].fg}">
+      ${head}
+      <div class="nested"${big?' style="grid-template-columns:repeat(4,1fr)"':''}>${p.cells.map(nobj).join("")}</div>
+    </div>`;
+  };
+  const big = TREE[0], rest = TREE.slice(1);
+  return cell(big, true) + rest.map(p=>cell(p, false)).join("");
+})();
+
+/* ===== 桑基：左=客户端模型，右=实际模型，曲线色带 ===== */
+(function(){
+  const box=$("sankey"), W=box.clientWidth||420, H=360;
+  const svg=el("svg",{width:"100%",height:H,viewBox:`0 0 ${W} ${H}`},box);
+  const colX=[W*0.06, W*0.62], nodeW=W*0.30;
+  const GAP=10;
+  // 汇总节点
+  const srcs={}, dsts={};
+  FLOW.forEach(f=>{ srcs[f.src]=(srcs[f.src]||0)+f.n; dsts[f.dst]=(dsts[f.dst]||0)+f.n; });
+  const sum=(o)=>Object.values(o).reduce((a,b)=>a+b,0);
+  const usable = H - (Object.keys(srcs).length-1)*GAP - (Object.keys(dsts).length-1)*GAP;
+  const scale = usable / sum(srcs);
+  // 布局左右
+  const leftY={}, rightY={}; let y=0;
+  Object.keys(srcs).forEach(k=>{ leftY[k]=y; y+=srcs[k]*scale+GAP; });
+  y=0; Object.keys(dsts).forEach(k=>{ rightY[k]=y; y+=dsts[k]*scale+GAP; });
+  const shrink=(h)=>Math.min(h-1.5, 22);
+  // 画边
+  const off={};
+  FLOW.forEach(f=>{
+    const h=f.n*scale;
+    const sy=leftY[f.src]+(off[f.src]||0); off[f.src]=(off[f.src]||0)+h;
+    const dy=rightY[f.dst]+(off["d:"+f.dst]||0); off["d:"+f.dst]=(off["d:"+f.dst]||0)+h;
+    const x0=colX[0]+nodeW, x1=colX[1];
+    const cx=(x0+x1)/2;
+    const path=`M${x0},${sy} C${cx},${sy} ${cx},${dy} ${x1},${dy} L${x1},${dy+Math.max(h-1.5,2)} C${cx},${dy+Math.max(h-1.5,2)} ${cx},${sy+Math.max(h-1.5,2)} ${x0},${sy+Math.max(h-1.5,2)} Z`;
+    const p=el("path",{d:path,fill:f.warn?"var(--warm)":"var(--paper)",opacity:".34"},svg);
+    p.innerHTML="<title>"+f.src+" → "+f.dst+" · "+f.n+" 次</title>";
+  });
+  // 画节点
+  const short=(s)=>s.replace("claude-","").replace("gpt-5-","");
+  Object.keys(srcs).forEach(k=>{
+    const y0=leftY[k], h=shrink(srcs[k]*scale);
+    el("rect",{x:colX[0],y:y0,width:nodeW,height:h,rx:"3",fill:"var(--bg-2)",stroke:"var(--line-2)","stroke-width":"1.5"},svg);
+    const t=el("text",{x:colX[0]+7,y:y0+h/2+4,fill:"var(--dim)","font-size":"11","font-family":"var(--mono)"},svg);
+    t.textContent=short(k)+" ×"+srcs[k];
+  });
+  Object.keys(dsts).forEach(k=>{
+    const y0=rightY[k], h=shrink(dsts[k]*scale);
+    const mapped = FLOW.some(f=>f.dst===k && f.src!==f.dst);
+    el("rect",{x:colX[1],y:y0,width:nodeW,height:h,rx:"3",
+      fill:mapped?"var(--warm-soft)":"var(--bg-2)",stroke:mapped?"var(--warm)":"var(--line-2)","stroke-width":"1.5"},svg);
+    const t=el("text",{x:colX[1]+7,y:y0+h/2+4,fill:mapped?"var(--warm)":"var(--dim)","font-size":"11","font-family":"var(--mono)"},svg);
+    t.textContent=short(k)+" ×"+dsts[k];
+  });
+})();
+
+/* ===== 趋势 ===== */
+(function(){
+  const box=$("trend"), W=box.clientWidth||600,H=230,pad={l:42,r:6,t:8,b:22};
+  const iw=W-pad.l-pad.r, ih=H-pad.t-pad.b;
+  const svg=el("svg",{width:"100%",height:H,viewBox:`0 0 ${W} ${H}`},box);
+  const provs=Object.keys(PROV);
+  const totals=TREND_DAYS.map((_,i)=>provs.reduce((s,p)=>s+TREND[p][i],0));
+  const max=Math.ceil(Math.max(...totals));
+  for(let g=0;g<=3;g++){
+    const yy=pad.t+ih-(g/3)*ih;
+    el("line",{x1:pad.l,x2:W-pad.r,y1:yy,y2:yy,stroke:"var(--line)","stroke-width":"2"},svg);
+    const t=el("text",{x:pad.l-8,y:yy+4,fill:"var(--dim-2)","font-size":"10","text-anchor":"end","font-family":"var(--mono)"},svg);
+    t.textContent="$"+Math.round(max*g/3);
+  }
+  const bw=iw/TREND_DAYS.length;
+  TREND_DAYS.forEach((d,i)=>{
+    let acc=0,x=pad.l+i*bw+bw*.2,w=bw*.6;
+    provs.forEach(p=>{
+      const v=TREND[p][i],h=(v/max)*ih,y=pad.t+ih-acc-h;
+      const r=el("rect",{x,y,width:w,height:Math.max(h,0.5),fill:PROV[p].color},svg);
+      r.innerHTML="<title>"+d+" "+PROV[p].name+" $"+v.toFixed(2)+"</title>"; acc+=h;
+    });
+    const t=el("text",{x:x+w/2,y:H-7,fill:"var(--dim-2)","font-size":"10","text-anchor":"middle","font-family":"var(--mono)"},svg);
+    t.textContent=d.slice(3);
+  });
+  $("trendLegend").innerHTML=provs.map(p=>
+    `<span style="display:flex;align-items:center;gap:6px;font:12px var(--mono);color:var(--dim)">
+      <span style="width:10px;height:10px;border-radius:2px;background:${PROV[p].color}"></span>${PROV[p].name}</span>`).join("");
+})();
+
+/* ===== 失败 ===== */
+(function(){
+  const max=Math.max(...FAILS.map(f=>f.n));
+  $("fails").innerHTML=FAILS.map(f=>`
+    <div>
+      <div class="frow"><span class="k">${f.k}<span class="s">${f.s}</span></span>
+        <span class="track"><i style="width:${f.n/max*100}%"></i></span>
+        <span class="cnt">${f.n}</span></div>
+      <div class="frow"><span class="note">${f.note}</span></div>
+    </div>`).join("");
+})();
+
+/* ===== 请求流 ===== */
+(function(){
+  const word={ok:"OK",abrt:"断开",fail:"失败"};
+  $("stream").innerHTML=RECENT.map(r=>{
+    const tot=r.tin+r.tout;
+    const model=r.rm===null?`<span style="color:var(--bad)" class="mref">未返回</span>`
+      :(r.rm!==r.cm?`<span class="mref"><span class="from">${r.cm}</span><span class="arrow">→</span><span class="to">${r.rm}</span></span>`
+                  :`<span class="mref">${r.rm}</span>`);
+    const cost=r.cost===null?`<div class="cost null">未定价</div>`
+      :`<div class="cost">${r.cost}</div>`;
+    return `<div class="hit ${r.st}">
+      <span class="lamp"></span>
+      <div class="body">
+        <div class="top">${model}<span class="pill ${r.role==="sub"||r.role==="bg"?r.role:""}">${r.role}</span>
+          <span class="pill">${r.client}</span></div>
+        <div class="sub">${r.st==="fail"?"响应失败":(fmtTok(tot)+" token · "+fmtTok(r.tin)+" in / "+fmtTok(r.tout)+" out")}</div>
+      </div>
+      <div class="right">${cost}<div style="margin-top:3px"><span class="badge ${r.st}">${word[r.st]}</span></div></div>
+    </div>`;
+  }).join("");
+})();
+
+/* ===== 热力图 ===== */
+$("heat").innerHTML=HEAT.map(v=>`<i class="${v?"l"+v:""}"></i>`).join("");
+
+/* ===== 会话 → 放到流下面的占位卡，插在请求流卡后 ===== */
+(function(){
+  const wrap=document.createElement("div");
+  wrap.className="card";
+  wrap.innerHTML=`<div class="head"><span class="title">会话<span class="hint">今天这笔钱花在哪些会话 · 按 session 聚合</span></span></div>
+    <div style="display:grid;gap:10px">
+      ${SESSIONS.map(s=>`
+        <div style="display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;padding:11px 13px;background:var(--bg-2);border:2px solid var(--line);border-radius:4px">
+          <div><div style="font-weight:650">${s.title} <span style="font:11px var(--mono);color:var(--dim-2)">${s.id}</span></div>
+          <div style="font:11.5px var(--mono);color:var(--dim-2);margin-top:3px">${s.n} 请求 · ${s.m}</div></div>
+          <div style="font:700 17px var(--mono);font-variant-numeric:tabular-nums">${s.cost}</div>
+        </div>`).join("")}
+    </div>`;
+  $("stream").closest(".row").appendChild(wrap);
+})();
+</script>
+</body>
+</html>
