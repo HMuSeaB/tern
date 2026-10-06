@@ -1,0 +1,311 @@
+import { useMemo, useState } from "react";
+import {
+  cacheHitRate,
+  deltaPercent,
+  formatDelta,
+  formatMoney2,
+  formatPercent,
+  formatTime,
+  formatTokens,
+} from "./format";
+import type { Panel } from "./types";
+
+/** 主面板。版式照 design/b-workbench.html 的皮，但信息密度对齐 cc-switch 使用统计页：
+ *  hero 一个大数字 + 4 小卡 + 一条命中率 + 两条醒目提示。趋势/占比放二级视图。 */
+
+const OUTCOME_LABEL: Record<string, { text: string; cls: string }> = {
+  success: { text: "成功", cls: "ok" },
+  aborted: { text: "中断", cls: "abrt" },
+  failed: { text: "失败", cls: "fail" },
+};
+
+const ROLE_LABEL: Record<string, string> = {
+  main: "主对话",
+  subagent: "子代理",
+  compact: "压缩",
+  background: "后台",
+};
+
+const ERROR_LABEL: Record<string, string> = {
+  rate_limited: "限流",
+  overloaded: "上游过载",
+  auth: "鉴权失败",
+  timeout: "超时",
+  connection: "连接失败",
+  upstream_rejected: "上游拒绝",
+  upstream_server: "上游故障",
+  invalid_request: "请求无效",
+  transform: "转换失败",
+  stream: "流式中断",
+  internal: "内部错误",
+  unknown: "未知",
+};
+
+/** 把 Rust 的 error_kind（serde 序列化成 snake_case）翻成中文 */
+function errorLabel(kind: string): string {
+  return ERROR_LABEL[kind] ?? kind;
+}
+
+export function PanelView({ panel, onRefresh }: { panel: Panel; onRefresh: () => void }) {
+  const [showRecent, setShowRecent] = useState(false);
+  const { today, yesterday } = panel;
+
+  const totalTokens = useMemo(
+    () =>
+      today.fresh_input + today.output + today.cache_read + today.cache_write,
+    [today],
+  );
+  const hit = cacheHitRate(today);
+
+  const costDelta = deltaPercent(Number(today.cost), Number(yesterday.cost));
+  const reqDelta = deltaPercent(today.requests, yesterday.requests);
+  const outDelta = deltaPercent(today.output, yesterday.output);
+  const yHit = cacheHitRate(yesterday);
+  const hitDelta = hit !== null && yHit !== null ? hit - yHit : null;
+
+  if (panel.first_run) {
+    return <FirstRun dbPath={panel.db_path} onRefresh={onRefresh} />;
+  }
+
+  return (
+    <div className="panel">
+      {/* 未定价：成本图会因此偏低，必须显眼 */}
+      {panel.unpriced_models.length > 0 && (
+        <UnpricedNotice models={panel.unpriced_models} />
+      )}
+      {panel.failures.length > 0 && <FailureNotice failures={panel.failures} />}
+
+      <section className="card hero">
+        <div className="hero-label">真实消耗 Tokens</div>
+        <div className="hero-figure">
+          <span className="hero-value tnum">{formatTokens(totalTokens)}</span>
+          <span className="hero-approx tnum">≈ {formatTokens(totalTokens * 10)} 含缓存</span>
+        </div>
+        <div className="hero-side">
+          <SideStat label="总请求数" value={String(today.requests)} delta={reqDelta} />
+          <SideStat label="总成本" value={formatMoney2(today.cost)} delta={costDelta} />
+        </div>
+      </section>
+
+      <section className="card grid">
+        <Stat
+          label="新增输入"
+          value={formatTokens(today.fresh_input)}
+          delta={deltaPercent(today.fresh_input, yesterday.fresh_input)}
+        />
+        <Stat
+          label="Output"
+          value={formatTokens(today.output)}
+          delta={outDelta}
+        />
+        <Stat
+          label="创建"
+          value={formatTokens(today.cache_write)}
+          delta={deltaPercent(today.cache_write, yesterday.cache_write)}
+        />
+        <Stat
+          label="命中"
+          value={formatTokens(today.cache_read)}
+          delta={deltaPercent(today.cache_read, yesterday.cache_read)}
+        />
+      </section>
+
+      <section className="card meter">
+        <div className="meter-head">
+          <span>缓存命中率</span>
+          <span className="meter-value tnum">{formatPercent(hit)}</span>
+        </div>
+        <div className="meter-track">
+          <div className="meter-fill" style={{ width: `${(hit ?? 0) * 100}%` }} />
+        </div>
+        {hitDelta !== null && (
+          <div className={`meter-foot ${hitDelta >= 0 ? "up" : "down"}`}>
+            较昨日 {hitDelta >= 0 ? "+" : ""}
+            {(hitDelta * 100).toFixed(1)} 个百分点
+          </div>
+        )}
+      </section>
+
+      {/* 省下的钱是 Claude Code 用户最关心、cc-switch 又没直接给的数字 */}
+      {Number(today.cache_savings) > 0 && (
+        <section className="card saved">
+          <span className="saved-label">缓存省下</span>
+          <span className="saved-value tnum">{formatMoney2(today.cache_savings)}</span>
+        </section>
+      )}
+
+      <section className="card">
+        <button className="disclosure" onClick={() => setShowRecent((v) => !v)}>
+          <span className={`chevron ${showRecent ? "open" : ""}`}>▸</span>
+          最近请求
+          <span className="disclosure-count tnum">{panel.recent.length}</span>
+        </button>
+        {showRecent && <RecentTable panel={panel} />}
+      </section>
+    </div>
+  );
+}
+
+function SideStat({
+  label,
+  value,
+  delta,
+}: {
+  label: string;
+  value: string;
+  delta: number | null;
+}) {
+  return (
+    <div className="side-stat">
+      <div className="side-label">{label}</div>
+      <div className="side-value tnum">{value}</div>
+      <div className={`side-delta ${delta !== null && delta >= 0 ? "up" : "down"}`}>
+        {delta === null ? "昨日 0" : `昨日 ${formatDelta(delta)}`}
+      </div>
+    </div>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  delta,
+}: {
+  label: string;
+  value: string;
+  delta: number | null;
+}) {
+  return (
+    <div className="stat">
+      <div className="stat-label">{label}</div>
+      <div className="stat-value tnum">{value}</div>
+      <div className={`stat-delta ${delta !== null && delta >= 0 ? "up" : "down"}`}>
+        {formatDelta(delta)}
+      </div>
+    </div>
+  );
+}
+
+function UnpricedNotice({ models }: { models: Panel["unpriced_models"] }) {
+  const tokens = models.reduce((sum, m) => sum + m.tokens, 0);
+  const requests = models.reduce((sum, m) => sum + m.requests, 0);
+  const plural = models.length > 1;
+  return (
+    <div className="notice warn">
+      <span className="notice-ic">$</span>
+      <span className="notice-body">
+        <b>
+          {models[0].model}
+          {plural ? ` 等 ${models.length} 个模型` : ""}
+        </b>
+        {plural ? " 都没定价 —— " : " 没定价 —— "}
+        {requests} 次请求 {formatTokens(tokens)} token 未计费，成本偏低
+      </span>
+      <code className="notice-cmd">tern price set</code>
+    </div>
+  );
+}
+
+function FailureNotice({ failures }: { failures: Panel["failures"] }) {
+  const total = failures.reduce((sum, f) => sum + f.count, 0);
+  const top = failures[0];
+  const kind = errorLabel(top.error_kind);
+  const who = top.provider_id ?? "未路由";
+  // 多个供应商时"等"才成立
+  const providers = new Set(failures.map((f) => f.provider_id));
+  const whoText = providers.size > 1 ? `${who} 等 ${providers.size} 个供应商` : who;
+  return (
+    <div className="notice err">
+      <span className="notice-ic">!</span>
+      <span className="notice-body">
+        <b>{whoText}</b> 今日失败 {total} 次（最多：{kind} {top.count} 次）。
+        失败不混入模型统计
+      </span>
+    </div>
+  );
+}
+
+function RecentTable({ panel }: { panel: Panel }) {
+  return (
+    <table className="recent">
+      <thead>
+        <tr>
+          <th>时间</th>
+          <th>模型</th>
+          <th>客户端</th>
+          <th className="num">Token</th>
+          <th className="num">成本</th>
+          <th>状态</th>
+        </tr>
+      </thead>
+      <tbody>
+        {panel.recent.map((r, i) => {
+          const tokens = r.fresh_input + r.output + r.cache_read + r.cache_write;
+          const outcome = OUTCOME_LABEL[r.outcome] ?? OUTCOME_LABEL.failed;
+          const mapped = r.response_model !== null && r.response_model !== r.client_model;
+          return (
+            <tr key={`${r.started_at_ms}-${i}`}>
+              <td className="mono dim">{formatTime(r.started_at_ms)}</td>
+              <td className="mono">
+                {mapped ? (
+                  <>
+                    <span className="requester">{r.client_model}</span>
+                    <span className="arrow">→</span>
+                    <span className="mapped">{r.response_model}</span>
+                  </>
+                ) : (
+                  r.response_model ?? r.client_model
+                )}
+              </td>
+              <td>
+                {r.client}
+                <span className="role">{ROLE_LABEL[r.role] ?? r.role}</span>
+              </td>
+              <td className="num tnum">{r.outcome === "failed" ? "—" : formatTokens(tokens)}</td>
+              <td className="num tnum">
+                {r.outcome === "failed" ? (
+                  <span className="dim">—</span>
+                ) : r.cost === null ? (
+                  <span className="unpriced">未定价</span>
+                ) : (
+                  formatMoney2(r.cost)
+                )}
+              </td>
+              <td>
+                <span className={`badge ${outcome.cls}`}>
+                  <span className="dot" />
+                  {r.outcome === "failed"
+                    ? errorLabel(r.error_kind ?? "unknown")
+                    : outcome.text}
+                </span>
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+function FirstRun({ dbPath, onRefresh }: { dbPath: string; onRefresh: () => void }) {
+  return (
+    <div className="card empty">
+      <div className="empty-title">还没有用量数据</div>
+      <p className="empty-text">
+        面板只读取 <code>{dbPath}</code>，不自己跑网关。
+      </p>
+      <ol className="empty-steps">
+        <li>
+          <code>tern init</code> 生成配置
+        </li>
+        <li>
+          <code>tern serve</code> 启动网关并开始记录
+        </li>
+        <li>用 Claude Code 或 Codex 跑一个会话</li>
+      </ol>
+      <button className="btn" onClick={onRefresh}>
+        刷新
+      </button>
+    </div>
+  );
+}

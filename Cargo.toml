@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/tern-gateway", "crates/tern-store", "crates/tern-cli"]
+members = [
+    "crates/tern-gateway",
+    "crates/tern-store",
+    "crates/tern-cli",
+    "crates/tern-app/src-tauri",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,3 +16,10 @@ license = "MIT"
 [profile.dev]
 debug = 1
 incremental = false
+
+[workspace.dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = { version = "2" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"

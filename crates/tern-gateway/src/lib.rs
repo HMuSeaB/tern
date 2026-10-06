@@ -11,6 +11,7 @@ pub mod provider;
 #[allow(dead_code)]
 pub mod proxy;
 pub mod router;
+pub mod web_tools;
 
 pub use gateway::usage::{
     ClientKind, ErrorKind, Outcome, RequestRole, TokenCounts, UsageEvent, UsageSink,
@@ -18,3 +19,4 @@ pub use gateway::usage::{
 pub use gateway::{Gateway, GatewayConfig, ManagedToken, TokenProvider, UpstreamProxy};
 pub use provider::{ApiFormat, KeyHeader, ProviderAuth, ProviderSpec};
 pub use router::{ModelRouter, Route, RouteKind};
+pub use web_tools::{assess, third_party_providers, warning_for, WebToolsSupport};

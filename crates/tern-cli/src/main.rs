@@ -117,6 +117,10 @@ fn serve(path: &Path, db: &Path, listen: Option<SocketAddr>) -> Result<()> {
     for warning in config::warnings(&config) {
         log::warn!("[tern] {warning}");
     }
+    // 联网工具可用性：不走网关、网关修不了，只能在启动时讲清楚
+    for spec in tern_gateway::third_party_providers(&config.providers) {
+        log::warn!("[tern] {}", tern_gateway::warning_for(spec));
+    }
     log::info!("[tern] 供应商: {}", provider_ids(&config));
 
     let store =
@@ -326,6 +330,11 @@ fn init(path: &Path, force: bool) -> Result<()> {
 
 fn check(path: &Path) -> Result<()> {
     let config = config::load(path)?;
+    // 联网工具判定要在 config 被 Gateway::new 移走之前算完
+    let web_tool_warnings: Vec<String> = tern_gateway::third_party_providers(&config.providers)
+        .into_iter()
+        .map(tern_gateway::warning_for)
+        .collect();
     let warnings = config::warnings(&config);
     let listen = config.listen;
     let default_provider = config.default_provider.clone();
@@ -359,6 +368,12 @@ fn check(path: &Path) -> Result<()> {
         println!();
         for warning in &warnings {
             println!("警告: {warning}");
+        }
+    }
+    if !web_tool_warnings.is_empty() {
+        println!();
+        for warning in &web_tool_warnings {
+            println!("联网工具: {warning}");
         }
     }
     Ok(())

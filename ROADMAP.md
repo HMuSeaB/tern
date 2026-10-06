@@ -116,6 +116,17 @@ Tauri 2 + React + Tailwind，图表用 recharts（cc-switch 现成经验）。
 - 数字用 tabular-nums 等宽，金额统一保留到分，token 用 K/M 缩写
 - 深浅色都要好看；空数据状态要有引导而不是空白图表
 
+## 联网工具识别（横切，与阶段 6 并行）
+
+`WebSearch` / `WebFetch` 不走网关消息通道，网关转发得再完美也覆盖不到。tern 只做
+**识别和告知**，不做改写（也做不到）。详见 `docs/guides/web-tools-on-third-party-gateways-zh.md`。
+
+- [x] `tern-gateway/src/web_tools.rs`：按上游 host 判官方 / 第三方，六个单测
+- [x] `tern serve` 启动时对每个第三方供应商打 warn
+- [x] `tern check` 末尾「联网工具」段落列出需注意的供应商
+- [x] 三语文档（缘由 + 三种处理 + 判据与边界情况）
+- [ ] （可选）桌面面板的供应商列表页加标记
+
 ## 阶段 7：供应商管理
 
 - 供应商增删改、连通性测试、从 cc-switch 数据库一键导入

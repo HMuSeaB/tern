@@ -28,6 +28,21 @@ notepad $env:APPDATA\tern\tern.json # 把 sk-REPLACE_ME 换成真实 key
 `--config <文件>` 或环境变量 `TERN_CONFIG` 指定其他配置文件；`serve --listen 127.0.0.1:15801`
 临时换端口；`RUST_LOG=debug` 看详细日志。订阅类认证（Copilot / ChatGPT / xAI）命令行版暂不支持。
 
+## 联网工具（WebSearch / WebFetch）会失效
+
+切到第三方网关后，Claude Code 的 `WebSearch` 和 `WebFetch` 可能**完全不可用**。这两个工具
+不走 `ANTHROPIC_BASE_URL` 消息通道，是客户端自己发起的独立能力，请求不经过 tern——所以
+协议转换做得再完美也覆盖不到，这不是网关 bug，也不需要网关修。
+
+`tern serve` 启动时和 `tern check` 会标出哪些供应商属于第三方网关，以及怎么处理：
+
+```powershell
+tern check     # 末尾的「联网工具」段落列出需注意的供应商
+```
+
+成因与三种处理方式（禁用 / 跳过域名校验 / 切回官方）见
+`docs/guides/web-tools-on-third-party-gateways-zh.md`（另有 `-en` / `-ja` 版）。
+
 ## 用量与价格
 
 `tern serve` 把每个请求（含失败、中途断开）记到配置文件同目录的 `usage.db`，`--db` 或 `TERN_DB` 可改。

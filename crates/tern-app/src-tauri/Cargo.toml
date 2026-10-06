@@ -1,0 +1,35 @@
+[package]
+name = "tern-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "tern 桌面面板：本地网关的用量可视化"
+
+[lib]
+name = "tern_app_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tern-app"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tern-gateway = { path = "../../tern-gateway" }
+tern-store = { path = "../../tern-store" }
+tauri.workspace = true
+tauri-plugin-opener.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+thiserror = "2.0"
+chrono = "0.4"
+dirs = "6.0"
+# bundled：不依赖系统 sqlite3，与 tern-store 保持一致
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = "3"
