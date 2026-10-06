@@ -1,0 +1,18 @@
+[package]
+name = "tern-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "tern 的终端界面：常驻内存约 15 MB，看账、切模型、起停网关"
+
+[[bin]]
+name = "tern-tui"
+path = "src/main.rs"
+
+[dependencies]
+tern-gateway = { path = "../../tern-gateway" }
+tern-store = { path = "../../tern-store" }
+ratatui = "0.29"
+crossterm = "0.29"
+serde_json = "1"
