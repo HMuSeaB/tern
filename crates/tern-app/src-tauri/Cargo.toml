@@ -35,6 +35,10 @@ anyhow = "1.0"
 tokio = { version = "1", features = ["rt-multi-thread", "signal", "macros", "sync", "time"] }
 # 首次启动生成随机 accessToken
 uuid = { version = "1.11", features = ["v4"] }
+# 接线探测：发一条真实请求证明整条链路是通的。
+# 用 blocking 版是因为 tauri 命令跑在 async runtime 上，同步客户端会把它堵住；
+# 调用处包在 spawn_blocking 里
+reqwest = { version = "0.12", features = ["blocking", "json"] }
 # bundled：不依赖系统 sqlite3，与 tern-store 保持一致
 rusqlite = { version = "0.31", features = ["bundled"] }
 

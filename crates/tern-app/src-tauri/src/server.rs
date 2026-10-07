@@ -50,6 +50,24 @@ impl ServerState {
             .map(|r| r.listen)
     }
 
+    /// 在不在跑。`wire` 要拿它提醒用户"接线通了但网关没起，照样没流量"。
+    pub fn is_running(&self) -> bool {
+        self.snapshot().is_some()
+    }
+
+    /// 接线该用的地址：网关在跑就用实际监听的那个（用户可能临时改过配置），
+    /// 没在跑就退回配置里写的那个。
+    ///
+    /// 两种都要给：接入是在网关没起时也能点的操作，
+    /// 那时只能用配置值；等网关真起来了再纠正。
+    pub fn listen_or_config(&self) -> Result<SocketAddr> {
+        if let Some(listen) = self.snapshot() {
+            return Ok(listen);
+        }
+        let config = crate::config::load(&crate::config::config_path()?)?;
+        Ok(config.listen)
+    }
+
     /// 停掉网关（若在跑）。窗口关闭时调用，避免留下占着端口的孤儿进程。
     /// 幂等：没在跑时什么都不做。
     pub fn shutdown(&self) {

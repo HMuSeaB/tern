@@ -5,6 +5,7 @@ import { Permissions } from "./Permissions";
 import { usePanel } from "./usePanel";
 import { useTern, type CcSwitchPreview } from "./useTern";
 import { Welcome } from "./Welcome";
+import { Wire } from "./Wire";
 
 type Theme = "light" | "dark";
 const THEME_KEY = "tern-theme";
@@ -79,6 +80,8 @@ export default function App() {
           )}
           {/* 权限与网关无关，任何时候都该能点——包括网关还没启动时 */}
           <Permissions />
+          {/* 接线是网关的下游：得知道在不在跑、监听哪个口 */}
+          <Wire running={boot.server?.running ?? false} onChanged={panel.refresh} />
         </>
       )}
     </Shell>

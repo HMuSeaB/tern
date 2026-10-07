@@ -42,6 +42,11 @@ fn main() {
             tern_app_lib::permissions::list_permissions,
             tern_app_lib::permissions::allow_permission,
             tern_app_lib::permissions::revoke_permission,
+            // 把 Claude Code 的流量接到 tern
+            tern_app_lib::wire::wire_status,
+            tern_app_lib::wire::wire_enable,
+            tern_app_lib::wire::wire_disable,
+            tern_app_lib::wire::wire_probe,
         ])
         .run(tauri::generate_context!())
         .expect("启动 tern 面板失败");

@@ -106,7 +106,10 @@ pub fn permission_presets() -> Vec<(&'static str, &'static str, &'static str, &'
 }
 
 /// Claude Code 配置目录：`~/.claude`。可被 `CLAUDE_CONFIG_DIR` 覆盖（多账户）。
-fn claude_dir() -> Result<PathBuf> {
+///
+/// `wire` 也要用同一个目录：权限和接线动的是同一份 settings.json，
+/// 分成两个函数必然会有哪天改到一个不读另一个读的地方。
+pub fn claude_dir() -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|v| !v.is_empty()) {
         return Ok(PathBuf::from(dir));
     }

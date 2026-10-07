@@ -22,6 +22,7 @@ mod db;
 mod error;
 pub mod permissions;
 pub mod server;
+pub mod wire;
 
 pub use error::{AppError, Result};
 

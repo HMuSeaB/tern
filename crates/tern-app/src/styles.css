@@ -834,3 +834,50 @@ body {
   font-size: 12px;
   color: var(--dim);
 }
+
+/* ---- 接入 Claude Code ---- */
+/* 这一块是面板里唯一"改用户环境"的地方，所以现状要摆明：
+   当前地址是什么、是不是 tern。藏起来只会让人以为已经通了 */
+.wire-now {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--bg);
+  margin-bottom: 14px;
+}
+
+.wire-url {
+  font: 12.5px var(--mono);
+  color: var(--fg);
+  word-break: break-all;
+}
+
+.wire-vs {
+  font-size: 12px;
+  color: var(--warm);
+}
+
+.wire-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.notice.ok {
+  background: color-mix(in srgb, var(--ok) 10%, transparent);
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.notice.ok .notice-ic {
+  background: var(--ok);
+}
+
+.notice code {
+  font: 12px var(--mono);
+  padding: 0 3px;
+}
