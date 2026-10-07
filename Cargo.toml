@@ -20,8 +20,12 @@ debug = 1
 incremental = false
 
 [workspace.dependencies]
-tauri = { version = "2", features = [] }
-tauri-plugin-opener = { version = "2" }
+# 版本必须和 crates/tern-app/package.json 里的 @tauri-apps/* 对齐：
+# `tauri build` 启动时会比对两侧版本，不一致直接报错退出。
+# 用 `=` 钉死而不是 `^`：钉死之后 cargo 不会在更新依赖时把 Rust 侧
+# 悄悄升到 NPM 没跟上的版本，那种错只在打包时才暴露，最难查
+tauri = { version = "=2.12.1", features = [] }
+tauri-plugin-opener = { version = "=2.7.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"

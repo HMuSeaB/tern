@@ -106,14 +106,7 @@ pub fn ensure_agent() -> Result<()> {
     if reachable() {
         return Ok(());
     }
-    let path = agent_path().ok_or_else(|| {
-        AppError::Config(format!(
-            "找不到 {}.它和面板应当装在同一个目录。\n\
-             手动启动：在安装目录执行\n  \
-             tern-agent\n然后回到这里点「启动」",
-            agent_binary_name()
-        ))
-    })?;
+    let path = agent_path().ok_or_else(missing_agent_message)?;
 
     spawn_agent(&path)?;
 
@@ -130,6 +123,21 @@ pub fn ensure_agent() -> Result<()> {
         path.display(),
         AGENT_SPAWN_TIMEOUT.as_secs()
     )))
+}
+
+/// 找不到 agent 时的话。
+///
+/// 单独提出来是为了能单测：这句话是用户在这个状态下唯一能看到的东西，
+/// 值得守住——而 `ensure_agent` 本身的行为取决于"此刻有没有 agent 在跑"，
+/// 拿它测消息内容会让测试随环境时好时坏。
+fn missing_agent_message() -> AppError {
+    AppError::Config(format!(
+        "找不到 {}。它和面板应当装在同一个目录。\n\
+         手动启动：在安装目录执行\n  \
+         {agent}\n然后回到这里点「启动」",
+        agent_binary_name(),
+        agent = agent_binary_name()
+    ))
 }
 
 /// spawn agent。要点是**不弹窗口**：用户点一下启动，
@@ -235,17 +243,18 @@ mod tests {
         }
     }
 
+    /// 找不到 agent 时那句话要能让人知道去哪修，而不是一句
+    /// "No such file or directory"。
+    ///
+    /// 只测消息本身：`ensure_agent` 的行为取决于"此刻有没有 agent 在跑"，
+    /// 拿它测内容会让测试随开发机的状态时好时坏。
     #[test]
     fn a_missing_agent_reports_how_to_fix_it() {
-        // agent 不存在时 ensure_agent 该给出人能懂的话，
-        // 而不是一句 "No such file or directory"
-        let saved = std::env::var("PATH").ok();
-        let error = ensure_agent().unwrap_err().to_string();
+        let error = missing_agent_message().to_string();
         assert!(error.contains("找不到"), "{error}");
-        assert!(error.contains("tern-agent"), "{error}");
-        if let Some(saved) = saved {
-            std::env::set_var("PATH", saved);
-        }
+        assert!(error.contains(agent_binary_name()), "{error}");
+        // 要给出手动启动的办法，不能只报错
+        assert!(error.contains("安装目录"), "{error}");
     }
 
     /// 没有 agent 时点「停止」不能报错：那会让用户以为出了什么问题，
