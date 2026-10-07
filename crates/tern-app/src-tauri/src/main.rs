@@ -20,6 +20,8 @@ fn main() {
             tern_app_lib::server::server_stop,
             tern_app_lib::server::server_status,
             tern_app_lib::server::config_summary,
+            // 切换默认供应商
+            tern_app_lib::server::select_provider,
             tern_app_lib::server::open_config_dir,
             // 首次运行
             tern_app_lib::commands::first_run,

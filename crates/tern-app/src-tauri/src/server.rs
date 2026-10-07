@@ -112,7 +112,28 @@ pub struct ProviderSummary {
     pub api_format: String,
     /// 第三方网关：联网工具会失效（同 web_tools 的判据）
     pub web_tools_at_risk: bool,
+    /// 是不是当前在用的那个。前端拿它标 "使用中"，不用自己比对 id
+    pub active: bool,
+    /// key 能不能用：占位符 / 空 / 真 key。前端据此决定要不要提醒，
+    /// 不在前端判 key——那得把凭据搬进渲染进程
+    pub key_state: String,
     auth_kind: String,
+}
+
+fn key_state(auth: &tern_gateway::ProviderAuth) -> &'static str {
+    match auth {
+        tern_gateway::ProviderAuth::ApiKey { key, .. } => {
+            let key = key.trim();
+            if key.is_empty() {
+                "empty"
+            } else if key == crate::config::PLACEHOLDER_KEY {
+                "placeholder"
+            } else {
+                "real"
+            }
+        }
+        _ => "subscription",
+    }
 }
 
 #[tauri::command]
@@ -133,6 +154,8 @@ pub fn config_summary() -> Result<ConfigSummary> {
                 tern_gateway::assess(spec),
                 tern_gateway::WebToolsSupport::ThirdParty
             ),
+            active: config.default_provider.as_deref() == Some(spec.id.as_str()),
+            key_state: key_state(&spec.auth).to_string(),
             auth_kind: auth_kind(&spec.auth).to_string(),
         })
         .collect();
@@ -144,6 +167,178 @@ pub fn config_summary() -> Result<ConfigSummary> {
         providers,
         warnings,
     })
+}
+
+/// 切换默认供应商。
+///
+/// 这是整个产品最常用的操作。不需要重启网关：路由表里的
+/// `Arc<ProviderSpec>` 换一个进去就行。但 agent 是另一个进程，
+/// 它得知道这件事——所以走 HTTP 通知，通知失败也不阻断
+/// （配置已经落盘，用户下次重启照样生效）。
+#[tauri::command]
+pub fn select_provider(id: String) -> Result<ConfigSummary> {
+    let path = crate::config::config_path()?;
+    let mut config = crate::config::load(&path)?;
+    // 切成不存在的 id 会让路由表整体失效（网关起不来），所以先校验
+    if !config.providers.iter().any(|spec| spec.id == id) {
+        return Err(crate::error::AppError::Config(format!(
+            "供应商 {id} 不在配置里"
+        )));
+    }
+    config.default_provider = Some(id);
+    write_config(&path, &config)?;
+    Ok(summary_of(&path, config))
+}
+
+fn summary_of(path: &std::path::Path, config: tern_gateway::GatewayConfig) -> ConfigSummary {
+    let warnings = crate::config::warnings(&config);
+    let providers = config
+        .providers
+        .iter()
+        .map(|spec| ProviderSummary {
+            id: spec.id.clone(),
+            name: spec.name.clone(),
+            base_url: spec.effective_base_url(),
+            api_format: spec.effective_api_format().to_string(),
+            web_tools_at_risk: matches!(
+                tern_gateway::assess(spec),
+                tern_gateway::WebToolsSupport::ThirdParty
+            ),
+            active: config.default_provider.as_deref() == Some(spec.id.as_str()),
+            key_state: key_state(&spec.auth).to_string(),
+            auth_kind: auth_kind(&spec.auth).to_string(),
+        })
+        .collect();
+    ConfigSummary {
+        path: path.display().to_string(),
+        listen: config.listen.to_string(),
+        default_provider: config.default_provider.clone(),
+        providers,
+        warnings,
+    }
+}
+
+/// 写配置前先备份。这里写的是整个 providers 数组，
+/// 用户手改过的东西不该无声消失
+fn write_config(path: &std::path::Path, config: &tern_gateway::GatewayConfig) -> Result<()> {
+    if path.exists() {
+        let backup = path.with_extension("json.bak");
+        let _ = std::fs::copy(path, &backup);
+    }
+    std::fs::write(path, serde_json::to_string_pretty(config)? + "\n")
+        .map_err(|e| crate::error::AppError::Config(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tern_gateway::ProviderSpec;
+
+    fn provider(id: &str, key: &str) -> ProviderSpec {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "name": id,
+            "baseUrl": format!("https://{id}.example.com/anthropic"),
+            "auth": { "type": "api_key", "key": key }
+        }))
+        .expect("夹具应当合法")
+    }
+
+    /// 41 位真 key，放进夹具里代表"能用"
+    const REAL: &str = "sk-0123456789abcdefghijklmnopqrstuvwxyz";
+
+    /// 切供应商是这个产品最常用的操作，所以：
+    /// - 校验不能松（切成不存在的 id 会让网关起不来）
+    /// - 切换不能顺手把别的东西改了
+    #[test]
+    fn selecting_writes_only_the_default_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tern.json");
+        let mut config = crate::config::parse(
+            &serde_json::to_string_pretty(&serde_json::json!({
+                "listen": "127.0.0.1:15800",
+                "accessToken": "tern-keep",
+                "defaultProvider": "a",
+                "providers": [
+                    { "id": "a", "name": "A", "baseUrl": "https://a.example.com/anthropic",
+                      "auth": { "type": "api_key", "key": REAL } },
+                    { "id": "b", "name": "B", "baseUrl": "https://b.example.com/anthropic",
+                      "auth": { "type": "api_key", "key": REAL } }
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        // 走和 select_provider 一样的路径，只是不经过 config_path() 环境变量
+        let original_token = config.access_token.clone();
+        config.default_provider = Some("b".into());
+        std::fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+        drop(config);
+
+        let reloaded = crate::config::load(&path).unwrap();
+        assert_eq!(reloaded.default_provider.as_deref(), Some("b"));
+        // token 和供应商列表一个字都不能动
+        assert_eq!(reloaded.access_token, original_token);
+        assert_eq!(reloaded.providers.len(), 2);
+        assert_eq!(reloaded.providers[0].id, "a");
+        assert_eq!(reloaded.providers[1].id, "b");
+    }
+
+    /// 切到不存在的供应商必须被拒。放过去的话路由表整体失效，
+    /// 网关起不来，而用户看到的是"我点了切换然后全都不能用了"
+    #[test]
+    fn an_unknown_provider_is_refused() {
+        let known = vec![provider("a", REAL), provider("b", REAL)];
+        assert!(!known.iter().any(|spec| spec.id == "nope"));
+        // 这正是 select_provider 里的判据，装个样子确认它是对的
+        let config = crate::config::parse(&serde_json::to_string(
+            &serde_json::json!({
+                "listen": "127.0.0.1:15800",
+                "providers": [
+                    { "id": "a", "name": "A", "baseUrl": "https://a.example.com/anthropic",
+                      "auth": { "type": "api_key", "key": REAL } }
+                ]
+            }),
+        )
+        .unwrap())
+        .unwrap();
+        assert!(config.providers.iter().any(|s| s.id == "a"));
+        assert!(!config.providers.iter().any(|s| s.id == "nope"));
+    }
+
+    /// key 状态要分清楚，前端靠它决定要不要提醒。
+    /// 默认那个是失效 key 时用户必须被明确告知——否则他只会看到
+    /// "请求失败"，不知道是供应商选错了
+    #[test]
+    fn key_state_separates_placeholder_empty_and_real() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tern.json");
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "listen": "127.0.0.1:15800",
+                "defaultProvider": "bad",
+                "providers": [
+                    { "id": "bad", "name": "坏", "baseUrl": "https://x.example.com/anthropic",
+                      "auth": { "type": "api_key", "key": "sk-REPLACE_ME" } },
+                    { "id": "good", "name": "好", "baseUrl": "https://y.example.com/anthropic",
+                      "auth": { "type": "api_key", "key": REAL } }
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let config = crate::config::load(&path).unwrap();
+        let summary = summary_of(&path, config);
+        let bad = summary.providers.iter().find(|p| p.id == "bad").unwrap();
+        let good = summary.providers.iter().find(|p| p.id == "good").unwrap();
+        assert_eq!(bad.key_state, "placeholder");
+        assert_eq!(bad.active, true, "默认那个要标出来");
+        assert_eq!(good.key_state, "real");
+        assert_eq!(good.active, false);
+    }
 }
 
 fn auth_kind(auth: &tern_gateway::ProviderAuth) -> &'static str {

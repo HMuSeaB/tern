@@ -72,6 +72,10 @@ export interface ProviderSummary {
   api_format: string;
   /** 第三方网关：Claude Code 的联网工具会失效 */
   web_tools_at_risk: boolean;
+  /** 是不是当前在用的那个 */
+  active: boolean;
+  /** real / placeholder / empty / subscription。前端据此提醒，不在前端判 key */
+  key_state: "real" | "placeholder" | "empty" | "subscription";
   auth_kind: string;
 }
 

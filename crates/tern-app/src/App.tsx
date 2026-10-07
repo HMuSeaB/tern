@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { PanelView } from "./PanelView";
 import { Permissions } from "./Permissions";
+import { Providers } from "./Providers";
 import { usePanel } from "./usePanel";
 import { useTern, type CcSwitchPreview } from "./useTern";
 import { Welcome } from "./Welcome";
@@ -68,6 +69,9 @@ export default function App() {
         />
       ) : (
         <>
+          {/* 供应商放最前面：切供应商是这个产品最常用的操作，
+              用量是"顺便看看"。放后面等于把最常用的藏起来 */}
+          <Providers running={boot.server?.running ?? false} onRefresh={refresh} />
           {error && <ErrorBar message={error} onRetry={refresh} />}
           {boot.server?.running && panel.state.kind === "ready" ? (
             <PanelView panel={panel.state.panel} onRefresh={panel.refresh} />

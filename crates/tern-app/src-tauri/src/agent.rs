@@ -140,8 +140,23 @@ fn missing_agent_message() -> AppError {
     ))
 }
 
-/// spawn agent。要点是**不弹窗口**：用户点一下启动，
-/// 不该闪出一个控制台黑框再消失。
+/// spawn agent。要点是**不弹任何窗口**。
+///
+/// 关键在于 `DETACHED_PROCESS`：它告诉系统这个子进程不需要控制台。
+/// 少了它，当面板是从资源管理器启动的（GUI 程序、自身没有控制台），
+/// 系统会为了这个子进程**临时分配一个控制台**——用户看到一个黑色 cmd
+/// 窗口闪一下。加上之后分配不发生，窗口也就不出现。
+///
+/// 顺带 `CREATE_NEW_PROCESS_GROUP`：不把 agent 拉进面板自己的进程组，
+/// 否则面板退出时 Ctrl+C 一类的事件会连带波及它——而 agent 本来就该
+/// 比面板活得久。
+///
+/// 代价：agent 没有控制台，stdout/stderr 无处可去。用不到，日志走
+/// RUST_LOG 重定向；但要知道这意味着**看不到它的即时输出了**，
+/// 出问题时得手动跑 `tern-agent` 看。
+///
+/// MSDN 明确说 CREATE_NO_WINDOW 与 DETACHED_PROCESS 同用时前者被忽略，
+/// 所以这里只写后两个。
 fn spawn_agent(path: &std::path::Path) -> Result<()> {
     let mut command = Command::new(path);
     command
@@ -151,15 +166,10 @@ fn spawn_agent(path: &std::path::Path) -> Result<()> {
 
     #[cfg(windows)]
     {
-        // DETACHED_PROCESS 而不是 CREATE_NO_WINDOW。差别在父进程这边：
-        // CREATE_NO_WINDOW 只是不弹控制台，子进程仍挂在父进程的控制台上，
-        // 父进程（这里是别人的终端）会被拖住一起等。
-        // DETACHED_PROCESS 让子进程彻底脱离控制台，且同样不弹窗口。
-        // MSDN 明确说 CREATE_NO_WINDOW 与 DETACHED_PROCESS 同用时会被忽略，
-        // 所以只写 DETACHED_PROCESS。
         use std::os::windows::process::CommandExt;
         const DETACHED_PROCESS: u32 = 0x0000_0008;
-        command.creation_flags(DETACHED_PROCESS);
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
     }
 
     command

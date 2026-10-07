@@ -835,6 +835,148 @@ body {
   color: var(--dim);
 }
 
+/* ---- 供应商列表 ---- */
+/* 这是面板的核心交互：一眼看到在用一个、点一下换一个。
+   所以行要高、可点区域大、状态词直接写在行内——不藏进 tooltip */
+.prov-search {
+  width: 100%;
+  font: 13px var(--sans);
+  padding: 8px 11px;
+  border: 1px solid var(--line-2);
+  border-radius: 9px;
+  background: var(--panel);
+  color: var(--fg);
+  margin-bottom: 12px;
+}
+
+.prov-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.prov-list {
+  display: grid;
+  gap: 1px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  overflow: hidden;
+}
+
+.prov-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  padding: 11px 13px;
+  background: var(--bg);
+  border: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.prov-row:hover {
+  background: var(--track);
+}
+
+.prov-row:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.prov-row.is-active {
+  background: var(--accent-soft);
+}
+
+.prov-radio {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line-2);
+  flex: none;
+}
+
+.prov-radio.on {
+  border-color: var(--accent);
+  border-width: 5px;
+}
+
+.prov-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.prov-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 560;
+}
+
+.prov-tag {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.prov-url {
+  font: 12px var(--mono);
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.prov-side {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+}
+
+.prov-fmt {
+  font: 10.5px var(--mono);
+  color: var(--dim-2);
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--track);
+}
+
+/* 第三方网关 / 坏 key 都是"看得见但要克制"的状态：
+   一行小字就够，做成大红条会让整页像在报错 */
+.prov-risk,
+.prov-bad {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.prov-risk {
+  color: var(--dim);
+  background: var(--track);
+}
+
+.prov-bad {
+  color: var(--bad);
+  background: var(--bad-soft);
+}
+
+.prov-empty {
+  padding: 20px;
+  text-align: center;
+  color: var(--dim);
+  font-size: 13px;
+}
+
 /* ---- 接入 Claude Code ---- */
 /* 这一块是面板里唯一"改用户环境"的地方，所以现状要摆明：
    当前地址是什么、是不是 tern。藏起来只会让人以为已经通了 */

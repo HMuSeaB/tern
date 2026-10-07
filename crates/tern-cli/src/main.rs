@@ -154,16 +154,16 @@ fn launch_agent() -> Result<()> {
         .stderr(std::process::Stdio::null());
     #[cfg(windows)]
     {
-        // DETACHED_PROCESS 而不是 CREATE_NO_WINDOW。两个都试过：
-        // - CREATE_NO_WINDOW：不弹控制台了，但父进程还挂在同一个控制台上，
-        //   PowerShell / cmd 会一直等这个子进程退出，终端回不来
-        // - DETACHED_PROCESS：子进程连控制台都不挂，父进程立刻返回。
-        //   代价是它自己也没有控制台——本来就不需要，日志走 RUST_LOG 重定向
-        // MSDN 明确说 CREATE_NO_WINDOW 与 DETACHED_PROCESS 同用时会被忽略，
-        // 所以只写 DETACHED_PROCESS。
+        // DETACHED_PROCESS | NEW_PROCESS_GROUP。前者让系统不为它分配控制台
+        // （否则从 GUI 启动时用户会看到一个 cmd 窗口闪一下），后者让它
+        // 独立于终端自己的进程组——终端关掉时 Ctrl+C 不会连带波及它，
+        // 而 agent 本来就该比终端活得久。
+        // 代价是 agent 没有控制台，看不到即时输出，出问题得手动跑它。
+        // MSDN 明确说 CREATE_NO_WINDOW 与 DETACHED_PROCESS 同用时前者被忽略。
         use std::os::windows::process::CommandExt;
         const DETACHED_PROCESS: u32 = 0x0000_0008;
-        command.creation_flags(DETACHED_PROCESS);
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
     }
 
     command
