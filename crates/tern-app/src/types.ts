@@ -81,4 +81,11 @@ export interface ServerStatus {
   listen: string | null;
   provider_count: number;
   last_error: string | null;
+  /** 常驻进程的版本。面板出问题时先确认两边是不是同一套 */
+  agent_version: string | null;
+  /**
+   * 常驻进程起来了没。false 表示连它都没找到——
+   * 那是"没装/没跟着一起打包"，和"网关停了"是两回事，提示要分开说
+   */
+  agent_up: boolean;
 }

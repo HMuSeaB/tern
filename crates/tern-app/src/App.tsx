@@ -146,13 +146,21 @@ function IdleState({
   warnings,
   providerCount,
 }: {
-  server: { running: boolean; listen: string | null; last_error: string | null } | null;
+  server: { running: boolean; listen: string | null; last_error: string | null; agent_up: boolean } | null;
   warnings: string[];
   providerCount: number;
 }) {
   return (
     <div className="card empty">
       <div className="empty-title">网关未运行</div>
+      {/* agent 不在是另一回事：不是"没启动"，是常驻进程没跟着装上。
+          两种原因的修法完全不同，混成一句话用户会白点半天「启动」 */}
+      {server && !server.agent_up && (
+        <p className="empty-text warn-text">
+          没找到常驻进程 tern-agent.exe。它和面板应当装在同一个目录；
+          重新安装通常能修好。
+        </p>
+      )}
       {server?.last_error && <p className="empty-text warn-text">{server.last_error}</p>}
       <p className="empty-text">
         {providerCount > 0
@@ -169,6 +177,7 @@ function IdleState({
       <p className="empty-text dim">
         启动后把 Claude Code 指过来即可：
         <code>ANTHROPIC_BASE_URL</code> 填 <code>{server?.listen ?? "127.0.0.1:15800"}</code>
+        。关掉这个窗口网关照跑，用量继续记。
       </p>
     </div>
   );

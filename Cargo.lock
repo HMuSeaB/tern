@@ -4829,6 +4829,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "tern-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "dirs",
+ "env_logger",
+ "log",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tern-gateway",
+ "tern-store",
+ "tokio",
+]
+
+[[package]]
 name = "tern-app"
 version = "0.1.0"
 dependencies = [
@@ -4864,6 +4881,7 @@ dependencies = [
  "rust_decimal",
  "serde_json",
  "tempfile",
+ "tern-agent",
  "tern-gateway",
  "tern-store",
  "tern-tui",

@@ -4,22 +4,10 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(tern_app_lib::AppState::default())
-        .manage(tern_app_lib::server::ServerState::default())
         .setup(|app| {
-            // 关窗即退出：托盘常驻是"待定问题"，先不给用户一个藏在后台的进程。
-            // 若以后加托盘，这里要改成 hide 而不是退出。
             let window = app
                 .get_webview_window("main")
                 .expect("tauri.conf.json 里应定义 label 为 main 的窗口");
-            let handle = app.handle().clone();
-            window.on_window_event(move |event| {
-                if let tauri::WindowEvent::Destroyed = event {
-                    // 窗口没了就停网关，别留一个占着端口的孤儿进程
-                    handle
-                        .state::<tern_app_lib::server::ServerState>()
-                        .shutdown();
-                }
-            });
             let _ = window.show();
             Ok(())
         })

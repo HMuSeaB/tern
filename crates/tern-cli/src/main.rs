@@ -58,6 +58,7 @@ fn run(command: Command) -> Result<()> {
             tern_tui::run(Some(config)).map_err(anyhow::Error::from)
         }
         Command::Panel => launch_panel(),
+        Command::Agent => launch_agent(),
         Command::Import { sql } => import_from_cc_switch(&sql),
         Command::Usage {
             paths,
@@ -111,6 +112,73 @@ fn panel_binary_name() -> &'static str {
         "tern-app.exe"
     } else {
         "tern-app"
+    }
+}
+
+/// 起常驻进程。它与 `tern` 是两个二进制，这里负责找到并拉起它。
+///
+/// 拉起后**立刻返回**：agent 是要长期活着的，`tern agent` 不该把终端
+/// 占住（那正是它存在的问题——占了终端还得开着窗口）。
+/// 想让它在前台跑可以直接执行 `tern-agent` 本身。
+fn launch_agent() -> Result<()> {
+    // 已经在跑就不用再拉一个。静默退出而不报错：用户可能点了两次，
+    // 第一个已经在服务了，那正是他想要的结果
+    if tern_agent::single::already_running(tern_agent::control::CONTROL_PORT).is_none() {
+        println!(
+            "常驻进程已在运行（控制端口 {}）。网关若在跑，用量正在被记录。",
+            tern_agent::control::CONTROL_PORT
+        );
+        return Ok(());
+    }
+
+    let exe = std::env::current_exe().context("取不到当前程序路径")?;
+    let agent = exe
+        .parent()
+        .map(|dir| dir.join(agent_binary_name()))
+        .filter(|path| path.exists());
+
+    let Some(agent) = agent else {
+        bail!(
+            "找不到常驻进程 {}。它和 tern 应当装在同一个目录。\n\
+             手动启动：在安装目录执行\n  \
+             {agent}\n然后它会一直在后台持有网关",
+            agent_binary_name(),
+            agent = agent_binary_name()
+        );
+    };
+
+    let mut command = std::process::Command::new(&agent);
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        // DETACHED_PROCESS 而不是 CREATE_NO_WINDOW。两个都试过：
+        // - CREATE_NO_WINDOW：不弹控制台了，但父进程还挂在同一个控制台上，
+        //   PowerShell / cmd 会一直等这个子进程退出，终端回不来
+        // - DETACHED_PROCESS：子进程连控制台都不挂，父进程立刻返回。
+        //   代价是它自己也没有控制台——本来就不需要，日志走 RUST_LOG 重定向
+        // MSDN 明确说 CREATE_NO_WINDOW 与 DETACHED_PROCESS 同用时会被忽略，
+        // 所以只写 DETACHED_PROCESS。
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        command.creation_flags(DETACHED_PROCESS);
+    }
+
+    command
+        .spawn()
+        .with_context(|| format!("启动 {} 失败", agent.display()))?;
+    println!("已启动常驻进程 {}", agent.display());
+    println!("它没有窗口，关掉这个终端也照跑。查看用量用 `tern tui` 或 `tern panel`。");
+    Ok(())
+}
+
+fn agent_binary_name() -> &'static str {
+    if cfg!(windows) {
+        "tern-agent.exe"
+    } else {
+        "tern-agent"
     }
 }
 

@@ -1,82 +1,27 @@
-//! 内嵌网关的启停管理。
+//! 面板侧的服务状态：全部转问 `tern-agent`。
 //!
-//! # 为什么要内嵌
+//! # 这里曾经自己持有网关
 //!
-//! 用户要的是"点 exe 就跑"。若沿用 `tern serve` 那套，得先开一个终端跑网关、再开应用
-//! 看面板——两步都不符合预期，而且网关死了面板还在显示旧数据更难排查。所以应用自己
-//! 持有网关：一个开关，启停都在进程内完成。
+//! 早先这个模块 spawn 一个线程跑 `Gateway::serve`，好处是双击 exe 就能用。
+//! 后来否掉了，代价有三个：
 //!
-//! # 停机怎么实现
+//! 1. **内存**。Tauri 带着 webview，实测约 408 MB。为了"看一眼花了多少"
+//!    常驻一个浏览器内核不值
+//! 2. **关窗口 = 断网**。用户只是想看用量，不想把流量一起关了
+//! 3. **状态和窗口绑死**。面板崩了网关跟着没，排查时两件事搅在一起
 //!
-//! 网关的 `serve` 只在 Ctrl+C 时返回。要让 UI 上的开关真正停掉它，就得给它一个能
-//! 触发的信号。做法是 `select!` 一个中止信号 future：停的时候把 signal  pending 的
-//! waker 唤醒，`serve` 随即返回、线程自然结束。没有轮询、没有轮转检查。
+//! 现在网关归 `tern-agent`（没有窗口的小进程），这里只负责把它的话
+//! 翻译成前端要的形状。见 `agent` 模块的文档。
 //!
-//! tokio 的 `Notify` 正好干这个：停机方 `notify_waiters`，serve 方 `notified().await`。
-//! 用 `waiters` 而不是 `notify_one`，避免"通知在 await 之前就到达"的竞态丢信号——
-//! `Notified` future 是持久的，先 `notified()` 再 `notify_waiters()` 也照样醒。
-
-use std::net::{SocketAddr, TcpListener};
-use std::sync::{Arc, Mutex};
+//! # 关窗口不再停网关
+//!
+//! `main.rs` 里原来在窗口 Destroyed 时调 `shutdown`。那条逻辑随网关一起
+//! 搬走了——现在的预期就是"面板关掉、流量继续"。
 
 use serde::Serialize;
-use tauri::State;
-use tokio::sync::Notify;
-use tern_gateway::{Gateway, GatewayConfig};
-use tern_store::Store;
 
-use crate::error::{AppError, Result};
-use crate::AppState;
-
-struct Running {
-    listen: SocketAddr,
-    shutdown: Arc<Notify>,
-}
-
-/// 网关状态。`None` 表示没在跑。
-#[derive(Default)]
-pub struct ServerState {
-    inner: Mutex<Option<Running>>,
-    /// 记录"本来在跑、但因为出错退了"，供前端提示
-    last_error: Mutex<Option<String>>,
-}
-
-impl ServerState {
-    fn snapshot(&self) -> Option<SocketAddr> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .as_ref()
-            .map(|r| r.listen)
-    }
-
-    /// 在不在跑。`wire` 要拿它提醒用户"接线通了但网关没起，照样没流量"。
-    pub fn is_running(&self) -> bool {
-        self.snapshot().is_some()
-    }
-
-    /// 接线该用的地址：网关在跑就用实际监听的那个（用户可能临时改过配置），
-    /// 没在跑就退回配置里写的那个。
-    ///
-    /// 两种都要给：接入是在网关没起时也能点的操作，
-    /// 那时只能用配置值；等网关真起来了再纠正。
-    pub fn listen_or_config(&self) -> Result<SocketAddr> {
-        if let Some(listen) = self.snapshot() {
-            return Ok(listen);
-        }
-        let config = crate::config::load(&crate::config::config_path()?)?;
-        Ok(config.listen)
-    }
-
-    /// 停掉网关（若在跑）。窗口关闭时调用，避免留下占着端口的孤儿进程。
-    /// 幂等：没在跑时什么都不做。
-    pub fn shutdown(&self) {
-        if let Some(running) = self.inner.lock().unwrap_or_else(|p| p.into_inner()).take() {
-            running.shutdown.notify_waiters();
-            log::info!("[tern-app] 随窗口关闭停止网关");
-        }
-    }
-}
+use crate::agent::{self, AgentStatus};
+use crate::error::Result;
 
 /// 给前端的服务状态
 #[derive(Debug, Serialize, Clone)]
@@ -88,163 +33,64 @@ pub struct ServerStatus {
     pub provider_count: usize,
     /// 启动过一次但后来自己退了，带原因
     pub last_error: Option<String>,
+    /// agent 的版本。面板出问题时先确认两边是不是同一套
+    pub agent_version: Option<String>,
+    /// agent 起来了但没在跑网关，还是连 agent 都没起来。
+    /// 前端要分开提示：前者催启动，后者多半是可执行文件没跟着一起装
+    pub agent_up: bool,
 }
 
-/// 探一下端口能不能绑。绑得上再立刻放开，交给真正的 serve。
-///
-/// 提前探测是为了给出人能懂的错话：axum 的 bind 错误原样抛给用户，
-/// 多半只会看到一句 `Address already in use`，不知道该怎么办。
-fn ensure_port_free(listen: SocketAddr) -> Result<()> {
-    match TcpListener::bind(listen) {
-        Ok(_) => Ok(()),
-        Err(_) => Err(AppError::PortInUse {
-            listen: listen.to_string(),
-        }),
-    }
-}
-
-#[tauri::command]
-pub fn server_start(
-    state: State<'_, AppState>,
-    server: State<'_, ServerState>,
-) -> Result<ServerStatus> {
-    // 幂等：已经在跑就直接回报状态，不重复起
-    if let Some(listen) = server.snapshot() {
-        return Ok(status_of(&server, Some(listen)));
-    }
-
-    let config_path = crate::config::config_path()?;
-    let config = crate::config::load(&config_path)?;
-    let db_path = crate::config::db_path_for(&config_path);
-
-    ensure_port_free(config.listen)?;
-
-    let store = Arc::new(Store::open(&db_path).map_err(|e| AppError::Store(e.to_string()))?);
-    state.set_shared_store(store.clone(), db_path.clone());
-
-    for error in store.set_multipliers(multipliers_of(&config)) {
-        log::warn!("[tern-app] {error}");
-    }
-
-    let (recorder, recorder_handle) = tern_store::spawn_recorder(store, log_usage);
-
-    let gateway = Gateway::new(config.clone()).map_err(|e| AppError::Config(e.to_string()))?;
-    let gateway = gateway.with_usage_sink(recorder);
-
-    let shutdown = Arc::new(Notify::new());
-    let serve_shutdown = shutdown.clone();
-    let thread_shutdown = shutdown.clone();
-    let thread_name = format!("tern-gateway {}", config.listen);
-
-    std::thread::Builder::new()
-        .name(thread_name)
-        .spawn(move || {
-            // 独立线程，不复用 Tauri 的 async runtime：网关要长期跑，
-            // 抢 UI 的运行时会把窗口操作拖慢
-            let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
-                Ok(runtime) => runtime,
-                Err(error) => {
-                    log::error!("[tern-app] 创建运行时失败: {error}");
-                    return;
-                }
-            };
-            let result = runtime.block_on(gateway.serve(async move {
-                // 停机信号由 server_stop 唤醒；Ctrl+C 也一并接上，
-                // 这样从托盘 / 任务管理器结束进程时能正常补记 aborted
-                tokio::select! {
-                    _ = serve_shutdown.notified() => log::info!("[tern-app] 收到停止信号"),
-                    _ = tokio::signal::ctrl_c() => log::info!("[tern-app] 收到 Ctrl+C"),
-                }
-            }));
-            // 先停 runtime：进行中的流被丢弃时会补记 aborted，
-            // 再让写入线程把队列里剩下的写完
-            drop(runtime);
-            drop(recorder_handle);
-            if let Err(error) = result {
-                log::error!("[tern-app] 网关退出: {error}");
-            }
-        })
-        .map_err(|e| AppError::Store(format!("启动网关线程失败: {e}")))?;
-
-    *server.inner.lock().unwrap_or_else(|p| p.into_inner()) = Some(Running {
-        listen: config.listen,
-        shutdown: thread_shutdown,
-    });
-    *server.last_error.lock().unwrap_or_else(|p| p.into_inner()) = None;
-
-    log::info!("[tern-app] 网关已启动 {}", config.listen);
-    Ok(status_of(&server, Some(config.listen)))
-}
-
-fn multipliers_of(config: &GatewayConfig) -> impl Iterator<Item = (&str, &str)> {
-    config.providers.iter().filter_map(|spec| {
-        spec.cost_multiplier
-            .as_deref()
-            .map(|value| (spec.id.as_str(), value))
-    })
-}
-
-/// 每条请求一行摘要，与 `tern serve` 的 log_usage 同口径
-fn log_usage(event: &tern_gateway::UsageEvent, inserted: &tern_store::Inserted) {
-    if matches!(inserted, tern_store::Inserted::Duplicate) {
-        return;
-    }
-    let provider = event.provider_id.as_deref().unwrap_or("-");
-    let model = event
-        .response_model
-        .as_deref()
-        .or(event.upstream_model.as_deref())
-        .unwrap_or(&event.client_model);
-    log::debug!(
-        "[usage] {} {} {} ({}) {}ms",
-        event.outcome.as_str(),
-        provider,
-        model,
-        event.role.as_str(),
-        event.duration_ms
-    );
-}
-
-/// 停止网关。没在跑时返回 Ok（幂等）。
-#[tauri::command]
-pub fn server_stop(server: State<'_, ServerState>) -> Result<ServerStatus> {
-    let running = server.inner.lock().unwrap_or_else(|p| p.into_inner()).take();
-    if let Some(running) = running {
-        running.shutdown.notify_waiters();
-    }
-    Ok(status_of(&server, None))
-}
-
-#[tauri::command]
-pub fn server_status(server: State<'_, ServerState>) -> Result<ServerStatus> {
-    let running = server.snapshot();
-    // 配置读不到时不该让整个状态查询失败：进程已经起来了，
-    // 用户要看到"有几个供应商"，那比一份配置错误信息更有用
-    let provider_count = config_summary().map(|summary| summary.providers.len()).unwrap_or(0);
-    Ok(status_of(&server, running).with_provider_count(provider_count))
-}
-
-impl ServerStatus {
-    fn with_provider_count(mut self, provider_count: usize) -> Self {
-        if self.provider_count == 0 {
-            self.provider_count = provider_count;
-        }
-        self
-    }
-}
-
-fn status_of(server: &ServerState, running: Option<SocketAddr>) -> ServerStatus {
-    let last_error = server
-        .last_error
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .clone();
+fn to_server_status(status: AgentStatus) -> ServerStatus {
     ServerStatus {
-        running: running.is_some(),
-        listen: running.map(|listen| listen.to_string()),
-        provider_count: 0,
-        last_error: running.is_none().then_some(last_error).flatten(),
+        running: status.running,
+        listen: status.listen,
+        provider_count: status.provider_count,
+        last_error: status.last_error,
+        agent_version: Some(status.agent_version),
+        agent_up: true,
     }
+}
+
+/// agent 不在时的占位状态。
+///
+/// 特意**不返回错误**：面板要能渲染。用户看到的是"网关已停止"加一句
+/// "常驻进程不在"，而不是一个空白页加一句看不懂的错。
+fn agent_absent() -> ServerStatus {
+    ServerStatus {
+        running: false,
+        listen: None,
+        provider_count: crate::config::load(&crate::config::config_path().unwrap_or_default())
+            .map(|config| config.providers.len())
+            .unwrap_or(0),
+        last_error: None,
+        agent_version: None,
+        agent_up: false,
+    }
+}
+
+#[tauri::command]
+pub fn server_start() -> Result<ServerStatus> {
+    Ok(to_server_status(agent::start_gateway()?))
+}
+
+#[tauri::command]
+pub fn server_stop() -> Result<ServerStatus> {
+    Ok(to_server_status(agent::stop_gateway()?))
+}
+
+#[tauri::command]
+pub fn server_status() -> Result<ServerStatus> {
+    match agent::status() {
+        Ok(status) => Ok(to_server_status(status)),
+        // agent 不在：给出"停了"的状态而不是把错误抛到前端。
+        // 这是常态（用户还没启动过），不是异常
+        Err(_) => Ok(agent_absent()),
+    }
+}
+
+/// 导入过供应商后调它：跑着的网关还拿着旧配置。
+pub fn restart_after_config_change() -> Result<ServerStatus> {
+    Ok(to_server_status(agent::restart_gateway()?))
 }
 
 /// 给前端的配置摘要：没启动时也要能显示配了哪些供应商

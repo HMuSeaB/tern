@@ -16,6 +16,7 @@
 //!
 //! 同一个库、两种打开方式，靠 WAL 并存。面板读的时候不阻塞网关写。
 
+pub mod agent;
 pub mod commands;
 pub mod config;
 mod db;

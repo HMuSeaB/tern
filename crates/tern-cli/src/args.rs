@@ -13,6 +13,7 @@ tern：面向编码 agent 的本地协议翻译网关
   tern check                                 校验配置并列出供应商
   tern tui  [--config <文件>]                终端界面：看账、供应商、网关状态（约 10 MB）
   tern panel                                 打开桌面面板看详细图表（需要更多内存）
+  tern agent                                 起常驻进程：无窗口，持有网关（约几 MB）
   tern import <cc-switch.sql>                从 cc-switch 的 SQL 备份导入供应商
   tern usage [--days <N>] [--by <维度>] [--recent <N>]
                                              查看用量；维度: provider model role client day
@@ -61,6 +62,9 @@ pub enum Command {
     /// 打开桌面面板。单独一个子命令而不是默认动作：它要拉起 webview，
     /// 内存是 TUI 的几十倍，不该被顺手触发。
     Panel,
+    /// 起常驻进程：持有网关，没有窗口。面板和它说同一套 HTTP。
+    /// 已经在跑就安静退出——那是正常情况，不是错误。
+    Agent,
     /// 从 cc-switch 的 SQL 备份导入供应商
     Import { sql: PathBuf },
     Price {
@@ -92,7 +96,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, String
     match sub.as_str() {
         "-h" | "--help" | "help" => return Ok(Command::Help),
         "-V" | "--version" => return Ok(Command::Version),
-        "serve" | "init" | "check" | "usage" | "price" | "tui" | "panel" | "import" => {}
+        "serve" | "init" | "check" | "usage" | "price" | "tui" | "panel" | "agent" | "import" => {}
         other => return Err(format!("未知子命令 {other}")),
     }
 
@@ -222,6 +226,10 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, String
         "panel" => {
             no_positional(&positional)?;
             Command::Panel
+        }
+        "agent" => {
+            no_positional(&positional)?;
+            Command::Agent
         }
         "import" => match positional.as_slice() {
             [sql] => Command::Import {

@@ -40,7 +40,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::error::{AppError, Result};
-use crate::server::ServerState;
 
 const BASE_URL_KEY: &str = "ANTHROPIC_BASE_URL";
 const AUTH_TOKEN_KEY: &str = "ANTHROPIC_AUTH_TOKEN";
@@ -87,15 +86,53 @@ pub struct ProbeResult {
     pub model: String,
 }
 
-#[tauri::command]
-pub fn wire_status(server: tauri::State<'_, ServerState>) -> Result<WireStatus> {
-    let dir = crate::permissions::claude_dir()?;
-    status_at(&dir, &server)
+/// 网关在哪跑、在不在跑。接线写的就是这个地址，所以由 agent 现问现取——
+/// 用户改过配置或临时换过端口时，接进去的必须是他实际会用的那个。
+#[derive(Debug, Clone)]
+pub struct GatewayEndpoint {
+    pub listen: std::net::SocketAddr,
+    pub running: bool,
 }
 
-fn status_at(claude_dir: &Path, server: &ServerState) -> Result<WireStatus> {
-    let listen = server.listen_or_config()?;
-    let tern_base_url = format!("http://{listen}");
+impl GatewayEndpoint {
+    /// 问 agent。agent 不在时退回配置里的 listen，
+    /// 让"网关还没起就接入"仍然可行——那时只能用配置值。
+    pub fn from_agent() -> Result<Self> {
+        let status = crate::agent::status();
+        match status {
+            Ok(status) => {
+                let listen = status
+                    .listen
+                    .as_deref()
+                    .and_then(|text| text.parse().ok())
+                    .or_else(|| configured_listen().ok());
+                Ok(Self {
+                    listen: listen.ok_or_else(|| {
+                        AppError::Config("拿不到网关监听地址：agent 没报，配置里也没有".into())
+                    })?,
+                    running: status.running,
+                })
+            }
+            Err(_) => Ok(Self {
+                listen: configured_listen()?,
+                running: false,
+            }),
+        }
+    }
+}
+
+fn configured_listen() -> Result<std::net::SocketAddr> {
+    Ok(crate::config::load(&crate::config::config_path()?)?.listen)
+}
+
+#[tauri::command]
+pub fn wire_status() -> Result<WireStatus> {
+    let dir = crate::permissions::claude_dir()?;
+    status_at(&dir, &GatewayEndpoint::from_agent()?)
+}
+
+fn status_at(claude_dir: &Path, gateway: &GatewayEndpoint) -> Result<WireStatus> {
+    let tern_base_url = format!("http://{}", gateway.listen);
     let settings = read_settings(&claude_dir.join("settings.json"))?;
 
     let env = settings.pointer("/env").and_then(Value::as_object);
@@ -124,17 +161,17 @@ fn status_at(claude_dir: &Path, server: &ServerState) -> Result<WireStatus> {
         token_written,
         token_configured,
         replaced: backup.replaced_env,
-        running: server.is_running(),
+        running: gateway.running,
         settings_path: claude_dir.join("settings.json").display().to_string(),
     })
 }
 
 /// 接入：把 base_url 指到 tern，并按需写入 accessToken。
 #[tauri::command]
-pub fn wire_enable(server: tauri::State<'_, ServerState>) -> Result<WireStatus> {
+pub fn wire_enable() -> Result<WireStatus> {
     let dir = crate::permissions::claude_dir()?;
-    let listen = server.listen_or_config()?;
-    let tern_base_url = format!("http://{listen}");
+    let gateway = GatewayEndpoint::from_agent()?;
+    let tern_base_url = format!("http://{}", gateway.listen);
 
     let config = crate::config::load(&crate::config::config_path()?)?;
     let token = config
@@ -175,12 +212,12 @@ pub fn wire_enable(server: tauri::State<'_, ServerState>) -> Result<WireStatus> 
     }
 
     write_backup(&dir, &Backup { replaced_env: replaced })?;
-    status_at(&dir, &server)
+    status_at(&dir, &GatewayEndpoint::from_agent()?)
 }
 
 /// 断开：删掉自己写的键，有备份就还原。
 #[tauri::command]
-pub fn wire_disable(server: tauri::State<'_, ServerState>) -> Result<WireStatus> {
+pub fn wire_disable() -> Result<WireStatus> {
     let dir = crate::permissions::claude_dir()?;
     let backup = read_backup(&dir)?;
 
@@ -208,7 +245,7 @@ pub fn wire_disable(server: tauri::State<'_, ServerState>) -> Result<WireStatus>
 
     // 还原过了，备份就没用了；留着只会让下次接入时误以为要还原旧值
     let _ = std::fs::remove_file(backup_path(&dir));
-    status_at(&dir, &server)
+    status_at(&dir, &GatewayEndpoint::from_agent()?)
 }
 
 /// 发一条真实请求验整条链路。
@@ -219,9 +256,9 @@ pub fn wire_disable(server: tauri::State<'_, ServerState>) -> Result<WireStatus>
 ///
 /// 所以它是个**显式按钮**，不进自动流程，文案里写清会花一次调用的钱。
 #[tauri::command]
-pub async fn wire_probe(server: tauri::State<'_, ServerState>) -> Result<ProbeResult> {
+pub async fn wire_probe() -> Result<ProbeResult> {
     let dir = crate::permissions::claude_dir()?;
-    let listen = server.listen_or_config()?;
+    let listen = GatewayEndpoint::from_agent()?.listen;
     let token = crate::config::load(&crate::config::config_path()?)
         .ok()
         .and_then(|c| c.access_token)
@@ -235,14 +272,11 @@ pub async fn wire_probe(server: tauri::State<'_, ServerState>) -> Result<ProbeRe
     let claude_dir = dir.clone();
     // reqwest 的同步 API 会阻塞，tauri 命令跑在 async runtime 上，
     // 阻塞它会把窗口操作一起拖住
-    let result = tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || {
         send_probe(&listen, token.as_deref(), &model, &claude_dir)
     })
     .await
-    .map_err(|e| AppError::Config(format!("探测任务失败: {e}")))?;
-
-    let _ = server;
-    result
+    .map_err(|e| AppError::Config(format!("探测任务失败: {e}")))?
 }
 
 fn send_probe(

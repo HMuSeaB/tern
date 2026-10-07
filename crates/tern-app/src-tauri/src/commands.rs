@@ -242,6 +242,13 @@ pub fn import_from_cc_switch(state: State<'_, AppState>) -> Result<CcSwitchPrevi
         config_path.display()
     );
 
+    // 网关还拿着旧配置在跑。不重起的话面板里显示的供应商列表是新的、
+    // 实际路由用的是旧的，用户会以为导入失败。
+    // 失败不阻断导入本身——文件已经落盘了，那才是要紧的
+    if let Err(error) = crate::server::restart_after_config_change() {
+        log::warn!("[tern-app] 导入后重起网关失败: {error}");
+    }
+
     Ok(preview_of(&db, report))
 }
 

@@ -7,3 +7,6 @@ src-tauri/gen/
 
 # Tauri 本地开发痕迹
 *.local
+
+# agent 的副本，由 scripts/prepare-agent.mjs 在打包前生成，不该进仓库
+crates/tern-app/src-tauri/resources/
