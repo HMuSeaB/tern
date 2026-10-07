@@ -6,6 +6,7 @@
 pub mod adapter;
 pub mod ccswitch_import;
 pub mod gateway;
+pub mod models;
 pub mod provider;
 // 转换层里仍有不少函数只被 cc-switch 的故障转移 / 用量 / Copilot 优化器使用。
 // 加在这里而不是被搬运的文件里，保持它们与上游逐字节一致。

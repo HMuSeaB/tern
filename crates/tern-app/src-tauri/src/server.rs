@@ -190,6 +190,45 @@ pub fn select_provider(id: String) -> Result<ConfigSummary> {
     Ok(summary_of(&path, config))
 }
 
+/// 拉一个供应商的模型列表（「获取模型列表」按钮）。
+///
+/// key 从配置里现读，不进返回值也不进日志。用阻塞客户端，
+/// 所以由 tauri 丢到 blocking 线程池——否则一个 15 秒的上游超时
+/// 会把窗口操作一起拖住。
+#[tauri::command]
+pub async fn fetch_provider_models(id: String) -> Result<Vec<String>> {
+    let config = crate::config::load(&crate::config::config_path()?)?;
+    let spec = config
+        .providers
+        .iter()
+        .find(|spec| spec.id == id)
+        .ok_or_else(|| crate::error::AppError::Config(format!("供应商 {id} 不在配置里")))?
+        .clone();
+
+    let (base_url, api_key, full_url) = match &spec.auth {
+        tern_gateway::ProviderAuth::ApiKey { key, .. } => (
+            spec.effective_base_url(),
+            key.trim().to_string(),
+            spec.full_url,
+        ),
+        // 订阅登录（OAuth）的 key 在宿主手里，面板拿不到，
+        // 硬要问只会得到 401。说清楚比给个假列表好
+        _ => {
+            return Err(crate::error::AppError::Config(
+                "这个供应商用订阅登录，模型列表得由宿主提供，面板拉不到".into(),
+            ))
+        }
+    };
+
+    tauri::async_runtime::spawn_blocking(move || {
+        tern_gateway::models::fetch_models(&base_url, &api_key, full_url, None)
+            .map(|models| models.into_iter().map(|m| m.id).collect())
+            .map_err(crate::error::AppError::Config)
+    })
+    .await
+    .map_err(|e| crate::error::AppError::Config(format!("任务失败: {e}")))?
+}
+
 fn summary_of(path: &std::path::Path, config: tern_gateway::GatewayConfig) -> ConfigSummary {
     let warnings = crate::config::warnings(&config);
     let providers = config
@@ -285,26 +324,33 @@ mod tests {
         assert_eq!(reloaded.providers[1].id, "b");
     }
 
-    /// 切到不存在的供应商必须被拒。放过去的话路由表整体失效，
-    /// 网关起不来，而用户看到的是"我点了切换然后全都不能用了"
+    /// 切到不存在的供应商必须被拒。
+    ///
+    /// 放过去的话路由表里留下一个指向空气的 default_provider，
+    /// 网关起不来（`ModelRouter::new` 会校验默认供应商存在），
+    /// 而用户看到的是"我点了切换然后全都不能用了"——比切换前更糟。
     #[test]
     fn an_unknown_provider_is_refused() {
-        let known = vec![provider("a", REAL), provider("b", REAL)];
-        assert!(!known.iter().any(|spec| spec.id == "nope"));
-        // 这正是 select_provider 里的判据，装个样子确认它是对的
-        let config = crate::config::parse(&serde_json::to_string(
-            &serde_json::json!({
+        let providers = [provider("a", REAL), provider("b", REAL)];
+        // 这正是 select_provider 的第一道判据
+        assert!(providers.iter().any(|spec| spec.id == "b"));
+        assert!(!providers.iter().any(|spec| spec.id == "nope"));
+
+        // 而一个真实的配置里，网关侧的要求也是同一个：默认供应商必须在列表里
+        let config = crate::config::parse(
+            &serde_json::to_string(&serde_json::json!({
                 "listen": "127.0.0.1:15800",
+                "defaultProvider": "ghost",
                 "providers": [
                     { "id": "a", "name": "A", "baseUrl": "https://a.example.com/anthropic",
                       "auth": { "type": "api_key", "key": REAL } }
                 ]
-            }),
+            }))
+            .unwrap(),
         )
-        .unwrap())
         .unwrap();
-        assert!(config.providers.iter().any(|s| s.id == "a"));
-        assert!(!config.providers.iter().any(|s| s.id == "nope"));
+        // 配置能解析，但拿着它建网关必须失败——这就是"放过去会怎样"的证据
+        assert!(tern_gateway::Gateway::new(config).is_err());
     }
 
     /// key 状态要分清楚，前端靠它决定要不要提醒。
@@ -335,9 +381,9 @@ mod tests {
         let bad = summary.providers.iter().find(|p| p.id == "bad").unwrap();
         let good = summary.providers.iter().find(|p| p.id == "good").unwrap();
         assert_eq!(bad.key_state, "placeholder");
-        assert_eq!(bad.active, true, "默认那个要标出来");
+        assert!(bad.active, "默认那个要标出来");
         assert_eq!(good.key_state, "real");
-        assert_eq!(good.active, false);
+        assert!(!good.active);
     }
 }
 

@@ -15,7 +15,9 @@ serde_json = { version = "1.0", features = ["preserve_order"] }
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
-reqwest = { version = "0.12", features = ["rustls-tls", "json", "stream", "socks"] }
+# blocking：models.rs 的「获取模型列表」是同步调用——调用方是 tauri 命令
+# 和 agent 控制端，都不在 async 上下文里。那边各自用 spawn_blocking 包住。
+reqwest = { version = "0.12", features = ["rustls-tls", "json", "stream", "socks", "blocking"] }
 flate2 = "1"
 brotli = "7"
 zstd = "0.13"
