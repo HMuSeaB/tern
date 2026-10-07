@@ -768,6 +768,69 @@ mod tests {
         assert!(error.to_string().contains("没有"), "{error}");
     }
 
+    /// 拿**用户正在运行的那个 cc-switch 库**验导入。
+    ///
+    /// 和上面的 SQL 导出互补：那条验的是"用户导出过的文件能解析"，
+    /// 这条验的是"用户此刻的库能读"——面板上的「从 cc-switch 导入」按钮走的是
+    /// 这条路，读的是活库。活库有几个额外风险：cc-switch 可能正开着（WAL 锁）、
+    /// 表结构可能比它导出的版本更新。这些只有对着真库跑才知道。
+    ///
+    /// ```text
+    /// CC_SWITCH_DB=%USERPROFILE%\.cc-switch\cc-switch.db cargo test -p tern-gateway real_live_db
+    /// ```
+    #[test]
+    fn real_cc_switch_live_db() {
+        let Ok(raw) = std::env::var("CC_SWITCH_DB") else {
+            eprintln!("跳过：未设置 CC_SWITCH_DB");
+            return;
+        };
+        let path = PathBuf::from(raw);
+        if !path.exists() {
+            eprintln!("跳过：{} 不存在", path.display());
+            return;
+        }
+
+        let report = import_providers(&path, "claude")
+            .unwrap_or_else(|e| panic!("读真实库失败: {e}"));
+
+        eprintln!("=== 真实库解析结果 ===");
+        eprintln!(
+            "导入 {} 个，跳过 {} 个，共 {} 条",
+            report.specs.len(),
+            report.skipped.len(),
+            report.specs.len() + report.skipped.len()
+        );
+        for spec in &report.specs {
+            eprintln!(
+                "  {:<30} {:<16} {:<45} 倍率={:?}",
+                spec.id,
+                spec.effective_api_format().to_string(),
+                spec.effective_base_url(),
+                spec.cost_multiplier,
+            );
+        }
+        for (id, reason) in &report.skipped {
+            eprintln!("  跳过 {id}: {reason}");
+        }
+
+        assert!(!report.specs.is_empty(), "活库一条都没导入进来，用户点了导入会是空的");
+        for spec in &report.specs {
+            assert!(!spec.base_url.trim().is_empty(), "{} 没有地址", spec.id);
+            assert!(!spec.id.trim().is_empty(), "有空 id 的供应商");
+            // 占位符不能进网关：它会带着 sk-REPLACE_ME 去请求，报错信息离题万里
+            match &spec.auth {
+                ProviderAuth::ApiKey { key, .. } => {
+                    assert!(
+                        !key.trim().is_empty() && key.trim() != "sk-REPLACE_ME",
+                        "{} 的 key 是占位符",
+                        spec.id
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// 拿**真实的 cc-switch 导出**验一遍，而不是只信自己造的夹具。
     ///
     /// 夹具是我按理解写的，真文件可能有我没预料的情况（列多、转义、VALUES 单独一行…）。
