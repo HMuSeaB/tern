@@ -38,6 +38,10 @@ fn main() {
             tern_app_lib::commands::import_preview,
             tern_app_lib::commands::import_from_cc_switch,
             tern_app_lib::commands::write_sample_config,
+            // Claude Code 权限的一键放行
+            tern_app_lib::permissions::list_permissions,
+            tern_app_lib::permissions::allow_permission,
+            tern_app_lib::permissions::revoke_permission,
         ])
         .run(tauri::generate_context!())
         .expect("启动 tern 面板失败");

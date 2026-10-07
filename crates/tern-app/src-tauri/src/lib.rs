@@ -20,6 +20,7 @@ pub mod commands;
 pub mod config;
 mod db;
 mod error;
+pub mod permissions;
 pub mod server;
 
 pub use error::{AppError, Result};

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { PanelView } from "./PanelView";
+import { Permissions } from "./Permissions";
 import { usePanel } from "./usePanel";
 import { useTern, type CcSwitchPreview } from "./useTern";
 import { Welcome } from "./Welcome";
@@ -76,6 +77,8 @@ export default function App() {
               providerCount={boot.config?.providers.length ?? 0}
             />
           )}
+          {/* 权限与网关无关，任何时候都该能点——包括网关还没启动时 */}
+          <Permissions />
         </>
       )}
     </Shell>
