@@ -9,12 +9,30 @@
 //! 所以在面板里摆几个开关，点一下就把对应规则写进去。用户看到的是开关，
 //! 不是 `Bash(cargo:*)` 这种语法。
 //!
-//! # 为什么写 `.local.json`
+//! # 为什么是 `settings.json` 而不是 `settings.local.json`
 //!
-//! `~/.claude/settings.json` 常常被别的工具托管（cc-switch 就在管，`env` 段里的
-//! `PROXY_MANAGED` 就是证据）。往被托管的文件里写 `permissions.allow`，
-//! 下次它重写文件时就丢了。`settings.local.json` 是 Claude Code 留给自己用的，
-//! 没有别的工具会碰，写这里才稳。
+//! 原计划写 `settings.local.json`（"Claude Code 留给自己用的，没别的工具会碰"），
+//! 实测证伪了：用户级根本不读这个文件。
+//!
+//! 判据（临时 `CLAUDE_CONFIG_DIR` 隔离实验，不碰真实配置）：
+//! - 对照组：`settings.json` 的 `env.ANTHROPIC_BASE_URL` 指向死端口 →
+//!   `claude -p` 报 ConnectionRefused，说明该文件确实被读取
+//! - 实验组：`settings.json` 仍指死端口、`settings.local.json` 指活端口 →
+//!   依旧 ConnectionRefused，用的是 settings.json 的值
+//! - 二进制里那串 `legacy settings.local.json` / `Transform failed against ...`
+//!   是**项目级** `.claude/settings.local.json` 的迁移路径，跟用户级无关；
+//!   用户级跑一次也没有 transform 出新文件
+//!
+//! # cc-switch 会把它冲掉
+//!
+//! `~/.claude/settings.json` 被 cc-switch 托管（`env` 里的 `PROXY_MANAGED` 是证据）：
+//! 每次切供应商，它都用供应商的 `settings_config` 整份重写
+//! （`sanitize_claude_settings_for_live` 只剥内部字段，其余原样覆盖）。
+//! 所以写进去的 `permissions.allow` 会在下次切换时消失。
+//!
+//! 这里的对策是**如实显示**：每次开面板都重新读文件，开关状态跟着文件走，
+//! 被冲掉了用户看见的是"关着"，再点一次即可。不假装持久——
+//! 真正的持久要等 tern 常驻后才能做（见 ROADMAP 的托盘/守护计划）。
 //!
 //! # 安全边界
 //!
@@ -22,6 +40,8 @@
 //! - 不碰 deny：deny 是用户明确要禁的东西（比如 WebSearch），动它是反用户意图
 //! - 读失败不当成空：读不出来就报错，不拿"看起来是空的"去覆盖，
 //!   那会把用户辛辛苦苦配的东西一次清光
+//! - 首次改动前留一份 `.tern-bak`：读-改-写本身是安全的（只在数组尾部加一项），
+//!   但这份保险几乎不花钱
 
 use std::path::PathBuf;
 
@@ -95,6 +115,11 @@ fn claude_dir() -> Result<PathBuf> {
         .ok_or(AppError::NoConfigDir)
 }
 
+/// 只认 `settings.json`：用户级就读这一个文件（见模块顶部的实测记录）。
+fn settings_path(claude_dir: &std::path::Path) -> std::path::PathBuf {
+    claude_dir.join("settings.json")
+}
+
 /// 读一份 JSON 配置文件。不存在时返回空对象——调用方会往里头加东西。
 fn read_json(path: &std::path::Path) -> Result<Value> {
     if !path.exists() {
@@ -119,12 +144,9 @@ pub fn list_permissions() -> Result<Vec<PermissionPreset>> {
 }
 
 fn list_at(claude_dir: &std::path::Path) -> Result<Vec<PermissionPreset>> {
-    // deny 放在 settings.json 里（用户明确要禁的），要读出来判断哪些放行无效
-    let global = read_json(&claude_dir.join("settings.json"))?;
-    let local = read_json(&claude_dir.join("settings.local.json"))?;
-
-    let allow = string_array(local.pointer("/permissions/allow"));
-    let deny = string_array(global.pointer("/permissions/deny"));
+    let settings = read_json(&settings_path(claude_dir))?;
+    let allow = string_array(settings.pointer("/permissions/allow"));
+    let deny = string_array(settings.pointer("/permissions/deny"));
 
     Ok(permission_presets()
         .into_iter()
@@ -153,17 +175,16 @@ pub fn revoke_permission(rule: String) -> Result<Vec<PermissionPreset>> {
 
 /// 只改这一条，其余原样写回。
 ///
-/// 最容易出的错是"重新序列化整个文件"：`settings.local.json` 的注释一定会丢
-/// （serde_json 不认识注释），键顺序也会被按字母排（没开 `preserve_order`）。
-/// 所以这里只在用户真的点了开关时才写，不每次开面板都碰文件——
-/// 用户自己写的注释能多活一会儿是一会儿。**值**是完整保留的，
-/// 用户原有的放行规则、model、theme 一个都不会少。
+/// 最容易出的错是"重新序列化整个文件"：注释一定会丢（serde_json 不认识注释），
+/// 键顺序也会被按字母排（没开 `preserve_order`）。所以这里只在用户真的点了开关
+/// 时才写，不每次开面板都碰文件——用户自己写的注释能多活一会儿是一会儿。
+/// **值**是完整保留的：用户原有的放行规则、model、theme 一个都不会少。
 fn write_allow_at(
     claude_dir: &std::path::Path,
     rule: &str,
     add: bool,
 ) -> Result<Vec<PermissionPreset>> {
-    let path = claude_dir.join("settings.local.json");
+    let path = settings_path(claude_dir);
     let mut root = read_json(&path)?;
 
     let permissions = root
@@ -200,6 +221,7 @@ fn write_allow_at(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| AppError::Config(e.to_string()))?;
     }
+    backup_once(&path)?;
     std::fs::write(&path, text + "\n").map_err(|e| AppError::Config(e.to_string()))?;
 
     list_at(claude_dir)
@@ -220,6 +242,26 @@ fn string_array(value: Option<&Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// 改动前留一份滚动备份，已有就不覆盖。
+///
+/// 读-改-写本身是安全的（只在数组尾部加一项，其余值原样带走），这份备份是
+/// 防"我对代码的理解有误"。故意只留一份：多份备份只会让人分不清哪份是哪个，
+/// 而真正该回退的场景（ tern 写坏了）永远最近那一份才有用。
+/// 失败不阻断写操作——备份是保险，不是前置条件。
+fn backup_once(path: &std::path::Path) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut backup = path.as_os_str().to_os_string();
+    backup.push(".tern-bak");
+    let backup = PathBuf::from(backup);
+    if backup.exists() {
+        return Ok(());
+    }
+    std::fs::copy(path, &backup).map_err(|e| AppError::Config(e.to_string()))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,10 +277,14 @@ mod tests {
         (dir, path)
     }
 
+    /// allow 和 deny 现在同住 `settings.json`，这就是实际形态
+    fn settings(dir: &std::path::Path) -> std::path::PathBuf {
+        dir.join("settings.json")
+    }
+
     #[test]
-    fn allows_a_rule_into_a_fresh_local_settings() {
+    fn allows_a_rule_into_a_fresh_settings() {
         let (_guard, dir) = isolated_dir();
-        let path = dir.join("settings.local.json");
 
         let items = write_allow_at(&dir, "Bash(cargo:*)", true).unwrap();
         let cargo = items.iter().find(|p| p.rule == "Bash(cargo:*)").unwrap();
@@ -247,7 +293,7 @@ mod tests {
         assert!(items.iter().filter(|p| p.enabled).count() == 1);
 
         // 真的落盘了
-        let text = std::fs::read_to_string(&path).unwrap();
+        let text = std::fs::read_to_string(settings(&dir)).unwrap();
         assert!(text.contains("Bash(cargo:*)"), "{text}");
     }
 
@@ -274,40 +320,51 @@ mod tests {
         assert_eq!(count, 1);
 
         // 文件里也该只有一条：重复规则只会让配置越来越难读
-        let text = std::fs::read_to_string(dir.join("settings.local.json")).unwrap();
+        let text = std::fs::read_to_string(settings(&dir)).unwrap();
         assert_eq!(text.matches("Bash(cargo:*)").count(), 1, "{text}");
     }
 
     #[test]
     fn existing_user_settings_survive_the_write() {
         let (_guard, dir) = isolated_dir();
-        let path = dir.join("settings.local.json");
-        // 用户自己写的别的东西，放行时不能被抹掉
+        // cc-switch 写的 env、用户自己的字段，放行时都不能被抹掉。
+        // 这是最要命的一条：settings.json 整个被 cc-switch 托管，
+        // 我们只在 permissions.allow 尾部加一项，其余原样带回
         std::fs::write(
-            &path,
-            r#"{"model":"opus","theme":"dark","permissions":{"allow":["Bash(ls:*)"]}}"#,
+            settings(&dir),
+            r#"{"model":"opus","includeCoAuthoredBy":false,
+                 "env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:5000",
+                        "ANTHROPIC_AUTH_TOKEN":"PROXY_MANAGED"},
+                 "permissions":{"allow":["Bash(ls:*)"],"deny":["WebSearch"]}}"#,
         )
         .unwrap();
 
         write_allow_at(&dir, "Bash(cargo:*)", true).unwrap();
 
-        let text = std::fs::read_to_string(&path).unwrap();
+        let text = std::fs::read_to_string(settings(&dir)).unwrap();
         let json: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(json["model"], "opus", "无关字段被抹了");
-        assert_eq!(json["theme"], "dark", "无关字段被抹了");
+        assert_eq!(json["includeCoAuthoredBy"], false, "无关字段被抹了");
+        assert_eq!(json["env"]["ANTHROPIC_BASE_URL"], "http://127.0.0.1:5000", "cc-switch 的 env 被抹了");
+        assert_eq!(json["env"]["ANTHROPIC_AUTH_TOKEN"], "PROXY_MANAGED", "cc-switch 的 env 被抹了");
         let allow = string_array(json.pointer("/permissions/allow"));
         assert!(allow.contains(&"Bash(ls:*)".to_string()), "用户原有放行被抹了");
         assert!(allow.contains(&"Bash(cargo:*)".to_string()));
+        // deny 一个字都不能动
+        assert_eq!(string_array(json.pointer("/permissions/deny")), vec!["WebSearch"]);
     }
 
     #[test]
     fn tolerates_utf8_bom_and_empty_file() {
         let (_guard, dir) = isolated_dir();
-        let path = dir.join("settings.local.json");
+        let path = settings(&dir);
 
         std::fs::write(&path, "\u{feff}{}\n").unwrap();
         let items = write_allow_at(&dir, "Bash(node:*)", true).unwrap();
         assert!(items.iter().any(|p| p.enabled && p.rule == "Bash(node:*)"));
+        // BOM 不该被带回新文件
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.starts_with('\u{feff}'), "BOM 被写回了");
         std::fs::remove_file(&path).unwrap();
 
         std::fs::write(&path, "   \n").unwrap();
@@ -326,16 +383,15 @@ mod tests {
 
         let items = write_allow_at(&nested, "Bash(cargo:*)", true).unwrap();
         assert!(items.iter().any(|p| p.enabled && p.rule == "Bash(cargo:*)"));
-        assert!(nested.join("settings.local.json").exists());
+        assert!(nested.join("settings.json").exists());
         drop(guard);
     }
 
     #[test]
     fn rule_blocked_by_deny_is_marked_so_the_ui_can_grey_it_out() {
         let (_guard, dir) = isolated_dir();
-        // deny 在 settings.json 里，是用户明确要禁的
         std::fs::write(
-            dir.join("settings.json"),
+            settings(&dir),
             r#"{"permissions":{"deny":["Bash(git:*)"]}}"#,
         )
         .unwrap();
@@ -353,7 +409,7 @@ mod tests {
     fn allowing_a_denied_rule_is_still_reported_as_denied() {
         let (_guard, dir) = isolated_dir();
         std::fs::write(
-            dir.join("settings.json"),
+            settings(&dir),
             r#"{"permissions":{"deny":["Bash(git:*)"]}}"#,
         )
         .unwrap();
@@ -367,7 +423,7 @@ mod tests {
     fn refuses_to_write_when_allow_is_not_an_array() {
         let (_guard, dir) = isolated_dir();
         std::fs::write(
-            dir.join("settings.local.json"),
+            settings(&dir),
             r#"{"permissions":{"allow":"Bash(cargo:*)"}}"#,
         )
         .unwrap();
@@ -375,6 +431,28 @@ mod tests {
         // 字符串而不是数组：不能默默替换成数组，那会丢掉用户原来的写法
         let error = write_allow_at(&dir, "Bash(git:*)", true).unwrap_err();
         assert!(error.to_string().contains("不是数组"), "{error}");
+    }
+
+    /// 备份只留一份，且内容等于改动前的原文
+    #[test]
+    fn keeps_a_single_backup_of_the_original() {
+        let (_guard, dir) = isolated_dir();
+        let path = settings(&dir);
+        let original = r#"{"model":"opus","permissions":{"allow":[]}}"#;
+        std::fs::write(&path, original).unwrap();
+
+        write_allow_at(&dir, "Bash(cargo:*)", true).unwrap();
+        write_allow_at(&dir, "Bash(git:*)", true).unwrap();
+
+        let backup = std::fs::read_to_string({
+            let mut s = path.as_os_str().to_os_string();
+            s.push(".tern-bak");
+            std::path::PathBuf::from(s)
+        })
+        .unwrap();
+        // 备份停在第一次改动前，不被第二次改动覆盖
+        assert_eq!(backup.trim(), original);
+        assert!(!backup.contains("Bash(cargo:*)"), "备份被后续改动污染了");
     }
 
     #[test]
