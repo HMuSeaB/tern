@@ -26,9 +26,15 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # tern-store / tern-gateway 的测试会起本地 socket 打桩上游，
-      # Linux 上没有 WebView2 也能跑。tauri 的那几个 crate 编译慢且这里用不到，
-      # 所以只测前四个
+      # 只测这四个 crate，**不含 tern-app / tern-agent**。原因有两个：
+      #
+      # 1. tauri 的依赖树在 Linux 上会拉 glib-sys / gobject-sys / webkit2gtk-sys，
+      #    缺一大堆系统库（libgtk-3-dev、libsoup-3-dev…），装齐比收益大
+      # 2. 面板的 Rust 侧本来就有 panel.rs 那 7 条测试在 windows 上由 release
+      #    workflow 覆盖；这里再加一遍只是把 CI 时间翻倍
+      #
+      # 真正要保证的"协议转换没错"全在 gateway / store / cli / tui 里，
+      # 而那四个在 Linux 上原样能跑（测试用的是本地 socket 打桩，不连真上游）。
       - name: Rust 测试
         run: cargo test -p tern-gateway -p tern-store -p tern-cli -p tern-tui
 
@@ -51,12 +57,8 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm exec tsc --noEmit
 
-      # 不用 `-D warnings`：仓库里有两个既存的，且都不该在这条 PR 里修
-      #   - `CodexToolContext` 的 private_interfaces：出自按字节搬运的 cc-switch
-      #     文件，改了就没法跟上游 diff
-      #   - `tern-tui` 的 restore_quietly 未使用：留给 TUI 后续功能的
-      # 所以本地允许警告，但**新增的**会在这里露出来（vendor 的两个已经固定）
+      # 同样不含 tern-app：它的 Rust 侧在 Linux 上编不过（见上）
       - name: 格式与 lint
         run: |
           cargo fmt --all -- --check
-          cargo clippy --workspace -- -A dead_code -A private_interfaces
+          cargo clippy -p tern-gateway -p tern-store -p tern-cli -p tern-tui -- -A dead_code -A private_interfaces
