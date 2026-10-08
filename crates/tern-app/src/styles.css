@@ -72,6 +72,9 @@ body {
 .app {
   display: flex;
   flex-direction: column;
+  /* tab 化的关键：内容区必须是"撑满剩余高度"而不是"跟着内容长"。
+     自然流高的话每页下方会有一条空滚动区，横滑也就看不出是四页 */
+  height: 100%;
   min-height: 100%;
 }
 
@@ -140,7 +143,12 @@ body {
 /* ---- 内容区 ---- */
 .content {
   flex: 1;
-  padding: 18px 22px 32px;
+  /* tab 化之后内容区是固定高的滚动根：横滑要求离屏页不参与滚动，
+     所以每页自己滚，容器不能再跟着窗口长 */
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 22px 24px;
   max-width: 960px;
   width: 100%;
   margin: 0 auto;
@@ -1389,4 +1397,104 @@ body {
 .notice code {
   font: 12px var(--mono);
   padding: 0 3px;
+}
+
+/* ---- tab 栏 ---- */
+/* 四块原来是上下堆的一个滚动页，现在各占一页。指示条按等分算：
+   tab 一律 flex:1，所以 translateX(第几页 * 100%) 就是它的位置，
+   不用量 DOM 尺寸 */
+.tabbar {
+  display: flex;
+  position: relative;
+  flex: none;
+  /* 横向不吃 .content 的内边距：栏要和下面的卡片同宽，不然指示条对不齐内容 */
+  margin: 0 -22px;
+  padding: 0 22px;
+  gap: 2px;
+  /* 通到底的一条浅色分割线，指示条压在它上面 */
+  border-bottom: 1px solid var(--line);
+}
+
+.tabs {
+  display: flex;
+  flex-direction: column;
+  /* 由 .app 的 flex 撑开，里面每一页才是滚动容器 */
+  flex: 1;
+  min-height: 0;
+}
+
+.tabbtn {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 11px 8px 12px;
+  border: none;
+  background: none;
+  color: var(--dim);
+  font: 550 13px var(--sans);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tabbtn:hover {
+  color: var(--fg);
+}
+
+.tabbtn.on {
+  color: var(--fg);
+  font-weight: 620;
+}
+
+.tab-ink {
+  position: absolute;
+  left: 0;
+  bottom: -1px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 2px 2px 0 0;
+  transition: transform 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* 提醒点。只标有事的那几个页，且不做颜色区分：颜色会被读成"出错"，
+   这里要说的只是"那边有你没看的东西" */
+.tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warm);
+  flex: none;
+}
+
+.tab-viewport {
+  flex: 1;
+  /* 横滑的裁剪窗口。overflow: hidden 是必须的：四页都宽 100%，
+     不裁的话横向会出现滚动条 */
+  overflow: hidden;
+  min-height: 0;
+}
+
+.tab-track {
+  display: flex;
+  height: 100%;
+  transition: transform 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.tab-page {
+  /* 每页都是 100% 宽。flex:none 让它们并排而不是被挤成一条 */
+  flex: 0 0 100%;
+  min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* 横向不另加内边距：tab 栏已经用负 margin 吃到边，这里再吃一次会和卡片错位 */
+  padding: 18px 0 12px;
+}
+
+/* 离屏的页不禁用的话，Tab 键会一路跑进看不见的内容里。
+   inert 做这件事，比手写 tabIndex=-1 到每棵子树可靠 */
+.tab-page[inert] {
+  /* inert 不动指针穿透，横滑期间被滑过的页仍会收到点击 */
+  pointer-events: none;
 }

@@ -3,13 +3,21 @@ import { invoke } from "@tauri-apps/api/core";
 import { PanelView } from "./PanelView";
 import { Permissions } from "./Permissions";
 import { Providers } from "./Providers";
+import { TabPage, TabShell, type TabDef } from "./Tabs";
 import { usePanel } from "./usePanel";
 import { useTern, type CcSwitchPreview } from "./useTern";
 import { Welcome } from "./Welcome";
 import { Wire } from "./Wire";
+import type { ConfigSummary, ServerStatus } from "./types";
 
 type Theme = "light" | "dark";
 const THEME_KEY = "tern-theme";
+/** tab 的选择只在本次进程里有效：退出重开回到默认页比记住第 3 页更符合预期 */
+const TAB_KEY = "tern-tab";
+
+/** 各 tab 的 id。固定字符串，TabShell 只按它找当前页 */
+const TABS = ["providers", "usage", "wire", "permissions"] as const;
+type TabId = (typeof TABS)[number];
 
 export default function App() {
   const { boot, error, busy, refresh, start, stop, importFromCcSwitch, writeSample, openConfigDir } =
@@ -68,27 +76,128 @@ export default function App() {
           busy={busy}
         />
       ) : (
-        <>
-          {/* 供应商放最前面：切供应商是这个产品最常用的操作，
-              用量是"顺便看看"。放后面等于把最常用的藏起来 */}
-          <Providers running={boot.server?.running ?? false} onRefresh={refresh} />
-          {error && <ErrorBar message={error} onRetry={refresh} />}
-          {boot.server?.running && panel.state.kind === "ready" ? (
-            <PanelView panel={panel.state.panel} onRefresh={panel.refresh} />
-          ) : (
-            <IdleState
-              server={boot.server}
-              warnings={boot.config?.warnings ?? []}
-              providerCount={boot.config?.providers.length ?? 0}
-            />
-          )}
-          {/* 权限与网关无关，任何时候都该能点——包括网关还没启动时 */}
-          <Permissions />
-          {/* 接线是网关的下游：得知道在不在跑、监听哪个口 */}
-          <Wire running={boot.server?.running ?? false} onChanged={panel.refresh} />
-        </>
+        <Tabs
+          running={boot.server?.running ?? false}
+          error={error}
+          onRetry={refresh}
+          panel={panel}
+          warnings={boot.config?.warnings ?? []}
+          providerCount={boot.config?.providers.length ?? 0}
+          config={boot.config}
+          server={boot.server}
+          onRefresh={refresh}
+        />
       )}
     </Shell>
+  );
+}
+
+/**
+ * 四块内容套一层 tab。
+ *
+ * 页序就是频率序：供应商（切它是最高频的操作）→ 用量（顺便看看）→ 接入（一次性设置）
+ * → 权限（一次性设置）。所以供应商是默认页，两个设置页收了进去。
+ *
+ * 四块还是原封不动的组件，`running` / `onRefresh` 照旧透传——tab 只管切换，
+ * 不掺合业务。原来上下堆叠时"网关没跑就显示 IdleState"的逻辑搬到了「用量」页里：
+ * 那一页本来就是网关的下游，别的地方不该因为网关停着就变灰。
+ */
+function Tabs({
+  running,
+  error,
+  onRetry,
+  panel,
+  warnings,
+  providerCount,
+  config,
+  server,
+  onRefresh,
+}: {
+  running: boolean;
+  error: string | null;
+  onRetry: () => void;
+  panel: ReturnType<typeof usePanel>;
+  warnings: string[];
+  providerCount: number;
+  config: ConfigSummary | null;
+  server: ServerStatus | null;
+  onRefresh: () => void;
+}) {
+  const [active, setActive] = useState<TabId>(() => {
+    // 记住上次停在哪一页。窗口多半是被切到别处找东西，重开却回到第一页要多点一下
+    const saved = localStorage.getItem(TAB_KEY);
+    return TABS.includes(saved as TabId) ? (saved as TabId) : "providers";
+  });
+
+  useEffect(() => {
+    localStorage.setItem(TAB_KEY, active);
+  }, [active]);
+
+  // tab 栏上的提示点：把"被别的页挡着的提醒"提到台面上。
+  // 只在有明确可指的事实时才亮——三个都亮等于都没亮
+  const activeKeyBroken =
+    config?.providers.some(
+      (p) => p.active && p.key_state !== "real" && p.key_state !== "subscription",
+    ) ?? false;
+  const panelReady = panel.state.kind === "ready" ? panel.state.panel : null;
+  const usageAlerts =
+    panelReady !== null && (panelReady.today.unpriced > 0 || panelReady.failures.length > 0);
+
+  const tabs: TabDef[] = [
+    { id: "providers", label: "供应商", alert: activeKeyBroken || error !== null },
+    { id: "usage", label: "用量", alert: usageAlerts },
+    { id: "wire", label: "接入" },
+    { id: "permissions", label: "权限" },
+  ];
+
+  return (
+    <>
+      {/* 错误条放在 tab 栏上面而不是某一页里：它多半来自 server_start 这种
+          全局动作，塞进「供应商」页的话，在别的页点启动然后看不到原因 */}
+      {error && <ErrorBar message={error} onRetry={onRetry} />}
+      <TabShell tabs={tabs} active={active} onSelect={(id) => setActive(id as TabId)}>
+        <TabPage id="providers" active={active === "providers"}>
+          <Providers running={running} onRefresh={onRefresh} />
+        </TabPage>
+
+        <TabPage id="usage" active={active === "usage"}>
+          {!running ? (
+            // 网关没跑就地显示"未运行"，但**连着 IdleState 自己的修法指引**——
+            // 它本来就分得清"没配供应商"和"配了但停了"两种情况，
+            // 拼一个假 server 只会把 listen 地址和 agent 状态弄丢
+            <IdleState server={server} warnings={warnings} providerCount={providerCount} />
+          ) : panel.state.kind === "ready" ? (
+            <PanelView panel={panel.state.panel} onRefresh={panel.refresh} />
+          ) : panel.state.kind === "error" ? (
+            /* 跑着却读不到库：和"网关停了"是两回事，说反了会让人白点启动 */
+            <div className="notice err">
+              <span className="notice-ic">!</span>
+              <span className="notice-body">
+                <b>读不到用量数据库。</b>
+                {panel.state.message}
+              </span>
+              <button className="btn ghost" onClick={panel.refresh}>
+                重试
+              </button>
+            </div>
+          ) : (
+            <div className="card empty">
+              <div className="empty-title">正在读取…</div>
+            </div>
+          )}
+        </TabPage>
+
+        {/* 接线是网关的下游：得知道在不在跑、监听哪个口 */}
+        <TabPage id="wire" active={active === "wire"}>
+          <Wire running={running} onChanged={panel.refresh} />
+        </TabPage>
+
+        {/* 权限与网关无关，任何时候都该能点——包括网关还没启动时 */}
+        <TabPage id="permissions" active={active === "permissions"}>
+          <Permissions />
+        </TabPage>
+      </TabShell>
+    </>
   );
 }
 
