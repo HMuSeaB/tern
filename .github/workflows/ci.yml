@@ -33,6 +33,11 @@ jobs:
         run: cargo test -p tern-gateway -p tern-store -p tern-cli -p tern-tui
 
       - uses: pnpm/action-setup@v4
+        with:
+          # 前端在 crates/tern-app 下，而 action-setup 默认读仓库根的
+          # package.json——不指路的话它找不到 packageManager 字段，直接报
+          # "No pnpm version is specified"
+          package_json_file: ${{ env.APP_DIR }}/package.json
 
       - uses: actions/setup-node@v4
         with:

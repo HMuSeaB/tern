@@ -35,9 +35,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # pnpm 版本由 package.json 的 packageManager 字段决定，
-      # 不写 version 就不会哪天悄悄换成另一个大版本
+      # pnpm 版本由 crates/tern-app/package.json 的 packageManager 决定，
+      # 不写 version 就不会哪天悄悄换成另一个大版本。路径必须指全：
+      # action 默认只找仓库根的 package.json，而前端在子目录下
       - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: ${{ env.APP_DIR }}/package.json
 
       - uses: actions/setup-node@v4
         with:
@@ -71,12 +74,13 @@ jobs:
       - name: Rust 测试
         run: cargo test --workspace
 
+      # agent.exe 只需要构建一次。tauri build 的 beforeBuildCommand 也会调
+      # prepare-agent.mjs，那时 agent 已经是最新的，cargo 把它当 no-op 跳过——
+      # 所以重复跑不花时间，但别指望它替你发现 agent 的编译错误，那会儿
+      # 报错会被包在 tauri 的输出里
       - name: 构建安装包
         working-directory: ${{ env.APP_DIR }}
         run: pnpm tauri build
-        env:
-          # 没配 updater 就只需要 GITHUB_TOKEN，它在每个 workflow 里自动存在
-          TAURI_SIGNING_PRIVATE_KEY: ''
 
       # tauri 装的是 nsis 包，产物在 src-tauri/target/release/bundle/nsis/。
       # 手动收集而不是用 tauri-action：产物只有一种、重命名的逻辑就两行，
