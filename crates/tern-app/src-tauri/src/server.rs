@@ -117,6 +117,12 @@ pub struct ProviderSummary {
     /// key 能不能用：占位符 / 空 / 真 key。前端据此决定要不要提醒，
     /// 不在前端判 key——那得把凭据搬进渲染进程
     pub key_state: String,
+    /// 归在哪个自定义文件夹；None = 未分组
+    pub folder: Option<String>,
+    /// 规范化后的请求地址，"按地址归类"的分组键。
+    /// Rust 侧算而不是前端算：两边口径必须一致，而前端算的话就得再抄一份
+    /// `folders::normalize_url`，抄歪了分组就对不上
+    pub group_key: String,
     auth_kind: String,
 }
 
@@ -140,33 +146,7 @@ fn key_state(auth: &tern_gateway::ProviderAuth) -> &'static str {
 pub fn config_summary() -> Result<ConfigSummary> {
     let path = crate::config::config_path()?;
     let config = crate::config::load(&path)?;
-    let warnings = crate::config::warnings(&config);
-
-    let providers = config
-        .providers
-        .iter()
-        .map(|spec| ProviderSummary {
-            id: spec.id.clone(),
-            name: spec.name.clone(),
-            base_url: spec.effective_base_url(),
-            api_format: spec.effective_api_format().to_string(),
-            web_tools_at_risk: matches!(
-                tern_gateway::assess(spec),
-                tern_gateway::WebToolsSupport::ThirdParty
-            ),
-            active: config.default_provider.as_deref() == Some(spec.id.as_str()),
-            key_state: key_state(&spec.auth).to_string(),
-            auth_kind: auth_kind(&spec.auth).to_string(),
-        })
-        .collect();
-
-    Ok(ConfigSummary {
-        path: path.display().to_string(),
-        listen: config.listen.to_string(),
-        default_provider: config.default_provider.clone(),
-        providers,
-        warnings,
-    })
+    Ok(summary_of(&path, config))
 }
 
 /// 切换默认供应商。
@@ -231,6 +211,17 @@ pub async fn fetch_provider_models(id: String) -> Result<Vec<String>> {
 
 fn summary_of(path: &std::path::Path, config: tern_gateway::GatewayConfig) -> ConfigSummary {
     let warnings = crate::config::warnings(&config);
+    // 分组数据是另一个文件。读不到就是空表，供应商照样全列——分组不该挡住列表
+    let folders = crate::folders::read();
+    let folder_of = |id: &str| -> Option<String> {
+        // 归属值里的空串按未分组算：文件被手改过是常态
+        folders
+            .assignments
+            .get(id)
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+    };
+
     let providers = config
         .providers
         .iter()
@@ -245,6 +236,8 @@ fn summary_of(path: &std::path::Path, config: tern_gateway::GatewayConfig) -> Co
             ),
             active: config.default_provider.as_deref() == Some(spec.id.as_str()),
             key_state: key_state(&spec.auth).to_string(),
+            folder: folder_of(&spec.id),
+            group_key: crate::folders::group_key(&spec.effective_base_url()),
             auth_kind: auth_kind(&spec.auth).to_string(),
         })
         .collect();

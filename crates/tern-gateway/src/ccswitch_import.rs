@@ -19,6 +19,13 @@
 //!   tern 的 `cost_multiplier`；`1` / 空 / 无效一律视为没有
 //! - 供应商 id 原样保留：模型名 `供应商/模型` 是用户已经写进环境变量的，改了就断
 //!
+//! # 分组一起搬
+//!
+//! 用户的文件夹也在 cc-switch 里：注册表是 `settings` 表的
+//! `provider_folders_{app_type}`，归属写在每个供应商的 `meta.folder`。这两样都带过来，
+//! 否则导入完 38 个供应商摊成一张平表，用户还得手工排一遍——那正好抵消了
+//! "导入省事"的意义。落地由面板负责（见 `tern-app` 的 `folders` 模块）。
+//!
 //! 只读 cc-switch 的库，不写它一个字节。
 
 use std::collections::BTreeMap;
@@ -104,6 +111,9 @@ struct CcSwitchProvider {
     name: String,
     settings_config: String,
     meta: String,
+    /// cc-switch 的归属写在 meta.folder 里。`convert` 解析 meta 时顺手抽出来，
+    /// 免得为了一个字段把 meta 反序列化两遍。
+    folder: Option<String>,
 }
 
 /// cc-switch 的 `settings_config`：env 键值对 + 少量顶层杂项
@@ -121,6 +131,9 @@ struct CcSwitchMeta {
     /// 比给单个字段加 alias 更贴合这里的实际数据形状。
     #[serde(default, rename = "costMultiplier", alias = "cost_multiplier")]
     cost_multiplier: Option<Value>,
+    /// 自定义文件夹名。cc-switch 那边这个字段就叫 `folder`，没有 camelCase 变体。
+    #[serde(default)]
+    folder: Option<String>,
 }
 
 /// 导入结果。`skipped` 单独列出来而不是静默丢弃：用户需要知道哪些没搬过来。
@@ -129,6 +142,11 @@ pub struct ImportReport {
     pub specs: Vec<ProviderSpec>,
     /// (供应商 id, 没搬过来的原因)
     pub skipped: Vec<(String, SkipReason)>,
+    /// 从 `provider_folders_{app_type}` 读到的文件夹名，保持 cc-switch 里的顺序。
+    /// 顺序有意义：用户排过的文件夹不该被重排。
+    pub folder_names: Vec<String>,
+    /// (供应商 id, 文件夹名)。id 与 [`Self::specs`] 里的同一个。
+    pub folder_assignments: Vec<(String, String)>,
 }
 
 /// 从 cc-switch **数据库**读出 `app_type` 下的供应商。
@@ -151,7 +169,8 @@ pub fn import_providers(db_path: &PathBuf, app_type: &str) -> Result<ImportRepor
     })?;
 
     let rows = read_providers(&conn, app_type)?;
-    Ok(finish(rows))
+    let folder_names = read_folder_registry(&conn, app_type);
+    Ok(finish(rows, folder_names))
 }
 
 /// 从 cc-switch 的 **SQL 导出文件**读供应商（应用内「数据管理 → 导出 SQL 备份」的产物）。
@@ -185,7 +204,51 @@ pub fn import_providers_from_sql(
             app_type: app_type.to_string(),
         });
     }
-    Ok(finish(rows))
+    let folder_names = parse_settings_insert(&text, app_type);
+    Ok(finish(rows, folder_names))
+}
+
+/// 读 cc-switch 的文件夹注册表：`settings` 表里的 `provider_folders_{app_type}`。
+///
+/// # 为什么读不到不报错
+///
+/// 这一项是"锦上添花"：它在，导入完用户的分组还在；不在（老版本 cc-switch 没这个
+/// 功能、或用户从没建过文件夹），导入照样成立——供应商本身的值才是必需的。
+/// 为它抛错会让整个导入失败，代价和收益完全不成比例。
+///
+/// JSON 形状与 tern 侧 `folders::ProviderFolder` 一致（cc-switch 就这样存的），
+/// 所以这里只抽 `name`，顺序按数组原样保留——用户排过的顺序不该被重排。
+fn read_folder_registry(conn: &rusqlite::Connection, app_type: &str) -> Vec<String> {
+    let key = format!("provider_folders_{app_type}");
+    let raw = match conn.query_row(
+        "SELECT value FROM settings WHERE key = ?1",
+        [&key],
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(raw) => raw,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Vec::new(),
+        Err(source) => {
+            log::debug!("[import] 读 {key} 失败，按没有文件夹处理: {source}");
+            return Vec::new();
+        }
+    };
+    folder_names_from_json(&raw)
+}
+
+/// 从注册表 JSON 里抽文件夹名。解析失败或不是数组都返回空——
+/// 和 [`read_folder_registry`] 同一个理由：分组数据不该拦住导入。
+fn folder_names_from_json(raw: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<Value>(raw) else {
+        return Vec::new();
+    };
+    let Some(items) = value.as_array() else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| item.get("name").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect()
 }
 
 fn read_providers(conn: &rusqlite::Connection, app_type: &str) -> Result<Vec<CcSwitchProvider>, ImportError> {
@@ -198,11 +261,13 @@ fn read_providers(conn: &rusqlite::Connection, app_type: &str) -> Result<Vec<CcS
 
     let rows = stmt
         .query_map([app_type], |row| {
+            let meta: String = row.get(3)?;
             Ok(CcSwitchProvider {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 settings_config: row.get(2)?,
-                meta: row.get(3)?,
+                folder: folder_of_meta(&meta),
+                meta,
             })
         })
         .db("providers")?;
@@ -216,12 +281,23 @@ fn read_providers(conn: &rusqlite::Connection, app_type: &str) -> Result<Vec<CcS
 }
 
 /// 逐条转换 + 网关校验。两个入口（库 / SQL 文件）都走这里，口径只写一次。
-fn finish(rows: Vec<CcSwitchProvider>) -> ImportReport {
-    let mut report = ImportReport::default();
+fn finish(rows: Vec<CcSwitchProvider>, folder_names: Vec<String>) -> ImportReport {
+    let mut report = ImportReport {
+        folder_names,
+        ..ImportReport::default()
+    };
     for row in rows {
+        let id = row.id.clone();
         match convert(&row) {
             Ok(spec) => report.specs.push(spec),
             Err(reason) => report.skipped.push((row.id.clone(), reason)),
+        }
+        // 归属只在**这条真的导入成功**时才带。跳过的供应商（缺地址 / 缺 key）
+        // 带个归属过来只会得到一条指向不存在对象的记录
+        if report.specs.last().map(|s| &s.id) == Some(&id) {
+            if let Some(folder) = row.folder.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
+                report.folder_assignments.push((id, folder.to_string()));
+            }
         }
     }
     // 整批过一次网关自己的校验（id 重复、地址无效等）。
@@ -312,11 +388,86 @@ fn parse_providers_insert(
                 id: field_text(&fields[i_id]),
                 name: field_text(&fields[i_name]),
                 settings_config: field_text(&fields[i_config]),
+                // folder 也要从 meta JSON 里抽。SQL 文本这一路同样走 CcSwitchMeta，
+                // 和 read_providers 用同一个结构，两条路的口径不会分叉
+                folder: folder_of_meta(&field_text(&fields[i_meta])),
                 meta: field_text(&fields[i_meta]),
             });
         }
     }
     Ok(out)
+}
+
+/// 从 cc-switch 的 meta JSON 里抽文件夹名。空 / 坏 JSON / 没这个字段都返回 None。
+fn folder_of_meta(meta_json: &str) -> Option<String> {
+    serde_json::from_str::<CcSwitchMeta>(meta_json)
+        .ok()
+        .and_then(|m| m.folder)
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty())
+}
+
+/// 解析 SQL 导出里的 `INSERT INTO "settings" (...)` 段，取回文件夹注册表。
+///
+/// 和 [`parse_providers_insert`] 的区别只在取值：settings 是 (key, value) 两列的
+/// 键值表，这里按 key 过滤出 `provider_folders_{app_type}` 那一条。
+/// 表不存在（导出被裁过）或没有这一行都返回空——分组是可选数据。
+fn parse_settings_insert(text: &str, app_type: &str) -> Vec<String> {
+    let wanted = format!("provider_folders_{app_type}");
+    let lines: Vec<&str> = text.lines().collect();
+    let mut i = 0;
+
+    while i < lines.len() {
+        let trimmed = lines[i].trim_start();
+        if !trimmed.starts_with("INSERT INTO") || !trimmed.contains("settings") {
+            i += 1;
+            continue;
+        }
+
+        let Some(open) = trimmed.find('(') else { i += 1; continue };
+        let Some(close) = trimmed.find(')') else { i += 1; continue };
+        if open >= close {
+            i += 1;
+            continue;
+        }
+        let columns: Vec<&str> = trimmed[open + 1..close]
+            .split(',')
+            .map(|c| c.trim().trim_matches('"'))
+            .collect();
+        let (Some(i_key), Some(i_value)) = (
+            columns.iter().position(|c| *c == "key"),
+            columns.iter().position(|c| *c == "value"),
+        ) else {
+            i += 1;
+            continue;
+        };
+
+        let Some(values_at) = trimmed.find("VALUES") else { i += 1; continue };
+        let mut body = String::from(&trimmed[values_at + "VALUES".len()..]);
+        body.push('\n');
+        i += 1;
+        while i < lines.len() {
+            let line = lines[i];
+            let finished = line.contains(';');
+            body.push_str(line);
+            body.push('\n');
+            i += 1;
+            if finished {
+                break;
+            }
+        }
+
+        for tuple in split_tuples(&body) {
+            let fields = split_fields(&tuple);
+            if fields.len() != columns.len() {
+                continue;
+            }
+            if field_text(&fields[i_key]) == wanted {
+                return folder_names_from_json(&field_text(&fields[i_value]));
+            }
+        }
+    }
+    Vec::new()
 }
 
 /// `VALUES (...),(...)` 按顶层圆括号切，括号内的逗号不算分隔
@@ -430,6 +581,8 @@ fn convert(row: &CcSwitchProvider) -> Result<ProviderSpec, SkipReason> {
         ProviderAuth::api_key(key),
     );
     spec.cost_multiplier = multiplier_of(&meta.cost_multiplier);
+    // 文件夹不进 ProviderSpec：分组是纯 UI 数据，网关不读它。
+    // finish() 会把它搬去导入报告，最终落到 tern 侧的分组文件
 
     Ok(spec)
 }
@@ -480,6 +633,7 @@ mod tests {
             name: "DeepSeek".into(),
             settings_config: settings.into(),
             meta: meta.into(),
+            folder: folder_of_meta(meta),
         }
     }
 
@@ -504,6 +658,111 @@ mod tests {
         ))
         .unwrap();
         assert!(matches!(spec.auth, ProviderAuth::ApiKey { .. }));
+    }
+
+    // ---- 分组跟着导入 ----
+
+    /// 归属从 meta.folder 抽。抽不到、空串、纯空格都算没有——空名字在界面上
+    /// 会变成一个没有标题的分组，比"未分组"更难懂
+    #[test]
+    fn folder_of_meta_reads_and_normalizes() {
+        assert_eq!(folder_of_meta(r#"{"folder":"NVIDIA"}"#).as_deref(), Some("NVIDIA"));
+        assert_eq!(folder_of_meta(r#"{"folder":"  OpenRouter  "}"#).as_deref(), Some("OpenRouter"));
+        assert_eq!(folder_of_meta(r#"{"folder":"   "}"#), None);
+        assert_eq!(folder_of_meta(r#"{"api_format":"anthropic"}"#), None);
+        assert_eq!(folder_of_meta("坏 JSON"), None);
+    }
+
+    /// 只有**导入成功**的供应商才带归属。跳过的（缺地址 / 缺 key）带过来
+    /// 只会得到一条指向不存在对象的记录，界面上变成幽灵分组。
+    #[test]
+    fn finish_carries_folder_only_for_imported_providers() {
+        let good = r#"{"env":{"ANTHROPIC_BASE_URL":"https://a.example.com","ANTHROPIC_AUTH_TOKEN":"sk-x"}}"#;
+        let bad = r#"{"env":{"ANTHROPIC_AUTH_TOKEN":"sk-x"}}"#; // 没地址
+
+        let report = finish(
+            vec![
+                CcSwitchProvider {
+                    id: "a".into(),
+                    name: "A".into(),
+                    settings_config: good.into(),
+                    meta: r#"{"folder":"NVIDIA"}"#.into(),
+                    folder: Some("NVIDIA".into()),
+                },
+                CcSwitchProvider {
+                    id: "b".into(),
+                    name: "B".into(),
+                    settings_config: bad.into(),
+                    meta: r#"{"folder":"NVIDIA"}"#.into(),
+                    folder: Some("NVIDIA".into()),
+                },
+            ],
+            vec!["NVIDIA".to_string()],
+        );
+
+        assert_eq!(report.specs.len(), 1);
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(
+            report.folder_assignments,
+            vec![("a".to_string(), "NVIDIA".to_string())],
+            "被跳过的 b 不该留下归属"
+        );
+        assert_eq!(report.folder_names, vec!["NVIDIA".to_string()]);
+    }
+
+    /// 注册表 JSON 的形状就是 cc-switch 存在 settings 表里的那样：只取 name，
+    /// 顺序按数组原样保留——用户排过的顺序不该被重排
+    #[test]
+    fn folder_names_from_json_keeps_registry_order() {
+        let raw = r#"[
+            {"id":"folder_0","name":"NVIDIA","sortIndex":null,"isExpanded":true},
+            {"id":"folder_1","name":"OpenRouter"}
+        ]"#;
+        assert_eq!(
+            folder_names_from_json(raw),
+            vec!["NVIDIA".to_string(), "OpenRouter".to_string()]
+        );
+        // 坏数据一律按"没有"处理，不该让导入失败
+        assert!(folder_names_from_json("坏 JSON").is_empty());
+        assert!(folder_names_from_json(r#"{"not":"an array"}"#).is_empty());
+        assert!(folder_names_from_json(r#"[{"id":"folder_0"}]"#).is_empty());
+    }
+
+    /// SQL 导出里同样要找回注册表。cc-switch 的导出是全量的，settings 表在内。
+    #[test]
+    fn parse_settings_insert_finds_the_folder_registry() {
+        let sql = "INSERT INTO \"settings\" (\"key\", \"value\") VALUES\n\
+                   ('other_setting','1'),\n\
+                   ('provider_folders_claude','[{\"id\":\"folder_0\",\"name\":\"NVIDIA\"}]');\n";
+        assert_eq!(
+            parse_settings_insert(sql, "claude"),
+            vec!["NVIDIA".to_string()]
+        );
+        // 换 app_type 就找不到：注册表 key 是按 app 分的
+        assert!(parse_settings_insert(sql, "codex").is_empty());
+    }
+
+    /// 一份导出里同时有 claude / codex 两套注册表时不能拿错
+    #[test]
+    fn parse_settings_insert_separates_app_types() {
+        let sql = "INSERT INTO \"settings\" (\"key\", \"value\") VALUES\n\
+                   ('provider_folders_claude','[{\"name\":\"NVIDIA\"}]'),\n\
+                   ('provider_folders_codex','[{\"name\":\"OpenRouter\"}]');\n";
+        assert_eq!(
+            parse_settings_insert(sql, "claude"),
+            vec!["NVIDIA".to_string()]
+        );
+        assert_eq!(
+            parse_settings_insert(sql, "codex"),
+            vec!["OpenRouter".to_string()]
+        );
+    }
+
+    /// 导出被裁过、没有 settings 表时按没有处理，不报错
+    #[test]
+    fn parse_settings_insert_tolerates_missing_table() {
+        assert!(parse_settings_insert("CREATE TABLE providers (id TEXT);", "claude").is_empty());
+        assert!(parse_settings_insert("", "claude").is_empty());
     }
 
     #[test]
@@ -818,15 +1077,12 @@ mod tests {
             assert!(!spec.base_url.trim().is_empty(), "{} 没有地址", spec.id);
             assert!(!spec.id.trim().is_empty(), "有空 id 的供应商");
             // 占位符不能进网关：它会带着 sk-REPLACE_ME 去请求，报错信息离题万里
-            match &spec.auth {
-                ProviderAuth::ApiKey { key, .. } => {
-                    assert!(
-                        !key.trim().is_empty() && key.trim() != "sk-REPLACE_ME",
-                        "{} 的 key 是占位符",
-                        spec.id
-                    );
-                }
-                _ => {}
+            if let ProviderAuth::ApiKey { key, .. } = &spec.auth {
+                assert!(
+                    !key.trim().is_empty() && key.trim() != "sk-REPLACE_ME",
+                    "{} 的 key 是占位符",
+                    spec.id
+                );
             }
         }
     }

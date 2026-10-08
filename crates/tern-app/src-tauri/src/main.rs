@@ -39,6 +39,15 @@ fn main() {
             tern_app_lib::wire::wire_enable,
             tern_app_lib::wire::wire_disable,
             tern_app_lib::wire::wire_probe,
+            // 供应商分组：自定义文件夹
+            tern_app_lib::folders::folders_list,
+            tern_app_lib::folders::folders_create,
+            tern_app_lib::folders::folders_rename,
+            tern_app_lib::folders::folders_delete,
+            tern_app_lib::folders::folders_assign,
+            tern_app_lib::folders::folders_set_expanded,
+            // 供应商分组：按请求地址的域名根自动归组
+            tern_app_lib::folders::folders_group_by_domain,
         ])
         .run(tauri::generate_context!())
         .expect("启动 tern 面板失败");

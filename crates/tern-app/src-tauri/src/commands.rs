@@ -168,6 +168,10 @@ pub struct CcSwitchPreview {
     pub skipped: Vec<String>,
     /// 这些供应商里哪些是第三方网关（导入后联网工具会失效）
     pub third_party_count: usize,
+    /// 会一起搬过来的自定义文件夹，按 cc-switch 里的顺序。
+    /// 非空时前端要说一句"你的分组也一起过来了"——用户排过的文件夹
+    ///  silently 消失是最容易让人以为导入失败的一种
+    pub folder_names: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -183,13 +187,7 @@ pub fn import_preview() -> Result<CcSwitchPreview> {
     let db = tern_gateway::ccswitch_import::default_cc_switch_db()
         .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
     if !db.exists() {
-        return Ok(CcSwitchPreview {
-            db_path: db.display().to_string(),
-            found: false,
-            providers: Vec::new(),
-            skipped: Vec::new(),
-            third_party_count: 0,
-        });
+        return Ok(missing_cc_switch(db));
     }
 
     let report = tern_gateway::ccswitch_import::import_providers(&db, "claude")
@@ -203,13 +201,7 @@ pub fn import_from_cc_switch(state: State<'_, AppState>) -> Result<CcSwitchPrevi
     let db = tern_gateway::ccswitch_import::default_cc_switch_db()
         .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
     if !db.exists() {
-        return Ok(CcSwitchPreview {
-            db_path: db.display().to_string(),
-            found: false,
-            providers: Vec::new(),
-            skipped: Vec::new(),
-            third_party_count: 0,
-        });
+        return Ok(missing_cc_switch(db));
     }
 
     let report = tern_gateway::ccswitch_import::import_providers(&db, "claude")
@@ -234,11 +226,16 @@ pub fn import_from_cc_switch(state: State<'_, AppState>) -> Result<CcSwitchPrevi
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)? + "\n")
         .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
 
+    // 分组数据在另一个文件，跟着落一份。顺序：先建注册表再把归属写进去，
+    // 否则归属会指向一个还没登记的文件夹（界面上是个管不了的组）
+    apply_imported_folders(&report.folder_names, &report.folder_assignments)?;
+
     // 导入后库路径可能变了，丢掉旧的只读连接，下次查询重新打开
     state.invalidate_db();
     log::info!(
-        "[tern-app] 从 cc-switch 导入 {} 个供应商到 {}",
+        "[tern-app] 从 cc-switch 导入 {} 个供应商、{} 个文件夹到 {}",
         report.specs.len(),
+        report.folder_names.len(),
         config_path.display()
     );
 
@@ -250,6 +247,42 @@ pub fn import_from_cc_switch(state: State<'_, AppState>) -> Result<CcSwitchPrevi
     }
 
     Ok(preview_of(&db, report))
+}
+
+/// cc-switch 不在时的预览结果。
+fn missing_cc_switch(db: std::path::PathBuf) -> CcSwitchPreview {
+    CcSwitchPreview {
+        db_path: db.display().to_string(),
+        found: false,
+        providers: Vec::new(),
+        skipped: Vec::new(),
+        third_party_count: 0,
+        folder_names: Vec::new(),
+    }
+}
+
+/// 把 cc-switch 的文件夹搬进 tern 的 `folders.json`。
+///
+/// # 为什么是"合并"而不是"覆盖"
+///
+/// 用户在 tern 这边可能已经建过文件夹了。导入把整个 providers 数组换掉，
+/// 但分组文件不该跟着被清零——那会同时丢掉 tern 侧的手工分组。
+/// 所以：注册表里没有的名字才追加，归属按 id 覆盖（id 没变的保持原样）。
+fn apply_imported_folders(
+    folder_names: &[String],
+    assignments: &[(String, String)],
+) -> crate::error::Result<()> {
+    if folder_names.is_empty() && assignments.is_empty() {
+        return Ok(());
+    }
+    let mut file = crate::folders::read();
+    // 顺序按 cc-switch 里的来：用户排过的文件夹不该被重排
+    crate::folders::ensure_folder_names(&mut file.folders, folder_names);
+    for (id, folder) in assignments {
+        file.assignments
+            .insert(id.trim().to_string(), folder.trim().to_string());
+    }
+    crate::folders::write(&file)
 }
 
 fn preview_of(
@@ -288,6 +321,7 @@ fn preview_of(
             .map(|(id, reason)| format!("{id}: {reason}"))
             .collect(),
         third_party_count,
+        folder_names: report.folder_names,
     }
 }
 

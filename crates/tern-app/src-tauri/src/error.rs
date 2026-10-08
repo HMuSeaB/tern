@@ -28,6 +28,10 @@ pub enum AppError {
     Store(String),
     #[error("配置无效: {0}")]
     Config(String),
+    /// 文件夹分组相关。单独一个变体而不是塞进 `Config`：分组是纯 UI 数据，
+    /// 报错时说成"配置无效"会让人去改 tern.json——那边一个字都不用动。
+    #[error("文件夹分组失败: {0}")]
+    Folders(String),
 }
 
 // Tauri 要求 invoke 的错误实现 Serialize。这里手写而不是 derive：

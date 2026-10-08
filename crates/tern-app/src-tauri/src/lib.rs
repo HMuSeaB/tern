@@ -21,6 +21,7 @@ pub mod commands;
 pub mod config;
 mod db;
 mod error;
+pub mod folders;
 pub mod permissions;
 pub mod server;
 pub mod wire;
