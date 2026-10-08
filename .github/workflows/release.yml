@@ -1,0 +1,128 @@
+# 发布 Windows 安装包。
+#
+# 打 `v*` tag 即触发，产物直接挂到对应的 release 上：
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# 也能在 Actions 页面手动跑（workflow_dispatch），那时用仓库里现有的
+# 最新 tag 当版本号——方便在正式发布前验证一版。
+#
+# 为什么在 CI 上构建而不是本地打包上传：Tauri 带着 webview，本地 release
+# 构建实测要吃 1~2 GB 内存。用户的诉求正是"本地占用内存太大了"，那就更不该
+# 让他为打个包再扛一次。
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # 前端在 crates/tern-app 下，几个 action 的默认工作目录都是仓库根
+  APP_DIR: crates/tern-app
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: Windows 安装包
+    runs-on: windows-2022
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm 版本由 package.json 的 packageManager 字段决定，
+      # 不写 version 就不会哪天悄悄换成另一个大版本
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ${{ env.APP_DIR }}/pnpm-lock.yaml
+
+      # rust-toolchain.toml 里钉了 stable + rustfmt + clippy，
+      # 装 toolchain 的那个 action 会读它，这里不用再指定版本
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: 装前端依赖
+        working-directory: ${{ env.APP_DIR }}
+        run: pnpm install --frozen-lockfile
+
+      # 这一步做三件事：构建前端、构建 tern-agent（release）、把 agent.exe
+      # 复制到 src-tauri/resources/。tauri build 的 beforeBuildCommand 会自动
+      # 调它，但在这里单独跑一次是为了让失败早暴露——缩在 beforeBuildCommand
+      # 里的话，报错会被包在 tauri 的输出里，看不出是哪一步炸的
+      - name: 构建 agent 与前端
+        run: node ${{ env.APP_DIR }}/scripts/prepare-agent.mjs
+
+      - name: 类型检查与测试
+        working-directory: ${{ env.APP_DIR }}
+        run: pnpm exec tsc --noEmit
+
+      # workspace 的测试。offline 用不上：CI 上没有本地 cargo 缓存，
+      # 而且要顺便验证 lock 文件是完整的（缺依赖在这里就会露出来）
+      - name: Rust 测试
+        run: cargo test --workspace
+
+      - name: 构建安装包
+        working-directory: ${{ env.APP_DIR }}
+        run: pnpm tauri build
+        env:
+          # 没配 updater 就只需要 GITHUB_TOKEN，它在每个 workflow 里自动存在
+          TAURI_SIGNING_PRIVATE_KEY: ''
+
+      # tauri 装的是 nsis 包，产物在 src-tauri/target/release/bundle/nsis/。
+      # 手动收集而不是用 tauri-action：产物只有一种、重命名的逻辑就两行，
+      # 引一个 action 只为了 cp 一次文件不值得
+      - name: 收集安装包
+        shell: pwsh
+        run: |
+          $bundle = "${{ env.APP_DIR }}/src-tauri/target/release/bundle/nsis"
+          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
+          $exe = Get-ChildItem -Path $bundle -Filter "*.exe" -Recurse | Select-Object -First 1
+          if (-not $exe) { throw "没找到 NSIS 安装包：$bundle" }
+          $name = "tern-$($env:GITHUB_REF_NAME -replace '^v','')-setup-x64.exe"
+          Copy-Item $exe.FullName -Destination "release-assets/$name"
+          # .sig 只在配了 updater 签名时才会生成；没有就不该把它挂上去
+          $sig = Get-ChildItem -Path $bundle -Filter "*.sig" -Recurse | Select-Object -First 1
+          if ($sig) { Copy-Item $sig.FullName -Destination "release-assets/$name.sig" }
+          Write-Host "产物: $name ($([math]::Round($exe.Length / 1MB, 1)) MB)"
+
+      # 手动触发时 GITHUB_REF_NAME 是分支名（main），那不是一个版本。
+      # 这种情况下沿用仓库里最新的 tag，都没有才退回 latest
+      - name: 决定版本号
+        id: version
+        shell: pwsh
+        run: |
+          $ref = $env:GITHUB_REF_NAME
+          if ($ref -notlike 'v*') {
+            $latest = git tag --list 'v*' --sort=-v:refname | Select-Object -First 1
+            if ($latest) { $ref = $latest } else { $ref = 'latest' }
+          }
+          "tag=$ref" >> $env:GITHUB_OUTPUT
+          Write-Host "发布版本: $ref"
+
+      - name: 建 release 并上传
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: tern ${{ steps.version.outputs.tag }}
+          files: release-assets/*
+          # 手动触发时大概率是同一份代码重复发，别让历史里堆一串空的
+          draft: false
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+          body: |
+            安装包为 Windows 64 位 NSIS。装完双击即用——网关由内嵌的 tern-agent
+            常驻，不需要先开终端。
+
+            **首跑**：面板会探测本机的 cc-switch，列出可导入的供应商供勾选确认，
+            凭据不会默认导入。
+
+            用法见 [README](https://github.com/${{ github.repository }}/blob/main/README.md)。

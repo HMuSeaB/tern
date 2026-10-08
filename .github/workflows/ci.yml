@@ -1,0 +1,57 @@
+# Pull request 上的检查。和 release 分开：那边只管打包，这边管"这次改动有没有
+# 把东西弄坏"。分开的好处是 PR 上一眼能看到"测试过了没有"，而不必等一个
+# 五分钟的构建。
+#
+# 只在 Rust 和前端真的动了的时候跑：改文档不该触发一次全量 cargo test。
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  APP_DIR: crates/tern-app
+
+jobs:
+  test:
+    name: 测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # tern-store / tern-gateway 的测试会起本地 socket 打桩上游，
+      # Linux 上没有 WebView2 也能跑。tauri 的那几个 crate 编译慢且这里用不到，
+      # 所以只测前四个
+      - name: Rust 测试
+        run: cargo test -p tern-gateway -p tern-store -p tern-cli -p tern-tui
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ${{ env.APP_DIR }}/pnpm-lock.yaml
+
+      - name: 前端类型检查
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec tsc --noEmit
+
+      # 不用 `-D warnings`：仓库里有两个既存的，且都不该在这条 PR 里修
+      #   - `CodexToolContext` 的 private_interfaces：出自按字节搬运的 cc-switch
+      #     文件，改了就没法跟上游 diff
+      #   - `tern-tui` 的 restore_quietly 未使用：留给 TUI 后续功能的
+      # 所以本地允许警告，但**新增的**会在这里露出来（vendor 的两个已经固定）
+      - name: 格式与 lint
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace -- -A dead_code -A private_interfaces
