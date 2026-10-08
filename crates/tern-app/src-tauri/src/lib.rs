@@ -23,6 +23,7 @@ mod db;
 mod error;
 pub mod folders;
 pub mod permissions;
+pub mod providers;
 pub mod server;
 pub mod tray;
 pub mod wire;

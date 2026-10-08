@@ -229,7 +229,10 @@ pub async fn fetch_provider_models(id: String) -> Result<Vec<String>> {
     .map_err(|e| crate::error::AppError::Config(format!("任务失败: {e}")))?
 }
 
-fn summary_of(path: &std::path::Path, config: tern_gateway::GatewayConfig) -> ConfigSummary {
+pub(crate) fn summary_of(
+    path: &std::path::Path,
+    config: tern_gateway::GatewayConfig,
+) -> ConfigSummary {
     let warnings = crate::config::warnings(&config);
     // 分组数据是另一个文件。读不到就是空表，供应商照样全列——分组不该挡住列表
     let folders = crate::folders::read();
@@ -271,8 +274,11 @@ fn summary_of(path: &std::path::Path, config: tern_gateway::GatewayConfig) -> Co
 }
 
 /// 写配置前先备份。这里写的是整个 providers 数组，
-/// 用户手改过的东西不该无声消失
-fn write_config(path: &std::path::Path, config: &tern_gateway::GatewayConfig) -> Result<()> {
+/// 用户手改过的东西不该无声消失。
+///
+/// `pub(crate)`：`providers` 模块写的是同一个文件，备份规则分叉会让
+/// `.bak` 时新时旧
+pub(crate) fn write_config(path: &std::path::Path, config: &tern_gateway::GatewayConfig) -> Result<()> {
     if path.exists() {
         let backup = path.with_extension("json.bak");
         let _ = std::fs::copy(path, &backup);

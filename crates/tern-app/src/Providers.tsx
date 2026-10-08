@@ -5,6 +5,7 @@ import {
   GroupCard,
   MoveBar,
 } from "./ProviderGrouping";
+import { ProviderEditor } from "./ProviderEditor";
 import { buildFolderGroups, buildUrlGroups, folderNames } from "./grouping";
 import type {
   ConfigSummary,
@@ -66,6 +67,11 @@ export function Providers({
   const [dialog, setDialog] = useState<
     { kind: "create" } | { kind: "rename"; name: string } | null
   >(null);
+  /** 供应商的新增 / 编辑弹层。null = 关着 */
+  const [editor, setEditor] = useState<
+    { mode: "create" } | { mode: "edit"; id: string } | null
+  >(null);
+  const [editorBusy, setEditorBusy] = useState(false);
   const [folderBusy, setFolderBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   /** 收起来的分组名（含地址视图的分组键）。空集 = 全展开 */
@@ -105,6 +111,23 @@ export function Providers({
       } finally {
         setPending(null);
       }
+    },
+    [onRefresh],
+  );
+
+  // ---- 增删改 ----
+
+  /** 存 / 删之后统一走这里。Rust 侧的 `provider_save` / `provider_remove`
+   *  返回的就是新的配置摘要，直接用它——省一次往返，也避免两次请求之间
+   *  列表闪一下旧数据。 */
+  const onEditorWritten = useCallback(
+    (summary: ConfigSummary) => {
+      setConfig(summary);
+      setEditor(null);
+      setEditorBusy(false);
+      setError(null);
+      // 顶栏的"已配置 N 个"和警告列表也要跟着变
+      onRefresh?.();
     },
     [onRefresh],
   );
@@ -356,6 +379,14 @@ export function Providers({
           )}
           {p.key_state === "placeholder" && <span className="prov-bad">占位符</span>}
           {p.key_state === "empty" && <span className="prov-bad">key 为空</span>}
+          {/* 编辑：换名字、修地址、改 key、测连通性都在这儿 */}
+          <button
+            className="prov-models-btn"
+            onClick={() => setEditor({ mode: "edit", id: p.id })}
+            title={`编辑「${p.name}」：地址、key、成本倍率、连通性测试`}
+          >
+            编辑
+          </button>
           {/* 拉模型列表：key 是坏的就没必要问上游了，先让它醒目标出来 */}
           {(p.key_state === "real" || p.key_state === "subscription") && (
             <button
@@ -417,6 +448,13 @@ export function Providers({
           ))}
         </div>
         <div className="prov-tools">
+          <button
+            className="prov-mini accent"
+            onClick={() => setEditor({ mode: "create" })}
+            title="从零加一个供应商，不用去改 tern.json"
+          >
+            新增供应商
+          </button>
           <button
             className="prov-mini"
             onClick={() => setDialog({ kind: "create" })}
@@ -566,6 +604,20 @@ export function Providers({
           <span className="notice-body">{error}</span>
           <button className="btn ghost" onClick={() => void reload()}>重试</button>
         </div>
+      )}
+
+      {editor && (
+        <ProviderEditor
+          // key 让 create → edit 的切换重新挂载：不挂的话 useState 的初始值
+          // 只在第一次生效，从"新建"跳到"编辑另一个"时表单里还是上次那些字
+          key={editor.mode === "create" ? "create" : `edit:${editor.id}`}
+          mode={editor.mode}
+          providerId={editor.mode === "edit" ? editor.id : undefined}
+          busy={editorBusy}
+          onClose={() => setEditor(null)}
+          onSaved={(summary) => onEditorWritten(summary)}
+          onDeleted={(summary) => onEditorWritten(summary)}
+        />
       )}
 
       {dialog && (

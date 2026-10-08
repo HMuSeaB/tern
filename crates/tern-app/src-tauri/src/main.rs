@@ -48,6 +48,11 @@ fn main() {
             // 拉供应商的模型列表
             tern_app_lib::server::fetch_provider_models,
             tern_app_lib::server::open_config_dir,
+            // 供应商增删改与连通性测试
+            tern_app_lib::providers::provider_save,
+            tern_app_lib::providers::provider_remove,
+            tern_app_lib::providers::provider_detail,
+            tern_app_lib::providers::provider_probe,
             // 首次运行
             tern_app_lib::commands::first_run,
             tern_app_lib::commands::import_preview,

@@ -196,38 +196,48 @@ Tauri 2 + React + Tailwind，图表用 recharts（cc-switch 现成经验）。
 事件不碰 `AppState`——启停走 `server::start_gateway_now()` /
 `stop_gateway_now()`，和 `server_status` 同一条读法，没新建并发路径。
 
-### T+1. 界面 tab 化（你说的"全堆一个 tab"）
+### T+1. 界面 tab 化（已提交 `1cebd25`）
 
 现在 `App.tsx` 没有 tab，四块上下堆一个滚动页：Providers(261) / PanelView(311) /
 Permissions(127) / Wire(178)。改成横滑 tab 容器，四块各占一页。
 
-- 容器管 `translateX` 过渡 + tab 指示条；四块只搬内容，逻辑一行不改
-- **供应商是默认页**（ROADMAP 阶段 6 已说"最常用的操作"），权限/接线收进次级
-- 横滑要求 tab 内容区固定高度 + `overflow: hidden`，现在卡片是自然流高，套一层即可
-- 1107 行 `styles.css` 只加 tab 与 slide 样式，不动既有 `.card`
+- [x] 新 `src/Tabs.tsx`：tab 栏 + `translateX` 视口，`role=tablist` + 方向键
+- [x] 容器管 `translateX` 过渡 + tab 指示条；四块只搬内容，逻辑一行不改
+- [x] **供应商是默认页**（ROADMAP 阶段 6 已说"最常用的操作"），权限/接线收进次级
+- [x] 页序按频率：供应商 → 用量 → 接入 → 权限
+- [x] 离屏页用 `inert` 禁焦点**但不从 DOM 摘掉**：`usePanel` 的轮询不随页卸载，
+      翻回「用量」拿的是刚拉的数据；分组展开态、搜索词也不丢
+- [x] 横滑要求固定高度：`.app` 改 `height:100%`，每页自己是滚动容器
+- [x] 错误条提到 tab 栏上方而非某一页：它多半来自 `server_start` 这种全局动作
+- [x] 「用量」页补 reading error 分支：跑着却读不到库 ≠ 网关停了
 
-> 这一条你说"跟想象差距大"的就是它，不是拖拽。先讲清免得做完发现不是你要的。
+**刻意没做**：`document.hidden` 时停轮询、切 tab 时 lazy mount。前者是优化不是
+需求，后者会把刚说的"翻回就有数据"的优势让掉。
+
+> 这一条你说"跟想象差距大"的就是它，不是拖拽。
 
 ### T+2. 供应商管理补齐（ROADMAP 阶段 7 剩余）
 
-- 增删改 + 连通性测试（现在只有列表、切默认、拉模型，见 `2bccd40` / `c9a7cf8`）
-- [x] **文件夹分组**：新模块 `src-tauri/src/folders.rs`，注册表落
-      `%APPDATA%	ernolders.json`（`tern.json` 旁边）。三种视图：平铺 /
-      按地址 / 按文件夹。按地址的键由 Rust 侧算（`folders::group_key`，
-      口径逐条对齐 cc-switch 的 `normalizeUrl`：完整 URL、协议与 host 小写、
-      path 大小写保留、去末尾斜杠），前端只做 Map 归拢
-- [x] 批量移动（勾选 + 操作条）、新建 / 重命名 / 解散文件夹、按域名一键归组
-      （同域名根两个以上才建组，本地地址一律跳过）
-- [x] 从 cc-switch 导入时把分组一起搬：注册表取 `settings` 表的
-      `provider_folders_{app_type}`，归属取每个供应商的 `meta.folder`；
-      与 `tern.json` 分开合并，不会把 tern 侧已有的分组清掉
-- [x] 未分组恒沉底、注册表铺骨架让空文件夹也显示、刻意不用 `localeCompare`
+- [x] 增删改 + 连通性测试：新模块 `src-tauri/src/providers.rs`，
+      命令 `provider_save` / `provider_remove` / `provider_detail` / `provider_probe`
+- [x] **key 不回传**：`provider_detail` 里没有这个字段，编辑框永远空着、
+      留空 = 不修改。把凭据搬进渲染进程等于交给 webview，拿不回来
+- [x] 连通性测试复用 `adapter::prepare_request`，和真实流量同一条转换路径——
+      直接打 `/v1/models` 会漏掉"协议不对"的那种（问得到列表、发不了消息）
+- [x] 4xx / 5xx 算"通到了"：限流、过载、模型名不对都是上游在回话，
+      和"地址填错"的修法完全不同，只有真连不上才判不通
+- [x] 删 default 时清空 `default_provider`（不自动猜下一个）：悬空引用会让
+      `ModelRouter::new` 校验失败、网关起不来，而空 default 网关照样起
+- [x] 写前备份沿用 `server::write_config`，不复制一套
+- [x] 订阅登录的地址 / key 两栏在编辑时隐藏：`effective_base_url()` 托管，填了不生效
+- [x] 文件夹分组（早前已完成）：`folders.rs` 注册表落 `%APPDATA%	ernolders.json`，
+      平铺 / 按地址 / 按文件夹三视图，批量移动、按域名一键归组
 - [ ] 智能分组：cc-switch 那边是 LLM（TypeSafe choice）+ 本地启发式两级。
       tern 先落了离线那级（按域名归组），LLM 那级要看用户想不想为一个分组功能
       多带一个上游依赖
-- 订阅登录（Copilot / ChatGPT / xAI），实现 `TokenProvider`，这是 `ProviderAuth`
-  里三个订阅变体现在只有占位 `AuthInfo` 的根因
-- 验收：能纯靠面板从零加一个中转站并切过去，不碰 `tern.json`
+- [ ] 订阅登录（Copilot / ChatGPT / xAI），实现 `TokenProvider`，这是 `ProviderAuth`
+      里三个订阅变体现在只有占位 `AuthInfo` 的根因
+- [x] 验收：能纯靠面板从零加一个中转站并切过去，不碰 `tern.json`
 
 ### T+3. 用量面板补全（你最看重的）
 

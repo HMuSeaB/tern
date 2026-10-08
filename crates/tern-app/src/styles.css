@@ -1132,6 +1132,12 @@ body {
   white-space: nowrap;
 }
 
+/* "新增供应商"是这一页唯一的主操作，比邻座的文件夹按钮重一档 */
+.prov-mini.accent {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 .prov-mini:hover {
   border-color: var(--accent);
   color: var(--accent);
@@ -1344,6 +1350,59 @@ body {
 .prov-modal-input:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+/* ---- 供应商编辑表单 ---- */
+.prov-form {
+  display: grid;
+  gap: 12px;
+}
+
+.prov-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.prov-label {
+  font-size: 12px;
+  color: var(--dim);
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.prov-label-dim {
+  color: var(--dim-2);
+  font-size: 11px;
+}
+
+.prov-hint {
+  font-size: 11.5px;
+  color: var(--dim-2);
+  line-height: 1.45;
+}
+
+/* 只读的 id 要看得出来：它不是"禁用了"，是"改了就不是同一个供应商了" */
+.prov-modal-input[readonly] {
+  background: var(--track);
+  color: var(--dim);
+  cursor: default;
+}
+
+select.prov-modal-input {
+  cursor: pointer;
+}
+
+/* 删除按钮：默认是幽灵字，确认时才变红。一上来就红会让人不敢点别的 */
+.danger-text {
+  color: var(--bad);
+}
+
+.prov-confirm {
+  font-size: 12.5px;
+  color: var(--bad);
+  margin-right: auto;
 }
 
 .prov-modal-actions {

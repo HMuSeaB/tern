@@ -41,6 +41,9 @@ uuid = { version = "1.11", features = ["v4"] }
 reqwest = { version = "0.12", features = ["blocking", "json"] }
 # bundled：不依赖系统 sqlite3，与 tern-store 保持一致
 rusqlite = { version = "0.31", features = ["bundled"] }
+# 成本倍率的校验。版本与 tern-store 钉同一行：同一份 Decimal 语义，
+# 别让 "0.3" 在一个库里能 parse、在另一个里不行
+rust_decimal = "1.33"
 
 [dev-dependencies]
 tempfile = "3"
