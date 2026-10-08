@@ -105,10 +105,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let menu = Menu::with_items(app, &[&open, &separator, &gateway, &separator, &quit])?;
 
     let state = app.state::<TrayState>();
-    *state
-        .gateway_item
-        .lock()
-        .unwrap_or_else(|p| p.into_inner()) = Some(gateway);
+    *state.gateway_item.lock().unwrap_or_else(|p| p.into_inner()) = Some(gateway);
     Ok(menu)
 }
 
@@ -124,7 +121,13 @@ fn gateway_label(running: bool) -> &'static str {
 /// 托盘在不在。没建起来的场景下窗口可以正常关闭。
 pub fn is_installed(app: &AppHandle) -> bool {
     app.try_state::<TrayState>()
-        .map(|state| state.icon.lock().unwrap_or_else(|p| p.into_inner()).is_some())
+        .map(|state| {
+            state
+                .icon
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_some()
+        })
         .unwrap_or(false)
 }
 
@@ -136,10 +139,7 @@ pub fn refresh(app: &AppHandle) {
         return;
     };
     let running = crate::server::server_status_now().running;
-    let guard = state
-        .gateway_item
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
+    let guard = state.gateway_item.lock().unwrap_or_else(|p| p.into_inner());
     if let Some(item) = guard.as_ref() {
         if let Err(error) = item.set_text(gateway_label(running)) {
             log::warn!("[tray] 更新菜单文本失败: {error}");
@@ -167,10 +167,7 @@ fn show_panel(app: &AppHandle) {
 pub fn remember_and_hide(window: &WebviewWindow) {
     if let Ok(position) = window.outer_position() {
         if let Some(state) = window.app_handle().try_state::<TrayState>() {
-            *state
-                .position
-                .lock()
-                .unwrap_or_else(|p| p.into_inner()) = Some(position);
+            *state.position.lock().unwrap_or_else(|p| p.into_inner()) = Some(position);
         }
     }
     let _ = window.hide();
@@ -181,12 +178,7 @@ fn restore_position(window: &WebviewWindow) {
     let saved = window
         .app_handle()
         .try_state::<TrayState>()
-        .and_then(|state| {
-            *state
-                .position
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-        });
+        .and_then(|state| *state.position.lock().unwrap_or_else(|p| p.into_inner()));
     let Some(saved) = saved else {
         // 第一次开（进程刚起、还没隐藏过）：用配置里的位置，不动它
         return;
@@ -231,7 +223,10 @@ fn toggle_gateway(app: &AppHandle) {
             refresh(app);
             log::info!("[tray] 已{}网关", if running { "停止" } else { "启动" });
         }
-        Err(error) => log::warn!("[tray] {}网关失败: {error}", if running { "停止" } else { "启动" }),
+        Err(error) => log::warn!(
+            "[tray] {}网关失败: {error}",
+            if running { "停止" } else { "启动" }
+        ),
     }
 }
 

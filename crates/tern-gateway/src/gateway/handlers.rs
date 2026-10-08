@@ -16,6 +16,7 @@ use super::usage::{self, RequestMeta};
 use super::GatewayState;
 use crate::adapter::{prepare_request, RequestContext};
 use crate::provider::ApiFormat;
+use crate::proxy::circuit_breaker::CircuitBreakerConfig;
 use crate::proxy::content_encoding::{
     decompress_body, get_content_encoding, is_supported_content_encoding,
 };
@@ -24,7 +25,6 @@ use crate::proxy::providers::transform_codex_responses_namespace::namespace_rest
 use crate::proxy::providers::transform_gemini::extract_anthropic_tool_schema_hints;
 use crate::proxy::session::extract_session_id;
 use crate::proxy::ProxyError;
-use crate::proxy::circuit_breaker::CircuitBreakerConfig;
 use crate::resilience;
 use crate::router::{Route, RouteKind};
 use crate::ProviderSpec;
@@ -273,13 +273,12 @@ async fn send_to(
     } else {
         Default::default()
     };
-    let namespace_restore_map = if client_format == ApiFormat::OpenaiResponses
-        && spec.is_xai_oauth()
-    {
-        namespace_restore_map(&body)
-    } else {
-        Default::default()
-    };
+    let namespace_restore_map =
+        if client_format == ApiFormat::OpenaiResponses && spec.is_xai_oauth() {
+            namespace_restore_map(&body)
+        } else {
+            Default::default()
+        };
 
     let endpoint = uri
         .path_and_query()

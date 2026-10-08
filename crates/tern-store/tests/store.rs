@@ -380,11 +380,16 @@ fn trend_fills_days_with_no_requests() {
         .insert(&event_of("s", "m", None, 3, tokens(100, 100, 0, 0)))
         .unwrap();
 
-    let points = store.trend(&DayRange::last_days(5), Breakdown::Day).unwrap();
+    let points = store
+        .trend(&DayRange::last_days(5), Breakdown::Day)
+        .unwrap();
     assert_eq!(points.len(), 5, "5 天窗口必须给 5 个点");
     let zeroed: Vec<_> = points.iter().filter(|p| p.summary.requests == 0).collect();
     assert_eq!(zeroed.len(), 4, "另外四天应当补 0");
-    assert!(points.iter().any(|p| p.summary.requests == 1), "记过的那天是 1");
+    assert!(
+        points.iter().any(|p| p.summary.requests == 1),
+        "记过的那天是 1"
+    );
 }
 
 /// 按供应商下钻时，(天 × 供应商) 的笛卡尔积要补齐。
@@ -400,7 +405,9 @@ fn trend_by_provider_fills_the_cross_product() {
     older.provider_id = Some("p2".into());
     store.insert(&older).unwrap();
 
-    let points = store.trend(&DayRange::last_days(2), Breakdown::Provider).unwrap();
+    let points = store
+        .trend(&DayRange::last_days(2), Breakdown::Provider)
+        .unwrap();
     // 2 天 × 2 个供应商，一天一个组合有数据、另一个补 0
     assert_eq!(points.len(), 4, "2 天 × 2 供应商");
     assert_eq!(
@@ -429,10 +436,18 @@ fn trend_orders_series_by_total_cost() {
     // 如果按"出现顺序"排，cheap 会被排到前面
     for days_ago in 0..4 {
         store
-            .insert(&event_of(&format!("s{days_ago}"), "m", None, days_ago, tokens(10, 10, 0, 0)))
+            .insert(&event_of(
+                &format!("s{days_ago}"),
+                "m",
+                None,
+                days_ago,
+                tokens(10, 10, 0, 0),
+            ))
             .unwrap();
     }
-    let points = store.trend(&DayRange::last_days(5), Breakdown::Provider).unwrap();
+    let points = store
+        .trend(&DayRange::last_days(5), Breakdown::Provider)
+        .unwrap();
     let keys: Vec<&str> = points.iter().map(|p| p.key.as_str()).collect();
     assert_eq!(keys.len(), 5, "只有一个供应商，5 天 5 个点");
 }
@@ -445,7 +460,13 @@ fn sessions_group_by_session_across_days() {
     // 一次会话跨三天
     for days_ago in [0, 1, 2] {
         store
-            .insert(&event_of("refactor", "m", None, days_ago, tokens(100, 50, 0, 0)))
+            .insert(&event_of(
+                "refactor",
+                "m",
+                None,
+                days_ago,
+                tokens(100, 50, 0, 0),
+            ))
             .unwrap();
     }
     // 另一次很小
@@ -457,7 +478,10 @@ fn sessions_group_by_session_across_days() {
     assert_eq!(rows.len(), 2, "两个会话");
     assert_eq!(rows[0].session_id, "refactor", "花的多的在前");
     assert_eq!(rows[0].summary.requests, 3, "三天的请求算进同一次会话");
-    assert!(rows[0].ended_at_ms > rows[0].started_at_ms, "起止时间要跨开");
+    assert!(
+        rows[0].ended_at_ms > rows[0].started_at_ms,
+        "起止时间要跨开"
+    );
 
     // 没有 session_id 的不该进来：那会多出一个叫 "" 的会话
     let mut anonymous = event_of("x", "m", None, 0, tokens(1, 1, 0, 0));
@@ -481,8 +505,16 @@ fn sessions_carry_the_roles_they_used() {
 
     let rows = store.sessions(&DayRange::today(), 10).unwrap();
     assert_eq!(rows.len(), 1);
-    assert!(rows[0].roles.iter().any(|r| r == "main"), "{:?}", rows[0].roles);
-    assert!(rows[0].roles.iter().any(|r| r == "subagent"), "{:?}", rows[0].roles);
+    assert!(
+        rows[0].roles.iter().any(|r| r == "main"),
+        "{:?}",
+        rows[0].roles
+    );
+    assert!(
+        rows[0].roles.iter().any(|r| r == "subagent"),
+        "{:?}",
+        rows[0].roles
+    );
 }
 
 /// 模型流向：客户端要 sonnet、上游回了 opus，这条边必须在。
@@ -492,19 +524,34 @@ fn sessions_carry_the_roles_they_used() {
 fn model_flow_shows_the_client_to_response_mapping() {
     let store = Store::open_in_memory().unwrap();
     for i in 0..3 {
-        let mut event = event_of("s", "claude-sonnet-4-6", Some("claude-opus-4-8"), 0, tokens(1000, 500, 0, 0));
+        let mut event = event_of(
+            "s",
+            "claude-sonnet-4-6",
+            Some("claude-opus-4-8"),
+            0,
+            tokens(1000, 500, 0, 0),
+        );
         event.message_id = Some(format!("m{i}"));
         store.insert(&event).unwrap();
     }
     // 一条没被映射的
-    let mut plain = event_of("s", "claude-opus-4-8", Some("claude-opus-4-8"), 0, tokens(10, 5, 0, 0));
+    let mut plain = event_of(
+        "s",
+        "claude-opus-4-8",
+        Some("claude-opus-4-8"),
+        0,
+        tokens(10, 5, 0, 0),
+    );
     plain.message_id = Some("plain".into());
     store.insert(&plain).unwrap();
 
     let flow = store.model_flow(&DayRange::today()).unwrap();
     let mapped = flow
         .iter()
-        .find(|f| f.client_model == "claude-sonnet-4-6" && f.response_model.as_deref() == Some("claude-opus-4-8"))
+        .find(|f| {
+            f.client_model == "claude-sonnet-4-6"
+                && f.response_model.as_deref() == Some("claude-opus-4-8")
+        })
         .unwrap_or_else(|| panic!("sonnet→opus 这条边应当在: {flow:?}"));
     assert_eq!(mapped.requests, 3);
     assert_eq!(mapped.summary.output, 1500);
@@ -517,7 +564,13 @@ fn model_flow_skips_failed_requests() {
     let store = Store::open_in_memory().unwrap();
     let failure = failure("relay", "claude-sonnet-4-6", 429, ErrorKind::RateLimited);
     store.insert(&failure).unwrap();
-    let mut ok = event_of("s", "claude-sonnet-4-6", Some("claude-opus-4-8"), 0, tokens(10, 5, 0, 0));
+    let mut ok = event_of(
+        "s",
+        "claude-sonnet-4-6",
+        Some("claude-opus-4-8"),
+        0,
+        tokens(10, 5, 0, 0),
+    );
     ok.message_id = Some("ok".into());
     store.insert(&ok).unwrap();
 

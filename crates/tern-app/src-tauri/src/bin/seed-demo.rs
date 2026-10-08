@@ -137,7 +137,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "claude-sonnet-4-6",
         "claude-opus-5.5",
         RequestRole::Main,
-        TokenCounts { fresh_input: 1_200, output: 840, cache_read: 42_000, cache_write: 3_600 },
+        TokenCounts {
+            fresh_input: 1_200,
+            output: 840,
+            cache_read: 42_000,
+            cache_write: 3_600,
+        },
     ))?;
     // 子代理成功
     store.insert(&ok(
@@ -146,7 +151,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "claude-sonnet-4-6",
         "claude-sonnet-5",
         RequestRole::Subagent,
-        TokenCounts { fresh_input: 2_100, output: 1_240, cache_read: 11_000, cache_write: 700 },
+        TokenCounts {
+            fresh_input: 2_100,
+            output: 1_240,
+            cache_read: 11_000,
+            cache_write: 700,
+        },
     ))?;
     // 未定价：有 token、查不到价
     store.insert(&ok(
@@ -155,7 +165,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "claude-sonnet-4-6",
         "step-5-preview",
         RequestRole::Subagent,
-        TokenCounts { fresh_input: 5_000, output: 900, cache_read: 0, cache_write: 0 },
+        TokenCounts {
+            fresh_input: 5_000,
+            output: 900,
+            cache_read: 0,
+            cache_write: 0,
+        },
     ))?;
     // codex 后台任务，中途断开：仍有输入 / 输出计费
     store.insert(&event(
@@ -165,7 +180,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "gpt-5-codex",
         RequestRole::Background,
         Outcome::Aborted,
-        Some(TokenCounts { fresh_input: 3_400, output: 420, cache_read: 0, cache_write: 0 }),
+        Some(TokenCounts {
+            fresh_input: 3_400,
+            output: 420,
+            cache_read: 0,
+            cache_write: 0,
+        }),
         None,
     ))?;
     // 子代理并发撞上限：429，必须单独聚类、不能混进模型分布

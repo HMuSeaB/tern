@@ -186,8 +186,8 @@ pub fn spec_of(
     // 表单里那个框是空且不可编辑的。别让它把"编辑订阅"变成不可能
     let managed = existing.is_some_and(|old| old.has_pinned_endpoint() || old.is_github_copilot());
     validate_url(draft, managed)?;
-    let format =
-        parse_api_format(&draft.api_format).ok_or_else(|| format!("不认识的协议：{}", draft.api_format))?;
+    let format = parse_api_format(&draft.api_format)
+        .ok_or_else(|| format!("不认识的协议：{}", draft.api_format))?;
 
     let mut spec = match existing {
         // 编辑：从旧的出发，保住订阅认证和那些表单里没有的字段
@@ -325,9 +325,8 @@ pub fn remove_provider(
     let is_default = config.default_provider.as_deref() == Some(id);
     if is_default {
         // 换到 fallback 时它必须真的存在：一个指向空气的 default 会让网关起不来
-        let next = fallback_id.filter(|next| {
-            next != id && config.providers.iter().any(|spec| &spec.id == next)
-        });
+        let next = fallback_id
+            .filter(|next| next != id && config.providers.iter().any(|spec| &spec.id == next));
         config.default_provider = next;
         // 没有可换的，或没指定：清空。空 default 让不带前缀的模型名找不到路，
         // 但网关照样起得来——比留个悬空引用好
@@ -461,12 +460,12 @@ pub fn probe(spec: &tern_gateway::ProviderSpec) -> ProbeReport {
     // 全在这一段里——那些是上游在回话，不是配错了。真正的"不通"是连不上，
     // 上面已经返回了。
     let (reachable, message) = if (200..300).contains(&status) {
-        (true, "通了。这条请求按真实流量的路径转换后发出去，上游正常应答。".into())
-    } else {
         (
             true,
-            format!("上游有应答（HTTP {status}）：{detail}"),
+            "通了。这条请求按真实流量的路径转换后发出去，上游正常应答。".into(),
         )
+    } else {
+        (true, format!("上游有应答（HTTP {status}）：{detail}"))
     };
 
     ProbeReport {
@@ -489,14 +488,9 @@ fn model_count(spec: &tern_gateway::ProviderSpec) -> usize {
     if key.is_empty() || key == crate::config::PLACEHOLDER_KEY {
         return 0;
     }
-    tern_gateway::models::fetch_models(
-        &spec.effective_base_url(),
-        key,
-        spec.full_url,
-        None,
-    )
-    .map(|models| models.len())
-    .unwrap_or(0)
+    tern_gateway::models::fetch_models(&spec.effective_base_url(), key, spec.full_url, None)
+        .map(|models| models.len())
+        .unwrap_or(0)
 }
 
 /// 从 Anthropic / OpenAI 两种风格的错误体里挖 message。挖不到就退回原文截断。
@@ -531,11 +525,15 @@ fn truncate(text: &str, limit: usize) -> String {
 pub fn provider_save(draft: serde_json::Value) -> Result<ConfigSummary> {
     let draft: ProviderDraft = serde_json::from_value(draft)?;
     let is_edit = crate::config::load(&crate::config::config_path()?)
-        .map(|config| config.providers.iter().any(|spec| spec.id == draft.id.trim()))
+        .map(|config| {
+            config
+                .providers
+                .iter()
+                .any(|spec| spec.id == draft.id.trim())
+        })
         .unwrap_or(false);
-    let summary =
-        crate::providers::apply_draft(&crate::config::config_path()?, &draft, is_edit)
-            .map_err(crate::error::AppError::Config)?;
+    let summary = crate::providers::apply_draft(&crate::config::config_path()?, &draft, is_edit)
+        .map_err(crate::error::AppError::Config)?;
 
     // 网关还拿着旧配置在跑。不重起的话面板里是新的、实际路由用旧的，
     // 用户会以为加成功了，然后请求全部失败。
@@ -666,8 +664,15 @@ mod tests {
         );
 
         // 填了就整段换
-        let edited = spec_of(&draft("a", "https://a.example.com/anthropic", "sk-new"), Some(&existing)).unwrap();
-        assert_eq!(spec.auth, tern_gateway::ProviderAuth::api_key("sk-original"));
+        let edited = spec_of(
+            &draft("a", "https://a.example.com/anthropic", "sk-new"),
+            Some(&existing),
+        )
+        .unwrap();
+        assert_eq!(
+            spec.auth,
+            tern_gateway::ProviderAuth::api_key("sk-original")
+        );
         assert_eq!(edited.auth, tern_gateway::ProviderAuth::api_key("sk-new"));
     }
 
@@ -702,7 +707,10 @@ mod tests {
         }
         let mut ok = draft("a", "https://x.com/anthropic", "sk-real");
         ok.cost_multiplier = "0.3".into();
-        assert_eq!(spec_of(&ok, None).unwrap().cost_multiplier.as_deref(), Some("0.3"));
+        assert_eq!(
+            spec_of(&ok, None).unwrap().cost_multiplier.as_deref(),
+            Some("0.3")
+        );
     }
 
     /// 新建撞 id 要拒：路由表用 id 当前缀，重复了 `provider/model` 指不定谁
@@ -723,8 +731,12 @@ mod tests {
         )
         .unwrap();
 
-        let error = apply_draft(&path, &draft("a", "https://b.example.com/anthropic", "sk-new"), false)
-            .unwrap_err();
+        let error = apply_draft(
+            &path,
+            &draft("a", "https://b.example.com/anthropic", "sk-new"),
+            false,
+        )
+        .unwrap_err();
         assert!(error.contains("已经有"), "{error}");
     }
 
@@ -810,7 +822,12 @@ mod tests {
         let original = r#"{"listen":"127.0.0.1:15800","providers":[]}"#;
         std::fs::write(&path, original).unwrap();
 
-        apply_draft(&path, &draft("a", "https://x.com/anthropic", "sk-real"), false).unwrap();
+        apply_draft(
+            &path,
+            &draft("a", "https://x.com/anthropic", "sk-real"),
+            false,
+        )
+        .unwrap();
         let backup = path.with_extension("json.bak");
         assert!(backup.exists(), "写前必须备份");
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), original);

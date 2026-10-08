@@ -127,7 +127,8 @@ pub fn fetch_models(
             return Ok(models);
         }
 
-        if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::METHOD_NOT_ALLOWED
+        if status == reqwest::StatusCode::NOT_FOUND
+            || status == reqwest::StatusCode::METHOD_NOT_ALLOWED
         {
             // 这个候选不对，试下一个。把响应体留着——有些中转站会在 404 页里
             // 写清楚正确路径
@@ -299,17 +300,15 @@ mod tests {
         ));
         assert!(!ends_with_version_segment("https://x.com/api"));
         assert!(!ends_with_version_segment("https://x.com/vX"));
-        assert!(!ends_with_version_segment(
-            "https://api.siliconflow.cn"
-        ));
+        assert!(!ends_with_version_segment("https://api.siliconflow.cn"));
     }
 
     /// Anthropic 兼容子路径要剥掉：`api.deepseek.com/anthropic` 的模型列表
     /// 不在 `/anthropic/v1/models` 下
     #[test]
     fn candidates_strip_the_anthropic_compat_suffix() {
-        let c = build_models_url_candidates("https://api.deepseek.com/anthropic", false, None)
-            .unwrap();
+        let c =
+            build_models_url_candidates("https://api.deepseek.com/anthropic", false, None).unwrap();
         assert_eq!(
             c,
             vec![
@@ -322,8 +321,8 @@ mod tests {
 
     #[test]
     fn candidates_strip_step_plan() {
-        let c = build_models_url_candidates("https://api.stepfun.com/step_plan", false, None)
-            .unwrap();
+        let c =
+            build_models_url_candidates("https://api.stepfun.com/step_plan", false, None).unwrap();
         assert_eq!(
             c,
             vec![
@@ -379,7 +378,8 @@ mod tests {
 
     #[test]
     fn a_blank_override_is_ignored() {
-        let c = build_models_url_candidates("https://api.siliconflow.cn", false, Some("   ")).unwrap();
+        let c =
+            build_models_url_candidates("https://api.siliconflow.cn", false, Some("   ")).unwrap();
         assert_eq!(c, vec!["https://api.siliconflow.cn/v1/models"]);
     }
 
@@ -420,7 +420,8 @@ mod tests {
         let base = format!("http://{addr}");
 
         // 故意打乱顺序：fetch_models 承诺按 id 排序
-        let body = r#"{"object":"list","data":[{"id":"zzz-model","owned_by":"x"},{"id":"aaa-model"}]}"#;
+        let body =
+            r#"{"object":"list","data":[{"id":"zzz-model","owned_by":"x"},{"id":"aaa-model"}]}"#;
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             body.len(),
@@ -435,7 +436,9 @@ mod tests {
                 let request = String::from_utf8_lossy(&buffer[..read]).to_string();
                 // 鉴权头必须带上：不带的话上游会 401，而这里要验的正是它
                 assert!(
-                    request.to_lowercase().contains("authorization: bearer test-key"),
+                    request
+                        .to_lowercase()
+                        .contains("authorization: bearer test-key"),
                     "没带鉴权头: {request}"
                 );
                 let _ = socket.write_all(response.as_bytes());
@@ -491,7 +494,9 @@ mod tests {
             if let Ok((mut socket, _)) = not_found.accept() {
                 let mut buffer = [0u8; 512];
                 let _ = socket.read(&mut buffer);
-                let _ = socket.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                let _ = socket.write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
             }
         });
         std::thread::spawn(move || {

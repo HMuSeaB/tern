@@ -120,8 +120,7 @@ impl FolderFile {
         }
 
         if let Some(name) = target {
-            outcome.registry_changed =
-                ensure_folder_names(&mut self.folders, &[name.to_string()]);
+            outcome.registry_changed = ensure_folder_names(&mut self.folders, &[name.to_string()]);
         }
         outcome
     }
@@ -134,9 +133,7 @@ impl FolderFile {
             return Err(AppError::Folders("文件夹名不能为空".to_string()));
         }
         if self.folders.iter().any(|f| f.name == trimmed) {
-            return Err(AppError::Folders(format!(
-                "文件夹「{trimmed}」已经存在"
-            )));
+            return Err(AppError::Folders(format!("文件夹「{trimmed}」已经存在")));
         }
         self.folders.push(new_folder(trimmed));
         Ok(())
@@ -253,8 +250,7 @@ impl FolderFile {
 
 /// 注册表文件路径：`tern.json` 旁边的 `folders.json`。
 pub fn folders_path() -> Result<PathBuf> {
-    Ok(crate::config::config_path()?
-        .with_file_name(FOLDER_FILE_NAME))
+    Ok(crate::config::config_path()?.with_file_name(FOLDER_FILE_NAME))
 }
 
 /// 读注册表。**绝不返回错误**：文件不存在、解析失败、路径定位失败，一律按空表处理
@@ -276,10 +272,7 @@ pub fn read() -> FolderFile {
             file
         }
         Err(error) => {
-            log::warn!(
-                "[folders] {} 解析失败，按空表处理: {error}",
-                path.display()
-            );
+            log::warn!("[folders] {} 解析失败，按空表处理: {error}", path.display());
             FolderFile::default()
         }
     }
@@ -465,9 +458,7 @@ fn has_scheme(text: &str) -> bool {
 /// 拆不出（没有 `://`）返回 None。
 fn split_url(url: &str) -> Option<(&str, &str, &str)> {
     let (scheme, after) = url.split_once("://")?;
-    let end = after
-        .find(['/', '?', '#'])
-        .unwrap_or(after.len());
+    let end = after.find(['/', '?', '#']).unwrap_or(after.len());
     Some((scheme, &after[..end], &after[end..]))
 }
 
@@ -683,7 +674,10 @@ mod tests {
         // 空名 → 拒绝
         assert_eq!(rename_folder(&mut folders, "OpenRouter", "   "), None);
         // 新旧同名 → 拒绝
-        assert_eq!(rename_folder(&mut folders, "OpenRouter", "OpenRouter"), None);
+        assert_eq!(
+            rename_folder(&mut folders, "OpenRouter", "OpenRouter"),
+            None
+        );
         assert_eq!(folders[1].name, "OpenRouter", "被拒绝的改名不该留下痕迹");
     }
 
@@ -747,7 +741,10 @@ mod tests {
                 registry_changed: false
             }
         );
-        assert_eq!(file.assignments.get("a").map(String::as_str), Some("NVIDIA"));
+        assert_eq!(
+            file.assignments.get("a").map(String::as_str),
+            Some("NVIDIA")
+        );
 
         // 原地再点一次：已经在目标文件夹，不该算改动（否则每次都白写一次盘）
         let again = file.assign(&["a".to_string()], Some("NVIDIA"));
@@ -787,10 +784,19 @@ mod tests {
 
     #[test]
     fn rename_moves_every_provider_in_that_folder() {
-        let mut file = file_of(&["NVIDIA", "OpenRouter"], &[("a", "NVIDIA"), ("b", "NVIDIA")]);
+        let mut file = file_of(
+            &["NVIDIA", "OpenRouter"],
+            &[("a", "NVIDIA"), ("b", "NVIDIA")],
+        );
         assert_eq!(file.rename("NVIDIA", "Nvidia").unwrap(), 2);
-        assert_eq!(file.assignments.get("a").map(String::as_str), Some("Nvidia"));
-        assert_eq!(file.assignments.get("b").map(String::as_str), Some("Nvidia"));
+        assert_eq!(
+            file.assignments.get("a").map(String::as_str),
+            Some("Nvidia")
+        );
+        assert_eq!(
+            file.assignments.get("b").map(String::as_str),
+            Some("Nvidia")
+        );
         assert!(
             file.folders.iter().any(|f| f.name == "Nvidia"),
             "注册表也要跟着改，否则改名后这个组就管不了了"
@@ -810,7 +816,10 @@ mod tests {
     fn rename_adopts_an_orphan_group() {
         let mut file = file_of(&[], &[("a", "某个外地组")]);
         assert_eq!(file.rename("某个外地组", "新名字").unwrap(), 1);
-        assert_eq!(file.assignments.get("a").map(String::as_str), Some("新名字"));
+        assert_eq!(
+            file.assignments.get("a").map(String::as_str),
+            Some("新名字")
+        );
         assert!(
             file.folders.iter().any(|f| f.name == "新名字"),
             "改完名要补登记，否则这个组还是管不了"
@@ -822,15 +831,24 @@ mod tests {
         let mut file = file_of(&["NVIDIA"], &[("a", "NVIDIA")]);
         assert_eq!(file.rename("NVIDIA", "  ").unwrap(), 0);
         assert_eq!(file.rename("NVIDIA", "NVIDIA").unwrap(), 0);
-        assert_eq!(file.assignments.get("a").map(String::as_str), Some("NVIDIA"));
+        assert_eq!(
+            file.assignments.get("a").map(String::as_str),
+            Some("NVIDIA")
+        );
     }
 
     #[test]
     fn delete_clears_the_registry_and_the_assignments() {
-        let mut file = file_of(&["NVIDIA", "OpenRouter"], &[("a", "NVIDIA"), ("b", "OpenRouter")]);
+        let mut file = file_of(
+            &["NVIDIA", "OpenRouter"],
+            &[("a", "NVIDIA"), ("b", "OpenRouter")],
+        );
         assert_eq!(file.delete("NVIDIA"), 1);
         assert!(!file.folders.iter().any(|f| f.name == "NVIDIA"));
-        assert!(!file.assignments.contains_key("a"), "解散后供应商该回到未分组");
+        assert!(
+            !file.assignments.contains_key("a"),
+            "解散后供应商该回到未分组"
+        );
         assert!(file.assignments.contains_key("b"), "别动别的组");
     }
 
@@ -858,7 +876,11 @@ mod tests {
         let mut file = file_of(&["NVIDIA", "OpenRouter"], &[]);
         file.set_expanded("NVIDIA", false);
         assert_eq!(file.folders[0].is_expanded, Some(false));
-        assert_eq!(file.folders[1].is_expanded, Some(true), "别的组不该被带着改");
+        assert_eq!(
+            file.folders[1].is_expanded,
+            Some(true),
+            "别的组不该被带着改"
+        );
         // 不存在的名字静默无事：那是前端传来的过期 key
         file.set_expanded("不存在", false);
         assert_eq!(file.folders[1].is_expanded, Some(true));
@@ -891,7 +913,10 @@ mod tests {
             "补的 http:// 只是解析脚手架，不该出现在结果里"
         );
         // 和写了协议的同一个地址必须归到同一组
-        assert_eq!(group_key("api.deepseek.com/anthropic"), group_key("API.DeepSeek.com/anthropic"));
+        assert_eq!(
+            group_key("api.deepseek.com/anthropic"),
+            group_key("API.DeepSeek.com/anthropic")
+        );
     }
 
     #[test]
@@ -957,7 +982,11 @@ mod tests {
         assert_eq!(domain_root_of(""), None);
         assert_eq!(domain_root_of("   "), None);
         assert_eq!(domain_root_of("http://"), None);
-        assert_eq!(domain_root_of("localhost"), None, "没写协议的 localhost 也是本地");
+        assert_eq!(
+            domain_root_of("localhost"),
+            None,
+            "没写协议的 localhost 也是本地"
+        );
     }
 
     /// 真实数据里最常见的形状：裸域名（不带 path）。这是中转站的典型配置。
@@ -966,15 +995,24 @@ mod tests {
     fn group_by_domain_requires_two_providers_per_domain() {
         let mut file = file_of(&[], &[]);
         let urls = [
-            ("a".to_string(), "https://integrate.api.nvidia.com/v1".to_string()),
+            (
+                "a".to_string(),
+                "https://integrate.api.nvidia.com/v1".to_string(),
+            ),
             ("b".to_string(), "https://site2.nvidia.com".to_string()),
-            ("c".to_string(), "https://api.deepseek.com/anthropic".to_string()),
+            (
+                "c".to_string(),
+                "https://api.deepseek.com/anthropic".to_string(),
+            ),
         ];
         let groups = file.group_by_domain(&urls);
 
         assert_eq!(groups.len(), 1, "只有 nvidia.com 够格");
         assert_eq!(groups[0].name, "nvidia.com");
-        assert_eq!(groups[0].provider_ids, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            groups[0].provider_ids,
+            vec!["a".to_string(), "b".to_string()]
+        );
         assert!(groups[0].is_new, "注册表是空的，这两个组都算新建");
         assert_eq!(file.folders.len(), 1);
         assert_eq!(

@@ -119,8 +119,14 @@ mod tests {
 
     #[test]
     fn host_parsing_handles_userinfo_port_and_ipv6() {
-        assert_eq!(host_of("https://user:pass@api.anthropic.com:8443/x"), Some("api.anthropic.com"));
-        assert_eq!(host_of("https://api.anthropic.com:443/"), Some("api.anthropic.com"));
+        assert_eq!(
+            host_of("https://user:pass@api.anthropic.com:8443/x"),
+            Some("api.anthropic.com")
+        );
+        assert_eq!(
+            host_of("https://api.anthropic.com:443/"),
+            Some("api.anthropic.com")
+        );
         assert_eq!(host_of("http://[::1]:15800/v1"), Some("::1"));
         assert_eq!(host_of("api.anthropic.com"), None);
         assert_eq!(host_of(""), None);
@@ -137,7 +143,10 @@ mod tests {
 
     #[test]
     fn filter_keeps_only_third_party() {
-        let providers = [spec("https://api.anthropic.com"), spec("https://relay.example.com")];
+        let providers = [
+            spec("https://api.anthropic.com"),
+            spec("https://relay.example.com"),
+        ];
         let flagged = third_party_providers(&providers);
         assert_eq!(flagged.len(), 1);
         assert_eq!(flagged[0].id, "p");

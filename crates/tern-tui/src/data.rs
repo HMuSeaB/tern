@@ -175,9 +175,7 @@ impl Snapshot {
                     .response_model
                     .clone()
                     .unwrap_or_else(|| r.client_model.clone()),
-                remapped: r
-                    .response_model
-                    .is_some_and(|m| m != r.client_model),
+                remapped: r.response_model.is_some_and(|m| m != r.client_model),
                 outcome: r.outcome,
                 tokens: r.fresh_input + r.output + r.cache_read + r.cache_write,
                 cost: r.cost.map(|c| c.to_string().parse().unwrap_or(0.0)),
@@ -238,7 +236,9 @@ impl Snapshot {
     }
 }
 
-fn resolve_config(explicit: Option<&Path>) -> std::result::Result<(PathBuf, GatewayConfig), String> {
+fn resolve_config(
+    explicit: Option<&Path>,
+) -> std::result::Result<(PathBuf, GatewayConfig), String> {
     let path = match explicit {
         Some(path) => path.to_path_buf(),
         None => std::env::var_os("TERN_CONFIG")
@@ -247,9 +247,11 @@ fn resolve_config(explicit: Option<&Path>) -> std::result::Result<(PathBuf, Gate
             .or_else(|| dirs::config_dir().map(|d| d.join("tern").join("tern.json")))
             .ok_or("找不到系统配置目录")?,
     };
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("读不了 {}: {e}", path.display()))?;
+    let text =
+        std::fs::read_to_string(&path).map_err(|e| format!("读不了 {}: {e}", path.display()))?;
     let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
-    let config: GatewayConfig = serde_json::from_str(text).map_err(|e| format!("{} 解析失败: {e}", path.display()))?;
+    let config: GatewayConfig =
+        serde_json::from_str(text).map_err(|e| format!("{} 解析失败: {e}", path.display()))?;
     Ok((path, config))
 }
 
@@ -329,7 +331,7 @@ fn single_day(days_ago: i64) -> DayRange {
 }
 
 fn clock(ms: i64) -> String {
-    use chrono::{TimeZone, Local};
+    use chrono::{Local, TimeZone};
     match Local.timestamp_millis_opt(ms).single() {
         Some(dt) => dt.format("%H:%M:%S").to_string(),
         None => "--:--:--".into(),
@@ -346,7 +348,11 @@ mod tests {
         let snapshot = Snapshot::load(Some(Path::new("definitely-not-here.json")));
         assert!(snapshot.config_error.is_some());
         assert!(snapshot.empty);
-        assert!(snapshot.status_text().contains("配置"), "{}", snapshot.status_text());
+        assert!(
+            snapshot.status_text().contains("配置"),
+            "{}",
+            snapshot.status_text()
+        );
     }
 
     #[test]
@@ -375,8 +381,6 @@ mod tests {
         // 正常值
         assert!((decimal_to_f64(&Decimal::from_str("18.47").unwrap()) - 18.47).abs() < 1e-9);
         // 极小值：纳美元口径的成本经常是 0.000182 这种
-        assert!(
-            (decimal_to_f64(&Decimal::from_str("0.000182").unwrap()) - 0.000182).abs() < 1e-12
-        );
+        assert!((decimal_to_f64(&Decimal::from_str("0.000182").unwrap()) - 0.000182).abs() < 1e-12);
     }
 }

@@ -1,6 +1,6 @@
 use tauri::Manager;
 
-use tern_app_lib::{AppState, tray};
+use tern_app_lib::{tray, AppState};
 
 fn main() {
     tauri::Builder::default()

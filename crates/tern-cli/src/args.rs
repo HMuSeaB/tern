@@ -58,7 +58,9 @@ pub enum Command {
         recent: usize,
     },
     /// 终端界面。给 SSH / 不想开图形界面的时候用。
-    Tui { paths: Paths },
+    Tui {
+        paths: Paths,
+    },
     /// 打开桌面面板。单独一个子命令而不是默认动作：它要拉起 webview，
     /// 内存是 TUI 的几十倍，不该被顺手触发。
     Panel,
@@ -66,7 +68,9 @@ pub enum Command {
     /// 已经在跑就安静退出——那是正常情况，不是错误。
     Agent,
     /// 从 cc-switch 的 SQL 备份导入供应商
-    Import { sql: PathBuf },
+    Import {
+        sql: PathBuf,
+    },
     Price {
         paths: Paths,
         action: PriceAction,

@@ -278,7 +278,10 @@ pub(crate) fn summary_of(
 ///
 /// `pub(crate)`：`providers` 模块写的是同一个文件，备份规则分叉会让
 /// `.bak` 时新时旧
-pub(crate) fn write_config(path: &std::path::Path, config: &tern_gateway::GatewayConfig) -> Result<()> {
+pub(crate) fn write_config(
+    path: &std::path::Path,
+    config: &tern_gateway::GatewayConfig,
+) -> Result<()> {
     if path.exists() {
         let backup = path.with_extension("json.bak");
         let _ = std::fs::copy(path, &backup);

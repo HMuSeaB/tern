@@ -67,9 +67,8 @@ fn run() -> anyhow::Result<()> {
         .build()?;
     runtime.block_on(async move {
         let control_state = state.clone();
-        let control_task = tokio::spawn(async move {
-            control::serve(control_state, control_config).await
-        });
+        let control_task =
+            tokio::spawn(async move { control::serve(control_state, control_config).await });
 
         // 停机信号：Ctrl+C 或任务管理器。收到就停网关——
         // 在途的流会补记 aborted，写入线程把队列排空

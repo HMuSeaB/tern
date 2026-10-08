@@ -32,7 +32,6 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 
-
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -159,14 +158,12 @@ pub fn import_providers(db_path: &PathBuf, app_type: &str) -> Result<ImportRepor
         });
     }
 
-    let conn = rusqlite::Connection::open_with_flags(
-        db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .map_err(|source| ImportError::DbOpen {
-        path: db_path.display().to_string(),
-        source,
-    })?;
+    let conn =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|source| ImportError::DbOpen {
+                path: db_path.display().to_string(),
+                source,
+            })?;
 
     let rows = read_providers(&conn, app_type)?;
     let folder_names = read_folder_registry(&conn, app_type);
@@ -220,11 +217,9 @@ pub fn import_providers_from_sql(
 /// 所以这里只抽 `name`，顺序按数组原样保留——用户排过的顺序不该被重排。
 fn read_folder_registry(conn: &rusqlite::Connection, app_type: &str) -> Vec<String> {
     let key = format!("provider_folders_{app_type}");
-    let raw = match conn.query_row(
-        "SELECT value FROM settings WHERE key = ?1",
-        [&key],
-        |row| row.get::<_, String>(0),
-    ) {
+    let raw = match conn.query_row("SELECT value FROM settings WHERE key = ?1", [&key], |row| {
+        row.get::<_, String>(0)
+    }) {
         Ok(raw) => raw,
         Err(rusqlite::Error::QueryReturnedNoRows) => return Vec::new(),
         Err(source) => {
@@ -251,7 +246,10 @@ fn folder_names_from_json(raw: &str) -> Vec<String> {
         .collect()
 }
 
-fn read_providers(conn: &rusqlite::Connection, app_type: &str) -> Result<Vec<CcSwitchProvider>, ImportError> {
+fn read_providers(
+    conn: &rusqlite::Connection,
+    app_type: &str,
+) -> Result<Vec<CcSwitchProvider>, ImportError> {
     let mut stmt = conn
         .prepare(
             "SELECT id, name, settings_config, meta
@@ -295,7 +293,12 @@ fn finish(rows: Vec<CcSwitchProvider>, folder_names: Vec<String>) -> ImportRepor
         // 归属只在**这条真的导入成功**时才带。跳过的供应商（缺地址 / 缺 key）
         // 带个归属过来只会得到一条指向不存在对象的记录
         if report.specs.last().map(|s| &s.id) == Some(&id) {
-            if let Some(folder) = row.folder.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
+            if let Some(folder) = row
+                .folder
+                .as_deref()
+                .map(str::trim)
+                .filter(|f| !f.is_empty())
+            {
                 report.folder_assignments.push((id, folder.to_string()));
             }
         }
@@ -336,8 +339,14 @@ fn parse_providers_insert(
 
         // 列名在第一个圆括号里，用它们定位 id/name/settings_config/meta 的下标。
         // 死记列序不安全：cc-switch 加过列（本次导出就有 18 列，比 schema 定义时多）。
-        let Some(open) = trimmed.find('(') else { i += 1; continue };
-        let Some(close) = trimmed.find(')') else { i += 1; continue };
+        let Some(open) = trimmed.find('(') else {
+            i += 1;
+            continue;
+        };
+        let Some(close) = trimmed.find(')') else {
+            i += 1;
+            continue;
+        };
         if open >= close {
             i += 1;
             continue;
@@ -360,7 +369,10 @@ fn parse_providers_insert(
         };
 
         // 从 VALUES 之后一直吃到分号：元组可能跨多行
-        let Some(values_at) = trimmed.find("VALUES") else { i += 1; continue };
+        let Some(values_at) = trimmed.find("VALUES") else {
+            i += 1;
+            continue;
+        };
         let mut body = String::from(&trimmed[values_at + "VALUES".len()..]);
         body.push('\n');
         i += 1;
@@ -424,8 +436,14 @@ fn parse_settings_insert(text: &str, app_type: &str) -> Vec<String> {
             continue;
         }
 
-        let Some(open) = trimmed.find('(') else { i += 1; continue };
-        let Some(close) = trimmed.find(')') else { i += 1; continue };
+        let Some(open) = trimmed.find('(') else {
+            i += 1;
+            continue;
+        };
+        let Some(close) = trimmed.find(')') else {
+            i += 1;
+            continue;
+        };
         if open >= close {
             i += 1;
             continue;
@@ -442,7 +460,10 @@ fn parse_settings_insert(text: &str, app_type: &str) -> Vec<String> {
             continue;
         };
 
-        let Some(values_at) = trimmed.find("VALUES") else { i += 1; continue };
+        let Some(values_at) = trimmed.find("VALUES") else {
+            i += 1;
+            continue;
+        };
         let mut body = String::from(&trimmed[values_at + "VALUES".len()..]);
         body.push('\n');
         i += 1;
@@ -541,7 +562,10 @@ fn field_is(fields: &[String], index: usize, expected: &str) -> bool {
 /// 取字段值并做 SQL 反转义。`X'Y'Z` → `X'Y'Z`
 fn field_text(raw: &str) -> String {
     let trimmed = raw.trim();
-    let unquoted = match trimmed.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
+    let unquoted = match trimmed
+        .strip_prefix('\'')
+        .and_then(|s| s.strip_suffix('\''))
+    {
         Some(inner) => inner,
         None => trimmed,
     };
@@ -619,7 +643,9 @@ fn multiplier_of(raw: &Option<Value>) -> Option<String> {
     let is_default = text.is_empty()
         || text == "1"
         || text == "1.0"
-        || text.parse::<f64>().is_ok_and(|v| (v - 1.0).abs() < f64::EPSILON);
+        || text
+            .parse::<f64>()
+            .is_ok_and(|v| (v - 1.0).abs() < f64::EPSILON);
     (!is_default).then_some(text)
 }
 
@@ -666,8 +692,14 @@ mod tests {
     /// 会变成一个没有标题的分组，比"未分组"更难懂
     #[test]
     fn folder_of_meta_reads_and_normalizes() {
-        assert_eq!(folder_of_meta(r#"{"folder":"NVIDIA"}"#).as_deref(), Some("NVIDIA"));
-        assert_eq!(folder_of_meta(r#"{"folder":"  OpenRouter  "}"#).as_deref(), Some("OpenRouter"));
+        assert_eq!(
+            folder_of_meta(r#"{"folder":"NVIDIA"}"#).as_deref(),
+            Some("NVIDIA")
+        );
+        assert_eq!(
+            folder_of_meta(r#"{"folder":"  OpenRouter  "}"#).as_deref(),
+            Some("OpenRouter")
+        );
         assert_eq!(folder_of_meta(r#"{"folder":"   "}"#), None);
         assert_eq!(folder_of_meta(r#"{"api_format":"anthropic"}"#), None);
         assert_eq!(folder_of_meta("坏 JSON"), None);
@@ -840,7 +872,9 @@ mod tests {
 
     #[test]
     fn skip_reasons_read_as_sentences() {
-        assert!(SkipReason::NoBaseUrl.to_string().contains("ANTHROPIC_BASE_URL"));
+        assert!(SkipReason::NoBaseUrl
+            .to_string()
+            .contains("ANTHROPIC_BASE_URL"));
         assert!(SkipReason::NoCredentials.to_string().contains("凭据"));
         assert!(SkipReason::BadJson.to_string().contains("JSON"));
     }
@@ -921,7 +955,10 @@ mod tests {
         assert!(report.skipped.is_empty(), "{:?}", report.skipped);
         // 按列名取下标，不是死记位置：多出来的 extra 列不该影响取值
         assert_eq!(report.specs[0].id, "deepseek");
-        assert_eq!(report.specs[0].base_url, "https://api.deepseek.com/anthropic");
+        assert_eq!(
+            report.specs[0].base_url,
+            "https://api.deepseek.com/anthropic"
+        );
         assert_eq!(report.specs[0].cost_multiplier.as_deref(), Some("0.5"));
         assert_eq!(report.specs[0].api_format, ApiFormat::Anthropic);
         // 带 /v1 的猜成 openai_chat
@@ -941,7 +978,12 @@ mod tests {
         let path = &sql_file.path;
 
         let report = import_providers_from_sql(path, "claude").unwrap();
-        assert_eq!(report.specs.len(), 1, "转义处理错就会整条跳过: {:?}", report.skipped);
+        assert_eq!(
+            report.specs.len(),
+            1,
+            "转义处理错就会整条跳过: {:?}",
+            report.skipped
+        );
     }
 
     #[test]
@@ -981,16 +1023,8 @@ mod tests {
     #[test]
     fn sql_export_reports_skipped_rows_with_reasons() {
         let sql = sql_export(&[
-            (
-                "no-url",
-                r#"{"env":{"ANTHROPIC_AUTH_TOKEN":"k"}}"#,
-                "{}",
-            ),
-            (
-                "broken",
-                "not json",
-                "{}",
-            ),
+            ("no-url", r#"{"env":{"ANTHROPIC_AUTH_TOKEN":"k"}}"#, "{}"),
+            ("broken", "not json", "{}"),
         ]);
         let sql_file = write_temp_sql(&sql);
         let path = &sql_file.path;
@@ -1049,8 +1083,8 @@ mod tests {
             return;
         }
 
-        let report = import_providers(&path, "claude")
-            .unwrap_or_else(|e| panic!("读真实库失败: {e}"));
+        let report =
+            import_providers(&path, "claude").unwrap_or_else(|e| panic!("读真实库失败: {e}"));
 
         eprintln!("=== 真实库解析结果 ===");
         eprintln!(
@@ -1072,7 +1106,10 @@ mod tests {
             eprintln!("  跳过 {id}: {reason}");
         }
 
-        assert!(!report.specs.is_empty(), "活库一条都没导入进来，用户点了导入会是空的");
+        assert!(
+            !report.specs.is_empty(),
+            "活库一条都没导入进来，用户点了导入会是空的"
+        );
         for spec in &report.specs {
             assert!(!spec.base_url.trim().is_empty(), "{} 没有地址", spec.id);
             assert!(!spec.id.trim().is_empty(), "有空 id 的供应商");

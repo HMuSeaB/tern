@@ -128,10 +128,7 @@ async fn handle(
         ("GET", "/api/status") => ("200 OK", serde_json::to_string(&status_of(&state))?),
         ("POST", "/api/gateway/start") => match start_gateway(&state) {
             Ok(_) => ("200 OK", serde_json::to_string(&status_of(&state))?),
-            Err(error) => (
-                "409 Conflict",
-                error_body(&error.to_string()),
-            ),
+            Err(error) => ("409 Conflict", error_body(&error.to_string())),
         },
         ("POST", "/api/gateway/stop") => {
             state.stop();

@@ -195,14 +195,18 @@ fn import_from_cc_switch(sql: &Path) -> Result<()> {
         GatewayConfig::new(Vec::new())
     };
 
-    let report = tern_gateway::ccswitch_import::import_providers_from_sql(
-        &sql.to_path_buf(),
-        "claude",
-    )
-    .context("解析 SQL 备份失败")?;
+    let report =
+        tern_gateway::ccswitch_import::import_providers_from_sql(&sql.to_path_buf(), "claude")
+            .context("解析 SQL 备份失败")?;
 
     config.providers = report.specs.clone();
-    if config.access_token.as_deref().unwrap_or("").trim().is_empty() {
+    if config
+        .access_token
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .is_empty()
+    {
         config.access_token = Some(format!("tern-{}", uuid::Uuid::new_v4().simple()));
     }
 

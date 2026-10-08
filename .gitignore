@@ -2,7 +2,11 @@
 
 # 前端（crates/tern-app）
 node_modules/
-dist/
+crates/tern-app/dist/
+
+# tauri-build 每次构建重新生成。四个 schema JSON 加起来 300 KB，
+# 且内容由 capabilities/default.json 与 tauri 版本决定——本地提交上去只会
+# 在别人换 tauri 小版本时造成无意义的 diff
 src-tauri/gen/
 
 # Tauri 本地开发痕迹

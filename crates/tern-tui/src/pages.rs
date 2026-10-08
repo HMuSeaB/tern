@@ -15,7 +15,12 @@ const OK: Color = Color::Green;
 
 pub fn draw_today(frame: &mut Frame, area: ratatui::layout::Rect, snapshot: &Snapshot) {
     let Some(today) = snapshot.today.as_ref() else {
-        empty_state(frame, area, &snapshot.status_text(), "先跑 `tern serve`，网关会开始记账");
+        empty_state(
+            frame,
+            area,
+            &snapshot.status_text(),
+            "先跑 `tern serve`，网关会开始记账",
+        );
         return;
     };
 
@@ -73,7 +78,10 @@ pub fn draw_today(frame: &mut Frame, area: ratatui::layout::Rect, snapshot: &Sna
 
     // sparkline：最近 30 天
     if !snapshot.spend_series.is_empty() {
-        lines.push(Line::from(Span::styled("  近 30 天", Style::default().fg(DIM))));
+        lines.push(Line::from(Span::styled(
+            "  近 30 天",
+            Style::default().fg(DIM),
+        )));
         lines.push(Line::from(Span::styled(
             format!("  {}", sparkline(&snapshot.spend_series)),
             Style::default().fg(CYAN),
@@ -102,7 +110,11 @@ pub fn draw_today(frame: &mut Frame, area: ratatui::layout::Rect, snapshot: &Sna
             .map(|(model, _, tokens)| format!("{model}({})", tokens_short(*tokens)))
             .collect();
         lines.push(Line::from(Span::styled(
-            format!("  ! 未定价 {}：{}", snapshot.unpriced.len(), names.join(" ")),
+            format!(
+                "  ! 未定价 {}：{}",
+                snapshot.unpriced.len(),
+                names.join(" ")
+            ),
             Style::default().fg(WARN),
         )));
         lines.push(Line::from(Span::styled(
@@ -179,7 +191,12 @@ pub fn draw_today(frame: &mut Frame, area: ratatui::layout::Rect, snapshot: &Sna
 
 pub fn draw_providers(frame: &mut Frame, area: ratatui::layout::Rect, snapshot: &Snapshot) {
     if snapshot.providers.is_empty() {
-        empty_state(frame, area, "还没有供应商", "用 cc-switch 导出一份 SQL，让 tern 导入；或手写 tern.json");
+        empty_state(
+            frame,
+            area,
+            "还没有供应商",
+            "用 cc-switch 导出一份 SQL，让 tern 导入；或手写 tern.json",
+        );
         return;
     }
 
@@ -203,7 +220,10 @@ pub fn draw_providers(frame: &mut Frame, area: ratatui::layout::Rect, snapshot: 
                     Style::default().fg(DIM),
                 ),
                 Span::raw(" "),
-                Span::raw(truncate(&provider.base_url, area.width.saturating_sub(60) as usize)),
+                Span::raw(truncate(
+                    &provider.base_url,
+                    area.width.saturating_sub(60) as usize,
+                )),
             ];
             if provider.web_tools_at_risk {
                 spans.push(Span::styled("  联网工具失效", Style::default().fg(WARN)));

@@ -156,14 +156,20 @@ impl Breakers {
     /// 删掉已经不存在的供应商。`set_providers` 之后调，否则内存里会一直留着
     /// 用户删过的那几家的计数——重启才清，等于一个只涨不消的泄漏。
     pub fn retain(&self, alive: &[String]) {
-        let mut inner = self.inner.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         inner.retain(|id, _| alive.iter().any(|keep| keep == id));
     }
 
     /// 当前所有熔断器的快照。给面板 / `tern check` 显示"哪几家被摘了"。
     pub async fn snapshot(&self, config: &CircuitBreakerConfig) -> Vec<(String, CircuitState)> {
         let ids: Vec<String> = {
-            let inner = self.inner.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let inner = self
+                .inner
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             inner.keys().cloned().collect()
         };
         let mut out = Vec::with_capacity(ids.len());
@@ -266,8 +272,7 @@ mod tests {
     /// 用户手改 tern.json 时只写一部分是常态，解析失败等于整个网关起不来。
     #[test]
     fn a_partial_config_deserializes() {
-        let config: ResilienceConfig =
-            serde_json::from_str(r#"{"failureThreshold": 2}"#).unwrap();
+        let config: ResilienceConfig = serde_json::from_str(r#"{"failureThreshold": 2}"#).unwrap();
         assert_eq!(config.failure_threshold, 2);
         assert_eq!(config.success_threshold, 2, "没给的字段用默认值");
         assert!(config.failover_enabled);

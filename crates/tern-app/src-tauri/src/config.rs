@@ -57,14 +57,17 @@ pub fn warnings(config: &GatewayConfig) -> Vec<String> {
     } else if !has_usable_provider(config) {
         // 和上面的"一个都没有"分开说：这里的数量不为零，
         // 用户会以为配好了，实际一个都用不了
-        warnings.push("配了供应商，但 key 全是占位符或空——请求都会失败，建议从 cc-switch 导入".to_string());
+        warnings.push(
+            "配了供应商，但 key 全是占位符或空——请求都会失败，建议从 cc-switch 导入".to_string(),
+        );
     }
     if config
         .access_token
         .as_deref()
         .is_none_or(|t| t.trim().is_empty())
     {
-        warnings.push("未设置 accessToken：本机任何进程都能通过 tern 使用你的供应商 key".to_string());
+        warnings
+            .push("未设置 accessToken：本机任何进程都能通过 tern 使用你的供应商 key".to_string());
     }
     for spec in &config.providers {
         match &spec.auth {
@@ -91,8 +94,7 @@ pub fn warnings(config: &GatewayConfig) -> Vec<String> {
 /// 应用第一次启动：生成一份带随机 accessToken 的样例
 pub fn write_sample(path: &Path) -> Result<String> {
     if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
-        std::fs::create_dir_all(dir)
-            .with_context(|| format!("创建目录 {} 失败", dir.display()))?;
+        std::fs::create_dir_all(dir).with_context(|| format!("创建目录 {} 失败", dir.display()))?;
     }
     let token = format!("tern-{}", uuid::Uuid::new_v4().simple());
     let sample = serde_json::json!({
@@ -216,6 +218,9 @@ mod tests {
         );
 
         let none = warnings(&config_of(Vec::new()));
-        assert!(none.iter().any(|w| w.contains("没有配置任何供应商")), "{none:?}");
+        assert!(
+            none.iter().any(|w| w.contains("没有配置任何供应商")),
+            "{none:?}"
+        );
     }
 }

@@ -31,7 +31,10 @@ impl ReadonlyDb {
         })
     }
 
-    pub(crate) fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> Result<T, AppError>) -> Result<T, AppError> {
+    pub(crate) fn with_conn<T>(
+        &self,
+        f: impl FnOnce(&Connection) -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
         let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
         f(&conn)
     }
@@ -44,7 +47,10 @@ pub(crate) fn resolve_db_path() -> Result<PathBuf, AppError> {
         return Ok(PathBuf::from(path));
     }
     if let Some(config) = std::env::var_os("TERN_CONFIG").filter(|v| !v.is_empty()) {
-        if let Some(dir) = Path::new(&config).parent().filter(|d| !d.as_os_str().is_empty()) {
+        if let Some(dir) = Path::new(&config)
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+        {
             return Ok(dir.join("usage.db"));
         }
     }

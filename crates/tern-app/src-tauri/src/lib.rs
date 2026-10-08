@@ -100,7 +100,10 @@ impl AppState {
     }
 
     pub fn notice(&self) -> Option<String> {
-        self.notice.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        self.notice
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     pub fn db_path(&self) -> String {
@@ -135,9 +138,7 @@ impl AppState {
     ) -> std::result::Result<T, AppError> {
         self.ensure_open()?;
         let guard = self.db.lock().unwrap_or_else(|p| p.into_inner());
-        let handle = guard
-            .as_ref()
-            .ok_or_else(|| error::AppError::NoConfigDir)?;
+        let handle = guard.as_ref().ok_or_else(|| error::AppError::NoConfigDir)?;
         f(handle)
     }
 }

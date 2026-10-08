@@ -84,12 +84,7 @@ pub fn permission_presets() -> Vec<(&'static str, &'static str, &'static str, &'
             "允许 pnpm、npm 装依赖与跑脚本",
             "Bash(pnpm:*)",
         ),
-        (
-            "node",
-            "node",
-            "允许直接跑 node 脚本",
-            "Bash(node:*)",
-        ),
+        ("node", "node", "允许直接跑 node 脚本", "Bash(node:*)"),
         (
             "git",
             "git",
@@ -134,7 +129,8 @@ fn read_json(path: &std::path::Path) -> Result<Value> {
     if text.trim().is_empty() {
         return Ok(Value::Object(Map::new()));
     }
-    serde_json::from_str(text).map_err(|e| AppError::Config(format!("{} 解析失败: {e}", path.display())))
+    serde_json::from_str(text)
+        .map_err(|e| AppError::Config(format!("{} 解析失败: {e}", path.display())))
 }
 
 /// 列出所有预设及当前状态。文件不存在时全部视为未放行。
@@ -348,13 +344,25 @@ mod tests {
         let json: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(json["model"], "opus", "无关字段被抹了");
         assert_eq!(json["includeCoAuthoredBy"], false, "无关字段被抹了");
-        assert_eq!(json["env"]["ANTHROPIC_BASE_URL"], "http://127.0.0.1:5000", "cc-switch 的 env 被抹了");
-        assert_eq!(json["env"]["ANTHROPIC_AUTH_TOKEN"], "PROXY_MANAGED", "cc-switch 的 env 被抹了");
+        assert_eq!(
+            json["env"]["ANTHROPIC_BASE_URL"], "http://127.0.0.1:5000",
+            "cc-switch 的 env 被抹了"
+        );
+        assert_eq!(
+            json["env"]["ANTHROPIC_AUTH_TOKEN"], "PROXY_MANAGED",
+            "cc-switch 的 env 被抹了"
+        );
         let allow = string_array(json.pointer("/permissions/allow"));
-        assert!(allow.contains(&"Bash(ls:*)".to_string()), "用户原有放行被抹了");
+        assert!(
+            allow.contains(&"Bash(ls:*)".to_string()),
+            "用户原有放行被抹了"
+        );
         assert!(allow.contains(&"Bash(cargo:*)".to_string()));
         // deny 一个字都不能动
-        assert_eq!(string_array(json.pointer("/permissions/deny")), vec!["WebSearch"]);
+        assert_eq!(
+            string_array(json.pointer("/permissions/deny")),
+            vec!["WebSearch"]
+        );
     }
 
     #[test]
@@ -463,7 +471,10 @@ mod tests {
         for (id, label, detail, rule) in permission_presets() {
             //  deliberately 没有"全部放行"：那个开关等于关掉整个权限系统，
             //  误点了无法挽回。逐项点能让人看清每一项的代价。
-            assert!(rule.starts_with("Bash(") || rule.starts_with("Edit("), "{id}");
+            assert!(
+                rule.starts_with("Bash(") || rule.starts_with("Edit("),
+                "{id}"
+            );
             assert!(!rule.contains(":*:*") && rule != "*", "{id}");
             assert!(!label.is_empty() && !detail.is_empty(), "{id}");
         }

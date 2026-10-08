@@ -92,10 +92,15 @@ fn nano_to_usd_string(nano: i64) -> String {
     // 手写而不是用 Decimal：这里只需要显示，且不想让面板依赖 rust_decimal 的版本
     let sign = if nano < 0 { "-" } else { "" };
     let nano = nano.unsigned_abs();
-    format!("{}{}.{:09}", sign, nano / 1_000_000_000, nano % 1_000_000_000)
-        .trim_end_matches('0')
-        .trim_end_matches('.')
-        .to_string()
+    format!(
+        "{}{}.{:09}",
+        sign,
+        nano / 1_000_000_000,
+        nano % 1_000_000_000
+    )
+    .trim_end_matches('0')
+    .trim_end_matches('.')
+    .to_string()
 }
 
 // hero 的 token 总量、缓存命中率由前端自己算（Dto 只搬原始桶），
@@ -220,7 +225,13 @@ pub fn import_from_cc_switch(state: State<'_, AppState>) -> Result<CcSwitchPrevi
     let mut config = crate::config::load(&config_path)
         .unwrap_or_else(|_| tern_gateway::GatewayConfig::new(Vec::new()));
     config.providers = report.specs.clone();
-    if config.access_token.as_deref().unwrap_or("").trim().is_empty() {
+    if config
+        .access_token
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .is_empty()
+    {
         config.access_token = Some(format!("tern-{}", uuid::Uuid::new_v4().simple()));
     }
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)? + "\n")
@@ -325,12 +336,9 @@ fn preview_of(
     }
 }
 
-
 #[tauri::command]
 pub fn panel_summary(state: State<'_, AppState>) -> Result<PanelDto> {
-    state.with_db(|db| {
-        db.with_conn(|conn| build_panel(conn, &state.db_path()))
-    })
+    state.with_db(|db| db.with_conn(|conn| build_panel(conn, &state.db_path())))
 }
 
 /// 面板首屏的全部数据。抽成不依赖 tauri 的普通函数，测试可以直接调用。
@@ -487,10 +495,9 @@ fn with_store<T>(
     // 但路径要补上——库打不开时用户最想知道的是"它在找哪个文件"
     let store = tern_store::Store::open_readonly(&path).map_err(|error| {
         let with_path = match &error {
-            tern_store::StoreError::Sqlite(_) => format!(
-                "打不开用量数据库 {}：{error}",
-                path.display()
-            ),
+            tern_store::StoreError::Sqlite(_) => {
+                format!("打不开用量数据库 {}：{error}", path.display())
+            }
             other => other.to_string(),
         };
         crate::error::AppError::Store(with_path)
@@ -551,7 +558,11 @@ pub fn panel_breakdown(
 
 /// 会话视图：按 `session_id` 聚合。"这次重构花了多少"由它回答。
 #[tauri::command]
-pub fn panel_sessions(state: State<'_, AppState>, days: u32, limit: usize) -> Result<Vec<SessionDto>> {
+pub fn panel_sessions(
+    state: State<'_, AppState>,
+    days: u32,
+    limit: usize,
+) -> Result<Vec<SessionDto>> {
     with_store(state.inner(), |store| {
         Ok(store
             .sessions(&range_of(days), limit)?

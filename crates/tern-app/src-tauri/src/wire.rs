@@ -191,9 +191,10 @@ pub fn wire_enable() -> Result<WireStatus> {
     {
         let path = dir.join("settings.json");
         let mut root = read_settings(&path)?;
-        let env = ensure_env(root.as_object_mut().ok_or_else(|| {
-            AppError::Config("settings.json 顶层不是对象".into())
-        })?)?;
+        let env = ensure_env(
+            root.as_object_mut()
+                .ok_or_else(|| AppError::Config("settings.json 顶层不是对象".into()))?,
+        )?;
 
         for key in [BASE_URL_KEY, AUTH_TOKEN_KEY] {
             if let Some(old) = env.get(key).and_then(Value::as_str) {
@@ -202,16 +203,18 @@ pub fn wire_enable() -> Result<WireStatus> {
         }
         env.insert(BASE_URL_KEY.to_string(), Value::String(tern_base_url));
         if let Some(token) = &token {
-            env.insert(
-                AUTH_TOKEN_KEY.to_string(),
-                Value::String(token.clone()),
-            );
+            env.insert(AUTH_TOKEN_KEY.to_string(), Value::String(token.clone()));
         }
 
         write_settings(&path, &root)?;
     }
 
-    write_backup(&dir, &Backup { replaced_env: replaced })?;
+    write_backup(
+        &dir,
+        &Backup {
+            replaced_env: replaced,
+        },
+    )?;
     status_at(&dir, &GatewayEndpoint::from_agent()?)
 }
 
@@ -224,9 +227,10 @@ pub fn wire_disable() -> Result<WireStatus> {
     {
         let path = dir.join("settings.json");
         let mut root = read_settings(&path)?;
-        let env = ensure_env(root.as_object_mut().ok_or_else(|| {
-            AppError::Config("settings.json 顶层不是对象".into())
-        })?)?;
+        let env = ensure_env(
+            root.as_object_mut()
+                .ok_or_else(|| AppError::Config("settings.json 顶层不是对象".into()))?,
+        )?;
 
         for key in [BASE_URL_KEY, AUTH_TOKEN_KEY] {
             match backup.replaced_env.iter().find(|(k, _)| k == key) {
@@ -419,11 +423,12 @@ fn ensure_env(root: &mut Map<String, Value>) -> Result<&mut Map<String, Value>> 
         .entry("env")
         .or_insert_with(|| Value::Object(Map::new()));
     if !env.is_object() {
-        return Err(AppError::Config("settings.json 的 env 已存在且不是对象".into()));
+        return Err(AppError::Config(
+            "settings.json 的 env 已存在且不是对象".into(),
+        ));
     }
-    env.as_object_mut().ok_or_else(|| {
-        AppError::Config("settings.json 的 env 已存在且不是对象".into())
-    })
+    env.as_object_mut()
+        .ok_or_else(|| AppError::Config("settings.json 的 env 已存在且不是对象".into()))
 }
 
 /// 落盘前留一份备份，只留第一次的。
@@ -488,13 +493,21 @@ mod tests {
                     replaced.push((key.to_string(), old.to_string()));
                 }
             }
-            env.insert(BASE_URL_KEY.to_string(), Value::String(tern_url.to_string()));
+            env.insert(
+                BASE_URL_KEY.to_string(),
+                Value::String(tern_url.to_string()),
+            );
             if let Some(token) = token {
                 env.insert(AUTH_TOKEN_KEY.to_string(), Value::String(token.to_string()));
             }
         }
         write_settings(&path, &root)?;
-        write_backup(dir, &Backup { replaced_env: replaced })
+        write_backup(
+            dir,
+            &Backup {
+                replaced_env: replaced,
+            },
+        )
     }
 
     fn disable_in(dir: &Path) -> Result<()> {
@@ -537,7 +550,10 @@ mod tests {
             json["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"],
             "claude-sonnet-4-6[1M]"
         );
-        assert_eq!(json["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "step-5-preview[1M]");
+        assert_eq!(
+            json["env"]["CLAUDE_CODE_SUBAGENT_MODEL"],
+            "step-5-preview[1M]"
+        );
         assert_eq!(json["includeCoAuthoredBy"], false);
     }
 
@@ -687,7 +703,11 @@ mod tests {
     #[test]
     fn client_model_falls_back_when_no_env_is_configured() {
         let (_g, dir) = dir();
-        std::fs::write(dir.join("settings.json"), r#"{"includeCoAuthoredBy":false}"#).unwrap();
+        std::fs::write(
+            dir.join("settings.json"),
+            r#"{"includeCoAuthoredBy":false}"#,
+        )
+        .unwrap();
         assert_eq!(client_model(&dir).unwrap(), "claude-sonnet-4-6");
     }
 
