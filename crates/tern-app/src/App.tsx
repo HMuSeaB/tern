@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { PanelView } from "./PanelView";
 import { Permissions } from "./Permissions";
@@ -9,6 +9,15 @@ import { useTern, type CcSwitchPreview } from "./useTern";
 import { Welcome } from "./Welcome";
 import { Wire } from "./Wire";
 import type { ConfigSummary, ServerStatus } from "./types";
+
+/** 二级视图按需加载。
+ *
+ *  recharts 一家就把包从 268 KB 顶到 677 KB，而它只在用户展开"趋势与占比"时
+ *  才用得上——多数人打开面板只是想看一眼今天花了多少。拆成独立 chunk 之后
+ *  首屏不用为它付下载和解析的钱。 */
+const PanelInsights = lazy(() =>
+  import("./PanelInsights").then((m) => ({ default: m.PanelInsights })),
+);
 
 type Theme = "light" | "dark";
 const THEME_KEY = "tern-theme";
@@ -129,6 +138,13 @@ function Tabs({
     return TABS.includes(saved as TabId) ? (saved as TabId) : "providers";
   });
 
+  /** 「用量」页里"趋势与占比"的展开状态。
+   *
+   *  默认收起不是因为它不重要，而是首屏的 hero + 小卡 + 提示是 ROADMAP
+   *  阶段 6 定下的密度。二级视图要拉四次聚合查询，默认展开会让每次打开面板
+   *  都先等四个请求——而多数人只是想看一眼今天花了多少。 */
+  const [showInsights, setShowInsights] = useState(false);
+
   useEffect(() => {
     localStorage.setItem(TAB_KEY, active);
   }, [active]);
@@ -167,7 +183,33 @@ function Tabs({
             // 拼一个假 server 只会把 listen 地址和 agent 状态弄丢
             <IdleState server={server} warnings={warnings} providerCount={providerCount} />
           ) : panel.state.kind === "ready" ? (
-            <PanelView panel={panel.state.panel} onRefresh={panel.refresh} />
+            <>
+              {/* 首屏（hero + 小卡 + 提示）永远在最上面。ROADMAP 阶段 6 定的：
+                  "最常用的操作"先看到，二级视图要用户主动展开 */}
+              <PanelView panel={panel.state.panel} onRefresh={panel.refresh} />
+              <section className="card">
+                <button
+                  className="disclosure"
+                  onClick={() => setShowInsights((v) => !v)}
+                  aria-expanded={showInsights}
+                >
+                  <span className={`chevron ${showInsights ? "open" : ""}`}>▸</span>
+                  趋势与占比
+                  <span className="disclosure-count">花在哪 / 模型流向 / 会话</span>
+                </button>
+                {showInsights && (
+                  <Suspense
+                    fallback={
+                      <p className="empty-text" style={{ padding: "18px 0" }}>
+                        正在加载图表…
+                      </p>
+                    }
+                  >
+                    <PanelInsights />
+                  </Suspense>
+                )}
+              </section>
+            </>
           ) : panel.state.kind === "error" ? (
             /* 跑着却读不到库：和"网关停了"是两回事，说反了会让人白点启动 */
             <div className="notice err">

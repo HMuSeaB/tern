@@ -38,6 +38,11 @@ fn main() {
             // 面板
             tern_app_lib::commands::open_db,
             tern_app_lib::commands::panel_summary,
+            // 面板二级视图：趋势 / 占比 / 会话 / 模型流向
+            tern_app_lib::commands::panel_trend,
+            tern_app_lib::commands::panel_breakdown,
+            tern_app_lib::commands::panel_sessions,
+            tern_app_lib::commands::panel_model_flow,
             // 网关启停
             tern_app_lib::server::server_start,
             tern_app_lib::server::server_stop,

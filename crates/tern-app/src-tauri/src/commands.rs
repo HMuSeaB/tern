@@ -442,3 +442,204 @@ pub fn build_panel(conn: &rusqlite::Connection, db_path: &str) -> Result<PanelDt
         })
     }
 }
+
+// ---------------------------------------------------------------------------
+// 二级视图（ROADMAP T+3）：趋势 / 花在哪 / 会话 / 模型流向
+// ---------------------------------------------------------------------------
+
+/// 日期范围。`days = 0` 表示今天一天。
+///
+/// 日期由 Rust 侧算而不是前端传：本地时区的"今天"得和写入时算 `day` 列的
+/// `tern_store::local_day` 同一口径。前端传字符串的话，换时区的人会看到一个
+/// 空窗口，而库明明有数据。
+#[derive(Debug, Serialize, Clone)]
+pub struct RangeDto {
+    pub from: String,
+    pub to: String,
+    pub days: u32,
+}
+
+fn range_of(days: u32) -> tern_store::DayRange {
+    if days <= 1 {
+        tern_store::DayRange::today()
+    } else {
+        tern_store::DayRange::last_days(days)
+    }
+}
+
+/// 在 Store 上执行查询。
+///
+/// 网关在跑（`set_shared_store` 存了一份）就直接用它——同一份 Store，口径不会
+/// 分叉；没在跑才另开只读连接。只读打开见 `tern_store::Store::open_readonly`：
+/// 它不建库、不迁移，所以库不存在时必须由这里报错，而不是造一个空库。
+fn with_store<T>(
+    state: &AppState,
+    f: impl FnOnce(&tern_store::Store) -> std::result::Result<T, crate::error::AppError>,
+) -> Result<T> {
+    if let Some(store) = state.shared_store() {
+        return f(&store);
+    }
+    let path = crate::db::resolve_db_path()?;
+    if !path.exists() {
+        return Err(crate::error::AppError::NoConfigDir);
+    }
+    // `?` 走 AppError::from(StoreError)：Sqlite 变体保留原错，其余折成 Store。
+    // 但路径要补上——库打不开时用户最想知道的是"它在找哪个文件"
+    let store = tern_store::Store::open_readonly(&path).map_err(|error| {
+        let with_path = match &error {
+            tern_store::StoreError::Sqlite(_) => format!(
+                "打不开用量数据库 {}：{error}",
+                path.display()
+            ),
+            other => other.to_string(),
+        };
+        crate::error::AppError::Store(with_path)
+    })?;
+    f(&store)
+}
+
+/// 花费趋势。`dim` 是 `provider` / `model` / `role` / `client` / `day`，
+/// 与 tern-store 的 `Breakdown` 同名，解析不了按天走。
+#[tauri::command]
+pub fn panel_trend(state: State<'_, AppState>, days: u32, dim: String) -> Result<Vec<TrendDto>> {
+    with_store(state.inner(), |store| {
+        let by = match dim.as_str() {
+            "provider" => tern_store::Breakdown::Provider,
+            "model" => tern_store::Breakdown::Model,
+            "role" => tern_store::Breakdown::Role,
+            "client" => tern_store::Breakdown::Client,
+            // 不认识的值按天走：报错会让整张图消失，而按天总归是能看的
+            _ => tern_store::Breakdown::Day,
+        };
+        Ok(store
+            .trend(&range_of(days), by)?
+            .into_iter()
+            .map(|point| TrendDto {
+                day: point.day,
+                key: point.key,
+                summary: summary_to_dto(&point.summary),
+            })
+            .collect())
+    })
+}
+
+/// 花在哪：按维度拆的占比。和趋势用同一个 [`Breakdown`]，口径才对得上。
+#[tauri::command]
+pub fn panel_breakdown(
+    state: State<'_, AppState>,
+    days: u32,
+    dim: String,
+) -> Result<Vec<BreakdownDto>> {
+    with_store(state.inner(), |store| {
+        let by = match dim.as_str() {
+            "provider" => tern_store::Breakdown::Provider,
+            "model" => tern_store::Breakdown::Model,
+            "role" => tern_store::Breakdown::Role,
+            "client" => tern_store::Breakdown::Client,
+            _ => tern_store::Breakdown::Day,
+        };
+        Ok(store
+            .breakdown(&range_of(days), by)?
+            .into_iter()
+            .map(|row| BreakdownDto {
+                key: row.key,
+                summary: summary_to_dto(&row.summary),
+            })
+            .collect())
+    })
+}
+
+/// 会话视图：按 `session_id` 聚合。"这次重构花了多少"由它回答。
+#[tauri::command]
+pub fn panel_sessions(state: State<'_, AppState>, days: u32, limit: usize) -> Result<Vec<SessionDto>> {
+    with_store(state.inner(), |store| {
+        Ok(store
+            .sessions(&range_of(days), limit)?
+            .into_iter()
+            .map(|row| SessionDto {
+                session_id: row.session_id,
+                client: row.client,
+                started_at_ms: row.started_at_ms,
+                ended_at_ms: row.ended_at_ms,
+                roles: row.roles,
+                summary: summary_to_dto(&row.summary),
+            })
+            .collect())
+    })
+}
+
+/// 模型流向：客户端模型 → 实际模型。
+///
+/// 这是"谁在花钱"的直接答案：子代理请求的 sonnet 全被供应商送去 Opus 这件事，
+/// 只有把它画出来才看得见。
+#[tauri::command]
+pub fn panel_model_flow(state: State<'_, AppState>, days: u32) -> Result<Vec<ModelFlowDto>> {
+    with_store(state.inner(), |store| {
+        Ok(store
+            .model_flow(&range_of(days))?
+            .into_iter()
+            .map(|row| ModelFlowDto {
+                client_model: row.client_model,
+                response_model: row.response_model,
+                summary: summary_to_dto(&row.summary),
+            })
+            .collect())
+    })
+}
+
+#[derive(Debug, Serialize)]
+pub struct TrendDto {
+    pub day: String,
+    pub key: String,
+    pub summary: SummaryDto,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BreakdownDto {
+    pub key: String,
+    pub summary: SummaryDto,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SessionDto {
+    pub session_id: String,
+    pub client: String,
+    pub started_at_ms: i64,
+    pub ended_at_ms: i64,
+    pub roles: Vec<String>,
+    pub summary: SummaryDto,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ModelFlowDto {
+    pub client_model: String,
+    pub response_model: Option<String>,
+    pub summary: SummaryDto,
+}
+
+/// `tern_store::Summary` → DTO。成本转成十进制字符串，理由同 [`SummaryDto`]。
+fn summary_to_dto(summary: &tern_store::Summary) -> SummaryDto {
+    SummaryDto {
+        requests: summary.requests,
+        failures: summary.failures,
+        aborted: summary.aborted,
+        fresh_input: summary.fresh_input,
+        output: summary.output,
+        cache_read: summary.cache_read,
+        cache_write: summary.cache_write,
+        // 与 nano_to_usd 同一套精度：trim 尾零再补分位，避免 "18.470000000"
+        cost: decimal_string(&summary.cost),
+        cache_savings: decimal_string(&summary.cache_savings),
+        unpriced: summary.unpriced,
+    }
+}
+
+fn decimal_string(value: &rust_decimal::Decimal) -> String {
+    let text = value.normalize().to_string();
+    if text.contains('.') {
+        text
+    } else {
+        // 前端按分位显示，整数也要有小数部分才好排版
+        format!("{text}.0")
+    }
+}

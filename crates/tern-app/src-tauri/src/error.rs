@@ -62,6 +62,19 @@ impl From<anyhow::Error> for AppError {
     }
 }
 
+/// 查询库失败。单独一个 `From` 而不是在每处 `map_err`：趋势 / 占比 / 会话 /
+/// 模型流向四个命令都要把 `StoreError` 转过来，写四遍只会漏。
+impl From<tern_store::StoreError> for AppError {
+    fn from(source: tern_store::StoreError) -> Self {
+        match source {
+            // sqlite 的原错保留：前端的"查询失败"提示要带上它才能看出是锁超时
+            // 还是库坏了，这两种的修法完全不同
+            tern_store::StoreError::Sqlite(source) => AppError::Query { source },
+            other => AppError::Store(other.to_string()),
+        }
+    }
+}
+
 impl From<serde_json::Error> for AppError {
     fn from(source: serde_json::Error) -> Self {
         AppError::Config(source.to_string())

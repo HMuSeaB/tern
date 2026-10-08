@@ -24,7 +24,8 @@ use tern_gateway::{Outcome, UsageEvent, UsageSink};
 
 pub use pricing::{ModelPrice, PriceBook, PriceSource};
 pub use query::{
-    Breakdown, BreakdownRow, DayRange, FailureGroup, RecentRequest, Summary, UnpricedModel,
+    Breakdown, BreakdownRow, DayRange, FailureGroup, ModelFlow, RecentRequest, SessionRow, Summary,
+    TrendPoint, UnpricedModel,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -76,6 +77,35 @@ impl Store {
 
     pub fn open_in_memory() -> Result<Self> {
         Self::init(Connection::open_in_memory()?)
+    }
+
+    /// 只读打开。给观察方用（面板、`tern usage` 只读模式）。
+    ///
+    /// 与 [`Store::open`] 的区别是刻意的，三条都不能少：
+    /// - 不 `create_dir_all`、不建库：库不存在时应当报错，而不是造一个空的
+    /// - 不 `journal_mode=WAL`：写模式是创建者定的，观察方无权改
+    /// - 不迁移：迁移是写方的事。读者面对更新的 schema 会由 [`StoreError::SchemaTooNew`]
+    ///   拦住，那正是想要的提示
+    pub fn open_readonly(path: &Path) -> Result<Self> {
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.busy_timeout(Duration::from_secs(3))?;
+        Self::init_readonly(conn)
+    }
+
+    fn init_readonly(conn: Connection) -> Result<Self> {
+        // 刻意不调用 schema::migrate：迁移是写方的事。只读打开一个 schema 比自己
+        // 新的库时，查询照样能跑（用的都是 V1 就有的列），要不要提示"库太新"
+        // 由调用方决定。
+        let store = Self {
+            conn: Mutex::new(conn),
+            prices: RwLock::new(Arc::new(PriceBook::default())),
+            multipliers: RwLock::new(HashMap::new()),
+        };
+        store.reload_prices()?;
+        Ok(store)
     }
 
     fn init(mut conn: Connection) -> Result<Self> {

@@ -21,6 +21,18 @@
   --bad-soft: #fdecec;
   --ok: #15803d;
 
+  /* 图表系列色。顺序固定，浅深两套各八色：够 8 个供应商不重样，
+     再多就该折叠成"其它"而不是继续加色——加下去只会更难认。
+     刻意避开红 / 绿相邻：色弱用户分不清，而这里要的是"区分"不是"好坏" */
+  --chart-1: #0d9488;
+  --chart-2: #4f6bd7;
+  --chart-3: #b45309;
+  --chart-4: #7c3aed;
+  --chart-5: #0e7490;
+  --chart-6: #a16207;
+  --chart-7: #be185d;
+  --chart-8: #4d7c0f;
+
   --sans: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
   --mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
 }
@@ -44,6 +56,16 @@
   --bad: #f87171;
   --bad-soft: #3a1a1a;
   --ok: #4ade80;
+
+  /* 深色下提亮同几个色相：直接沿用浅色那套在深底上会发暗 */
+  --chart-1: #2dd4bf;
+  --chart-2: #8ba4f0;
+  --chart-3: #f0b429;
+  --chart-4: #c4b5fd;
+  --chart-5: #38bdf8;
+  --chart-6: #fbbf24;
+  --chart-7: #f9a8d4;
+  --chart-8: #a3e635;
 }
 
 * {
@@ -1556,4 +1578,173 @@ select.prov-modal-input {
 .tab-page[inert] {
   /* inert 不动指针穿透，横滑期间被滑过的页仍会收到点击 */
   pointer-events: none;
+}
+
+/* ---- 二级视图（ROADMAP T+3）---- */
+.panel-insights,
+.panel > .insight-row {
+  display: grid;
+  gap: 14px;
+}
+
+/* 两张占比图并排，窄屏折成一行。用 minmax 而不是固定宽度：
+   面板最小 640，640 以下必须还能看 */
+.insight-row {
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+/* recharts 的 svg 会认 inline 的 fill / stroke，所以坐标轴和网格线的颜色
+   靠 JS 里的 var(--line) 传；这里只管容器和留白 */
+.chart-box {
+  width: 100%;
+  /* recharts 的 ResponsiveContainer 需要一个有高度的父级 */
+  min-height: 200px;
+}
+
+/* 自绘 tooltip。recharts 默认那个是白底黑字，深色主题下糊成一片 */
+.chart-tip {
+  background: var(--panel);
+  border: 1px solid var(--line-2);
+  border-radius: 9px;
+  padding: 9px 11px;
+  font-size: 12.5px;
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--fg) 14%, transparent);
+  min-width: 160px;
+}
+
+.chart-tip-head {
+  font-weight: 620;
+  margin-bottom: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-tip-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 1px 0;
+}
+
+.chart-tip-row.total {
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+  padding-top: 5px;
+  font-weight: 620;
+}
+
+.chart-tip-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chart-tip-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  flex: none;
+}
+
+/* 图例单独列：recharts 的图例只给色块和名字，
+   而"占多少、多少钱"才是用户盯着看的两个数 */
+.legend-list {
+  display: grid;
+  gap: 5px;
+  margin-top: 10px;
+  list-style: none;
+  padding: 0;
+  font-size: 12.5px;
+}
+
+.legend-list li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 9px;
+}
+
+.legend-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.legend-share {
+  color: var(--dim);
+  min-width: 42px;
+  text-align: right;
+}
+
+.legend-value {
+  font-weight: 560;
+  min-width: 66px;
+  text-align: right;
+}
+
+/* ---- 模型流向 ---- */
+/* 用列表而不是桑基图：桑基在窄面板里标签放不下，而"哪几条被换了"用列表
+   一眼就能数完。被换过的高亮——那是"钱花在不是你要的模型上"的唯一线索 */
+.flow-list {
+  display: grid;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 12.5px;
+}
+
+.flow-list li {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: var(--bg);
+  border: 1px solid transparent;
+}
+
+/* 只有被换过模型的才给底色。全给等于全没给 */
+.flow-list li.mapped {
+  background: var(--warm-soft);
+  border-color: color-mix(in srgb, var(--warm) 40%, transparent);
+}
+
+.flow-model {
+  font: 12px var(--mono);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* 两个模型名 + 箭头先分掉固定宽度，剩下的让给右侧数字 */
+  flex: 1 1 0;
+}
+
+.flow-model.target {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.flow-arrow {
+  color: var(--dim-2);
+  flex: none;
+}
+
+.flow-side {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  font-size: 12px;
+}
+
+.flow-side .dim {
+  min-width: 52px;
+  text-align: right;
 }
