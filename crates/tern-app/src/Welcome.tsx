@@ -67,6 +67,18 @@ export function Welcome({
             </div>
           )}
 
+          {/* 分组跟着过来。用户排过的文件夹 silent 消失最像"导入失败"，
+              所以这一句必须出现在凭据确认之前 */}
+          {preview.folder_names.length > 0 && (
+            <p className="import-note" style={{ marginTop: 10 }}>
+              你在 cc-switch 里的 {preview.folder_names.length} 个自定义文件夹也会一起搬过来：
+              {preview.folder_names.map((name) => (
+                <code key={name} style={{ marginLeft: 6 }}>{name}</code>
+              ))}
+              。导入后供应商视图里切到「文件夹」就能看到。
+            </p>
+          )}
+
           {preview.skipped.length > 0 && (
             <details className="import-skipped">
               <summary>{preview.skipped.length} 个导不进来（缺地址或缺 key）</summary>

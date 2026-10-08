@@ -77,6 +77,44 @@ export interface ProviderSummary {
   /** real / placeholder / empty / subscription。前端据此提醒，不在前端判 key */
   key_state: "real" | "placeholder" | "empty" | "subscription";
   auth_kind: string;
+  /** 自定义文件夹名；null = 未分组 */
+  folder: string | null;
+  /** 规范化后的请求地址，"按地址归类"的分组键。空串 = 没有地址 */
+  group_key: string;
+}
+
+/** 一个自定义文件夹。与 Rust 侧 folders::ProviderFolder 逐字段对应 */
+export interface ProviderFolder {
+  id: string;
+  name: string;
+  sortIndex?: number;
+  isExpanded?: boolean;
+}
+
+/** folders_group_by_domain 的结果：一个域名根 + 归到它下面的供应商 */
+export interface DomainGroup {
+  name: string;
+  providerIds: string[];
+  isNew: boolean;
+}
+
+/** 未分组的显示名。固定字符串而不是可配置的：它同时是 Rust 侧
+ *  "归属值为空"的语义对照，改了显示就两头对不上。 */
+export const UNGROUPED_LABEL = "未分组";
+/** 没有请求地址时的显示名 */
+export const NO_URL_LABEL = "未配置地址";
+
+/** 一个分组：文件夹模式下是文件夹，地址模式下是同一个请求地址。 */
+export interface Group<T> {
+  /** 折叠区的 key，也用作 React key */
+  key: string;
+  /** 标题：文件夹名或规范化地址 */
+  title: string;
+  providers: T[];
+  /** 当前在用的供应商在不在这一组里——高亮用，省得用户满页找 */
+  containsActive: boolean;
+  /** 是不是用户自建的文件夹。地址分组永远是 false（那些组没有名字可改） */
+  custom: boolean;
 }
 
 /** server_status / server_start / server_stop 的返回 */

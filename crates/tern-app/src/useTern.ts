@@ -105,4 +105,6 @@ export interface CcSwitchPreview {
   }[];
   skipped: string[];
   third_party_count: number;
+  /** 会一起搬过来的自定义文件夹，按 cc-switch 里的顺序 */
+  folder_names: string[];
 }
