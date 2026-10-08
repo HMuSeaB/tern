@@ -13,6 +13,19 @@ Codex ───────OpenAI Responses─────┘                ├
 协议转换层取自 [cc-switch](https://github.com/farion1231/cc-switch)（MIT），
 同步方式见 [UPSTREAM.md](UPSTREAM.md)；进度与后续计划见 [ROADMAP.md](ROADMAP.md)。
 
+## 下载安装
+
+ Windows 64 位，去 [Releases](https://github.com/HMuSeaB/tern/releases/latest)
+下 `tern-<版本>-setup-x64.exe`，双击装完即可。
+
+装好没有"下一步下一步"，启动就是 panel。首跑会探测本机的 cc-switch，
+列出可导入的供应商供你勾选——凭据不会默认勾选，搬 key 这种事得你自己决定。
+
+**网关是常驻的**：关掉面板窗口它照跑，流量继续走、用量继续记。托盘图标管
+开关面板和启停网关。所以没有"先开终端再跑 serve"这一步。
+
+源码构建见下面「开发」。
+
 ## 两种用法
 
 **桌面应用**（推荐给不想碰终端的人）：装好后双击 `tern.exe`，首次启动会问要不要
