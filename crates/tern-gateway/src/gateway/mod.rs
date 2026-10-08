@@ -28,6 +28,7 @@ use crate::provider::{ProviderAuth, ProviderSpec};
 use crate::proxy::providers::codex_chat_history::CodexChatHistoryStore;
 use crate::proxy::providers::gemini_shadow::GeminiShadowStore;
 use crate::proxy::ProxyError;
+use crate::resilience::{Breakers, ResilienceConfig};
 use crate::router::ModelRouter;
 pub use usage::UsageSink;
 
@@ -65,6 +66,9 @@ pub struct GatewayConfig {
     /// 流式响应两个数据块之间的最长间隔，0 表示不限制
     #[serde(default = "default_stream_idle_timeout_secs")]
     pub stream_idle_timeout_secs: u64,
+    /// 故障转移与熔断。缺省开启：默认那家挂了就转下一家，失败到阈值熔断
+    #[serde(default)]
+    pub resilience: ResilienceConfig,
 }
 
 fn default_listen() -> SocketAddr {
@@ -89,6 +93,7 @@ impl GatewayConfig {
             upstream_proxy: UpstreamProxy::default(),
             request_timeout_secs: default_request_timeout_secs(),
             stream_idle_timeout_secs: default_stream_idle_timeout_secs(),
+            resilience: ResilienceConfig::default(),
         }
     }
 }
@@ -127,6 +132,9 @@ pub(crate) struct GatewayState {
     pub chat_history: Arc<CodexChatHistoryStore>,
     /// Claude → Gemini 时保存思维签名
     pub gemini_shadow: Arc<GeminiShadowStore>,
+    /// 故障转移与熔断。每个供应商一个熔断器，**进程内有效、不落盘**
+    pub breakers: Breakers,
+    pub resilience: ResilienceConfig,
 }
 
 impl GatewayState {
@@ -167,6 +175,8 @@ impl Gateway {
                 usage: None,
                 chat_history: Arc::new(CodexChatHistoryStore::default()),
                 gemini_shadow: Arc::new(GeminiShadowStore::default()),
+                breakers: Breakers::default(),
+                resilience: config.resilience,
             }),
             listen: config.listen,
         })
@@ -197,12 +207,27 @@ impl Gateway {
         default_provider: Option<String>,
     ) -> Result<(), ProxyError> {
         let router = Arc::new(ModelRouter::new(providers, default_provider)?);
+        // 顺手把不存在的供应商的熔断器摘掉。不摘的话进程活得越久里面的死条目
+        // 越多，用户删过的供应商的失败计数一直占着内存不释放
+        let alive: Vec<String> = router.providers().map(|spec| spec.id.clone()).collect();
+        self.state.breakers.retain(&alive);
         *self
             .state
             .router
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = router;
         Ok(())
+    }
+
+    /// 当前各供应商的熔断状态。给面板和 `tern check` 显示"哪几家被摘了"。
+    pub async fn breaker_states(&self) -> Vec<(String, String)> {
+        self.state
+            .breakers
+            .snapshot(&(&self.state.resilience).into())
+            .await
+            .into_iter()
+            .map(|(id, state)| (id, state.to_string()))
+            .collect()
     }
 
     pub fn listen_addr(&self) -> SocketAddr {

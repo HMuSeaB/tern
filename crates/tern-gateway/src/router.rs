@@ -102,6 +102,15 @@ impl ModelRouter {
         self.providers.get(id)
     }
 
+    /// 单个供应商的列表：它在就是一项，不在就是空。
+    ///
+    /// 单独一个方法而不是让调用方 `if let Some(..) = get(id)`：故障转移要把
+    /// "显式指定的那一家" 和 "候选链" 用同一种形状处理（都是 `Vec`），
+    /// 让每个调用点自己决定 None 时是报错还是跳过会写出三种分支来。
+    pub fn providers_with(&self, id: &str) -> Vec<Arc<ProviderSpec>> {
+        self.get(id).cloned().into_iter().collect()
+    }
+
     /// 按配置顺序遍历供应商
     pub fn providers(&self) -> impl Iterator<Item = &Arc<ProviderSpec>> {
         self.order.iter().filter_map(|id| self.providers.get(id))

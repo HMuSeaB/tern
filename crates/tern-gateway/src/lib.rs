@@ -12,6 +12,7 @@ pub mod provider;
 // 加在这里而不是被搬运的文件里，保持它们与上游逐字节一致。
 #[allow(dead_code)]
 pub mod proxy;
+pub mod resilience;
 pub mod router;
 pub mod web_tools;
 
@@ -20,5 +21,6 @@ pub use gateway::usage::{
 };
 pub use gateway::{Gateway, GatewayConfig, ManagedToken, TokenProvider, UpstreamProxy};
 pub use provider::{ApiFormat, KeyHeader, ProviderAuth, ProviderSpec};
+pub use resilience::{Breakers, ResilienceConfig};
 pub use router::{ModelRouter, Route, RouteKind};
 pub use web_tools::{assess, third_party_providers, warning_for, WebToolsSupport};

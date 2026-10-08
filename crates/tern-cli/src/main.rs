@@ -518,6 +518,7 @@ fn check(path: &Path) -> Result<()> {
     let warnings = config::warnings(&config);
     let listen = config.listen;
     let default_provider = config.default_provider.clone();
+    let resilience = config.resilience.clone();
     let rows: Vec<[String; 4]> = config
         .providers
         .iter()
@@ -531,7 +532,14 @@ fn check(path: &Path) -> Result<()> {
         })
         .collect();
     // 走一遍网关自己的校验（id 重复、默认供应商不存在、代理地址无效等）
-    Gateway::new(config).context("配置无效")?;
+    let gateway = Gateway::new(config).context("配置无效")?;
+    // 熔断状态是 async 的（内部用 tokio 的 RwLock）。check 本身是同步命令，
+    // 现起一个运行时问一句就丢——比把 check 整个改成 async 省事，也比
+    // "看不了状态"有用
+    let gateway_runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("创建 tokio 运行时失败")?;
 
     println!("配置 {}", path.display());
     println!("监听 http://{listen}");
@@ -555,6 +563,33 @@ fn check(path: &Path) -> Result<()> {
         for warning in &web_tool_warnings {
             println!("联网工具: {warning}");
         }
+    }
+    // 故障转移的现状。`tern check` 是"现在能不能用"的体检，而"这家刚被熔断摘掉"
+    // 正是它该说的话——用户看到请求失败时第一个问题就是"是哪家、为什么"
+    println!();
+    if resilience.failover_enabled {
+        println!(
+            "故障转移: 开（连败 {} 次熔断 {} 秒，半开 {} 次成功后恢复）",
+            resilience.failure_threshold, resilience.timeout_seconds, resilience.success_threshold
+        );
+        // check 是瞬时快照，熔断状态要等网关跑过才有意义。没跑过就不显示，
+        // 而不是显示三个"closed"——那会让人以为它查过了
+        match gateway_runtime.block_on(gateway.breaker_states()) {
+            states if !states.is_empty() => {
+                let tripped: Vec<&(String, String)> =
+                    states.iter().filter(|(_, s)| s != "closed").collect();
+                if tripped.is_empty() {
+                    println!("熔断状态: 全部正常");
+                } else {
+                    for (id, state) in tripped {
+                        println!("熔断状态: {id} -> {state}");
+                    }
+                }
+            }
+            _ => println!("熔断状态: 网关还没跑过，没有可显示的"),
+        }
+    } else {
+        println!("故障转移: 关（失败即报错，不换供应商）");
     }
     Ok(())
 }

@@ -269,12 +269,32 @@ Permissions(127) / Wire(178)。改成横滑 tab 容器，四块各占一页。
 换了"用列表一眼就能数完。被换过的行单独标色并排前面——那是"钱花在不是你要的
 模型上"的唯一线索，不该埋在中部。
 
-### T+4. 健壮性（ROADMAP 阶段 8，按真实问题排序）
+### T+4. 健壮性：故障转移与熔断（部分完成）
 
-- 熔断与故障转移接上（`proxy/circuit_breaker.rs` 已搬）
-- Copilot 动态端点、按模型厂商选 Responses / Chat
-- Gemini OAuth refresh token 换取
-- 原生 Anthropic 上游的请求头大小写保持（部分中转站按指纹校验）
+- [x] 新模块 `tern-gateway/src/resilience.rs`：`ResilienceConfig` + `Breakers` +
+      `failover_chain`，9 条单测
+- [x] 熔断器本体用 cc-switch 搬来的 `proxy/circuit_breaker.rs`（纯算法，与配置来源
+      无关）；阈值改成属于网关整体而不是某个 app——tern 的供应商是中立的，不按
+      agent 分
+- [x] 接入转发路径：`try_forward` 拿到候选链后逐个试，`send_to` 拆出来让它读起来是
+      "试一家、记一家、换下一家"
+- [x] 三条规矩：显式 `provider/model` 不转移；只在**上游没给响应头**时换（流式发
+      一半换家会拼出两段回答）；熔断进程内有效、不落盘
+- [x] 全熔断时放开一个出去：全摘只会得到一句"都不可用"，不如让用户看真实上游错误
+- [x] `set_providers` 顺手 `breakers.retain`：不摘的话用户删过的供应商计数一直占内存
+- [x] `Gateway::breaker_states()` + `tern check` 末尾的「故障转移 / 熔断状态」段。
+      check 是瞬时快照，网关没跑过就说"没有可显示的"而不是三个 closed
+- [ ] Copilot 动态端点、按模型厂商选 Responses / Chat
+- [ ] Gemini OAuth refresh token 换取（现在 refresh-only 的凭证会退化成把原值当
+      bearer，大概率 401，已在上游日志里说明）
+- [ ] 原生 Anthropic 上游的请求头大小写保持（部分中转站按指纹校验）
+- [ ] 重试退避：现在是"立刻换下一家"，连败时三家会在一轮里全被打一遍。
+      真要加得先想清楚退避期间客户端在等什么——Claude Code 的超时是 600 秒，
+      退避太长它会先断
+
+**一次被测试抓到的回归**：拆 `send_to` 时漏了 `meta.session_id = ..`，
+`usage_e2e` 立刻抓到（`session_id` 变 None）。那一列是整个会话视图的数据源，
+不填的话 T+3 的 sessions 会永远空着——而单测是绿的，只有 e2e 能发现。
 
 ## 设计记录：分组数据放哪
 

@@ -24,6 +24,10 @@ use crate::proxy::providers::transform_codex_responses_namespace::namespace_rest
 use crate::proxy::providers::transform_gemini::extract_anthropic_tool_schema_hints;
 use crate::proxy::session::extract_session_id;
 use crate::proxy::ProxyError;
+use crate::proxy::circuit_breaker::CircuitBreakerConfig;
+use crate::resilience;
+use crate::router::{Route, RouteKind};
+use crate::ProviderSpec;
 
 type SharedState = State<Arc<GatewayState>>;
 
@@ -137,17 +141,105 @@ async fn try_forward(
     // 角色要看原始请求（子代理标记、工具列表），转换成上游协议后就认不出了
     meta.role = usage::infer_role(meta.client, uri.path(), headers, &body);
     let route = state.router().resolve(&requested_model)?;
-    let spec = route.provider.clone();
-    error_ctx.provider = Some(spec.id.clone());
-    meta.provider_id = Some(spec.id.clone());
-    meta.route_kind = Some(route.kind);
-    meta.upstream_model = Some(route.upstream_model.clone());
-    error_ctx.upstream_format = Some(spec.effective_api_format());
-    body["model"] = Value::String(route.upstream_model.clone());
 
+    // 故障转移链。显式指定的 `provider/model` 只有一家——用户指定了就是指定了，
+    // 悄悄转给别家比报错更糟；fallback 才从默认那家开始按顺序把所有可用的过一遍。
+    let chain = resilience::failover_chain(
+        &state.router(),
+        &route.provider.id,
+        route.kind == RouteKind::Explicit,
+        &state.breakers,
+        &state.resilience,
+    )
+    .await;
+    // 链为空说明供应商被从配置里删了。failover_chain 全熔断时会放开一个出去，
+    // 所以走到这里只可能是路由表与配置不一致
+    if chain.is_empty() {
+        return Err(ProxyError::NoAvailableProvider);
+    }
+
+    // 与选哪家无关的部分只准备一次。故障转移的每一轮都复用同一份——
+    // 每个供应商只换 `body["model"]` 和 spec 自己
+    let ctx = ForwardCtx {
+        client_format,
+        uri,
+        headers,
+        route: &route,
+    };
+
+    // 熔断配置转一次就好：五个字段的拷贝，比在 GatewayState 里同时存两份
+    // resilience 和它的 CircuitBreakerConfig、还要操心两者同步要简单
+    let circuit = CircuitBreakerConfig::from(&state.resilience);
+
+    // 逐个试。**只在上游连响应头都没给的时候才换下一家**：流式响应发了一半再换
+    // 一家重发，用户会看到两段拼在一起的回答。`upstream::send` 返回 Ok 即代表
+    // 已经拿到响应头，后面的响应转换就算失败也不该重试。
+    let mut last_error = None;
+    for (index, spec) in chain.iter().enumerate() {
+        error_ctx.provider = Some(spec.id.clone());
+        meta.provider_id = Some(spec.id.clone());
+        meta.route_kind = Some(route.kind);
+        meta.upstream_model = Some(route.upstream_model.clone());
+        error_ctx.upstream_format = Some(spec.effective_api_format());
+        body["model"] = Value::String(route.upstream_model.clone());
+
+        match send_to(state, &ctx, spec, &body, meta).await {
+            Ok(response) => {
+                state.breakers.record_success(&spec.id, &circuit).await;
+                return Ok(response);
+            }
+            Err(error) => {
+                state.breakers.record_failure(&spec.id, &circuit).await;
+                // 最后一家不留余地：它的错就是用户该看到的错，
+                // 包一层"全都试过了"反而把上游的原话藏了
+                if index + 1 == chain.len() {
+                    return Err(error);
+                }
+                log::warn!("[Gateway] {} 失败，转到下一家：{error}", spec.id);
+                last_error = Some(error);
+            }
+        }
+    }
+    // 走不到：链非空时上面的循环一定 return 或 continue 到底
+    Err(last_error.unwrap_or(ProxyError::NoAvailableProvider))
+}
+
+/// 一次请求里**与选哪家供应商无关**的部分。
+///
+/// 抽出来是因为 `send_to` 有七个参数，而其中六个在故障转移的每一轮里都一模一样
+/// ——罗列一遍既难读又容易在换供应商时漏改。收成一个结构体之后，循环体里那句
+/// `send_to(state, &ctx, spec, meta).await` 读得出"同一件事换个人做"。
+struct ForwardCtx<'a> {
+    client_format: ApiFormat,
+    uri: &'a Uri,
+    headers: &'a HeaderMap,
+    route: &'a Route,
+}
+
+/// 往一家上游发一次请求并转换响应。
+///
+/// 从 `try_forward` 里拆出来是为了让故障转移的循环读起来是"试一家、记一家、
+/// 换下一家"，而不是三十行准备逻辑里夹一个 send。`meta` 里 `session_id` 在这里
+/// 填，用量由 `response::convert` 填。
+async fn send_to(
+    state: &GatewayState,
+    ctx: &ForwardCtx<'_>,
+    spec: &Arc<ProviderSpec>,
+    // 这一轮的请求体。每轮 clone 一份：换供应商时要改 `model`，
+    // 而三家收到的请求体除了模型名应当完全一致
+    body: &Value,
+    meta: &mut RequestMeta,
+) -> Result<Response, ProxyError> {
+    let ForwardCtx {
+        client_format,
+        uri,
+        headers,
+        route,
+    } = *ctx;
+    let upstream_format = spec.effective_api_format();
     let session = extract_session_id(
         headers,
-        &body,
+        body,
         match client_format {
             ApiFormat::Anthropic => "claude",
             _ => "codex",
@@ -156,11 +248,22 @@ async fn try_forward(
     let client_session_id = session
         .client_provided
         .then_some(session.session_id.as_str());
+    // 只记客户端自己带的：网关兜底生成的随机 ID 每轮都不同，
+    // 拿它聚合 session 会得到一堆只含一条请求的"会话"
     meta.session_id = client_session_id.map(str::to_string);
     let client_stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
-    let upstream_format = spec.effective_api_format();
 
-    // 转换前从原始请求里取出响应转换要用的信息
+    // Codex → Chat：Chat 协议没有 previous_response_id，要把缓存的工具调用补回 input
+    let mut body = body.clone();
+    if client_format == ApiFormat::OpenaiResponses && upstream_format == ApiFormat::OpenaiChat {
+        let restored = state.chat_history.enrich_request(&mut body).await;
+        if restored > 0 {
+            log::debug!("[Gateway] 为 Chat 上游补全了 {restored} 个工具调用历史");
+        }
+    }
+
+    // 三段上下文从**转换前**的请求体上取：Gemini 的模型名和 stream 标志转换后
+    // 就不在 body 里了，xAI 的 namespace 展开后也认不出原样
     let tool_schema_hints = (client_format == ApiFormat::Anthropic
         && upstream_format == ApiFormat::GeminiNative)
         .then(|| extract_anthropic_tool_schema_hints(&body))
@@ -170,27 +273,20 @@ async fn try_forward(
     } else {
         Default::default()
     };
-    let namespace_restore_map =
-        if client_format == ApiFormat::OpenaiResponses && spec.is_xai_oauth() {
-            namespace_restore_map(&body)
-        } else {
-            Default::default()
-        };
-
-    // Codex → Chat：Chat 协议没有 previous_response_id，要把缓存的工具调用补回 input
-    if client_format == ApiFormat::OpenaiResponses && upstream_format == ApiFormat::OpenaiChat {
-        let restored = state.chat_history.enrich_request(&mut body).await;
-        if restored > 0 {
-            log::debug!("[Gateway] 为 Chat 上游补全了 {restored} 个工具调用历史");
-        }
-    }
+    let namespace_restore_map = if client_format == ApiFormat::OpenaiResponses
+        && spec.is_xai_oauth()
+    {
+        namespace_restore_map(&body)
+    } else {
+        Default::default()
+    };
 
     let endpoint = uri
         .path_and_query()
         .map(|pq| pq.as_str())
         .unwrap_or(uri.path());
     let prepared = prepare_request(
-        &spec,
+        spec,
         client_format,
         endpoint,
         body,
@@ -201,7 +297,7 @@ async fn try_forward(
     )?;
 
     let request = UpstreamRequest {
-        spec: &spec,
+        spec,
         client_format,
         prepared: &prepared,
         client_headers: headers,
