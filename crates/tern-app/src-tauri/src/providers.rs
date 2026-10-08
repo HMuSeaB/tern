@@ -62,6 +62,12 @@ pub struct ProbeReport {
     pub reachable: bool,
     /// 拿到了什么状态码。连接失败时为空
     pub http_status: Option<u16>,
+    /// 实际发出去探测的模型名。
+    ///
+    /// 必须带上：上游说 "model does not exist" 时，用户得看见**发的是哪个名字**
+    /// 才知道去换一个。用硬编码的 `claude-sonnet-4-6` 探测 StepFun 就是这么误导
+    /// 人的——地址和 key 都对，只是这家不叫这个名。
+    pub model: String,
     /// 给人看的一句话。失败时尽量带上上游的原话——模型名不对、key 失效、
     /// 超额各自的修法都不一样，我们自己总结的常常帮不上忙
     pub message: String,
@@ -350,12 +356,43 @@ fn write_config_at(
 // 连通性测试
 // ---------------------------------------------------------------------------
 
-/// 探测用的模型名。
+/// 探测用的兜底模型名。只在**拉不到上游模型列表**时才用它。
 ///
-/// 随便挑一个"这个上游多半认识"的名字是做不到的——中转站的模型名千奇百怪。
-/// 这里用 Claude 的常见名：它只影响错误信息里那句"model not found"的措辞，
-/// 而连接失败、401、404 这些结论与模型名无关。
+/// 正常情况下探测用上游自己的第一个模型（见 [`probe`] 里的 `probe_model`）：
+/// 硬编码 `claude-sonnet-4-6` 在多数中转站上会 404，而那个 404 的措辞是
+/// "model does not exist"——用户看到会以为"地址或 key 错了"，
+/// 实际哪都没错，只是这家不叫这个名。StepFun 就是这么回事。
 const PROBE_MODEL: &str = "claude-sonnet-4-6";
+
+/// 探测实际用的模型名。
+///
+/// 先问上游要一份模型列表，取第一个。拿不到才退回 [`PROBE_MODEL`]。
+/// 顺带把模型数一起返回，前端能显示"用 X 探测的"。
+fn probe_model(spec: &tern_gateway::ProviderSpec) -> (String, usize) {
+    let count = model_count(spec);
+    let first = first_model(spec);
+    match first {
+        Some(model) => (model, count),
+        None => (PROBE_MODEL.to_string(), count),
+    }
+}
+
+/// 上游的第一个模型名（已按 id 排序，和「获取模型列表」同一个次序）。
+fn first_model(spec: &tern_gateway::ProviderSpec) -> Option<String> {
+    // 订阅登录的 token 在网关手里，这里拿不到
+    let tern_gateway::ProviderAuth::ApiKey { key, .. } = &spec.auth else {
+        return None;
+    };
+    let key = key.trim();
+    if key.is_empty() || key == crate::config::PLACEHOLDER_KEY {
+        return None;
+    }
+    tern_gateway::models::fetch_models(&spec.effective_base_url(), key, spec.full_url, None)
+        .ok()?
+        .into_iter()
+        .map(|model| model.id)
+        .next()
+}
 
 /// 连通性测试：向这个上游发一条最小的请求，看它怎么回。
 ///
@@ -377,6 +414,7 @@ pub fn probe(spec: &tern_gateway::ProviderSpec) -> ProbeReport {
     let fail = |message: String| ProbeReport {
         reachable: false,
         http_status: None,
+        model: String::new(),
         message,
         models: 0,
         url: base_url.clone(),
@@ -397,8 +435,9 @@ pub fn probe(spec: &tern_gateway::ProviderSpec) -> ProbeReport {
     // 一律按 Claude Code 的口径发：这是终端用户的实际客户端，
     // 协议的错配（上游只认 Chat 却被当成 Anthropic 用）应当在这里暴露出来，
     // 而不是等用户真去用时才发现
+    let (model, models) = probe_model(spec);
     let body = json!({
-        "model": PROBE_MODEL,
+        "model": model,
         "max_tokens": 1,
         "stream": false,
         "messages": [{ "role": "user", "content": "ping" }]
@@ -439,13 +478,11 @@ pub fn probe(spec: &tern_gateway::ProviderSpec) -> ProbeReport {
         request = request.header("anthropic-version", "2023-06-01");
     }
 
-    // 模型列表顺手拉一份，失败不影响连通性结论
-    let models = model_count(spec);
-
     let response = match request.send() {
         Ok(response) => response,
         Err(error) => {
             return ProbeReport {
+                model: model.clone(),
                 models,
                 ..fail(format!("连不上：{error}"))
             };
@@ -456,13 +493,20 @@ pub fn probe(spec: &tern_gateway::ProviderSpec) -> ProbeReport {
     let body = response.text().unwrap_or_default();
     let detail = upstream_message(&body).unwrap_or_else(|| truncate(&body, 200));
 
-    // 2xx 是通；4xx/5xx 也当"地址和 key 对上了"，因为限流、过载、模型名不对
-    // 全在这一段里——那些是上游在回话，不是配错了。真正的"不通"是连不上，
-    // 上面已经返回了。
+    // 2xx 是通。4xx/5xx 也当"地址和 key 对上了"：限流、过载、模型名不对全在
+    // 这一段里，都是上游在回话而不是配错。真正的"不通"是连不上，上面已返回。
+    // 但**模型名不对**要在措辞上说清楚——它和"这家在限流"的修法完全不同。
     let (reachable, message) = if (200..300).contains(&status) {
         (
             true,
-            "通了。这条请求按真实流量的路径转换后发出去，上游正常应答。".into(),
+            format!("通了。用 {model} 按真实流量的路径转换后发出去，上游正常应答。"),
+        )
+    } else if detail.to_lowercase().contains("does not exist")
+        || detail.to_lowercase().contains("not found")
+    {
+        (
+            false,
+            format!("HTTP {status}：上游不认识模型「{model}」——{detail}"),
         )
     } else {
         (true, format!("上游有应答（HTTP {status}）：{detail}"))
@@ -472,6 +516,7 @@ pub fn probe(spec: &tern_gateway::ProviderSpec) -> ProbeReport {
         reachable,
         http_status: Some(status),
         message,
+        model,
         models,
         url,
         elapsed_ms: started.elapsed().as_millis(),

@@ -4,10 +4,13 @@
 node_modules/
 crates/tern-app/dist/
 
-# tauri-build 每次构建重新生成。四个 schema JSON 加起来 300 KB，
-# 且内容由 capabilities/default.json 与 tauri 版本决定——本地提交上去只会
-# 在别人换 tauri 小版本时造成无意义的 diff
+# tauri-build 每次构建重新生成。四个 schema JSON 加起来 300 KB，且内容由
+# capabilities/default.json 与 tauri 版本决定——提交上去只会在别人换 tauri 小版本时
+# 造成无意义的 diff。
+# 路径必须写全：`src-tauri/gen/` 是相对仓库根的，匹配不到 crates/tern-app 下的实际
+# 位置。第一版只写了根目录那种，于是四个 schema 一直被跟踪着。
 src-tauri/gen/
+crates/tern-app/src-tauri/gen/
 
 # Tauri 本地开发痕迹
 *.local

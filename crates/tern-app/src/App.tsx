@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { CcSwitchUsageCard } from "./CcSwitchUsageCard";
 import { PanelView } from "./PanelView";
 import { Permissions } from "./Permissions";
 import { Providers } from "./Providers";
@@ -187,6 +188,7 @@ function Tabs({
               {/* 首屏（hero + 小卡 + 提示）永远在最上面。ROADMAP 阶段 6 定的：
                   "最常用的操作"先看到，二级视图要用户主动展开 */}
               <PanelView panel={panel.state.panel} onRefresh={panel.refresh} />
+              <CcSwitchUsageCard onDone={panel.refresh} />
               <section className="card">
                 <button
                   className="disclosure"

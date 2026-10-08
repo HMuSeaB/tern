@@ -52,6 +52,10 @@ fn main() {
             tern_app_lib::server::select_provider,
             // 拉供应商的模型列表
             tern_app_lib::server::fetch_provider_models,
+            // 选模型：写进 ~/.claude/settings.json 的四个档位键
+            tern_app_lib::model::claude_model,
+            tern_app_lib::model::set_claude_model,
+            tern_app_lib::model::clear_claude_model,
             tern_app_lib::server::open_config_dir,
             // 供应商增删改与连通性测试
             tern_app_lib::providers::provider_save,

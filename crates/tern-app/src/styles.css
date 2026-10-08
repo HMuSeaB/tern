@@ -1344,13 +1344,22 @@ body {
   background: color-mix(in srgb, var(--fg) 28%, transparent);
 }
 
+/* 宽 420 挤：地址和 key 都是长字符串，复制粘贴时看不出粘全没有。560 是
+   "一行放得下 base URL" 和 "窄屏不浪费" 之间的折中 */
 .prov-modal {
-  width: min(420px, 100%);
+  width: min(560px, 100%);
+  /* 字段加高后不能顶出屏幕。用 dvh 而不是 vh：移动端浏览器工具栏收起时
+     vh 不含它，会把弹层底边切掉 */
+  max-height: calc(100dvh - 40px);
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 14px;
   padding: 18px 20px;
   display: grid;
+  /* 三行：标题 / 可滚动的表单 / 底部按钮。中间 1fr + minmax(0,1fr) 是让表单
+     自己滚而不把按钮挤出屏幕的关键——grid 默认 min-height:auto 会让内容
+     把行高撑破 */
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 14px;
   box-shadow: 0 18px 50px color-mix(in srgb, var(--fg) 22%, transparent);
 }
@@ -1378,6 +1387,12 @@ body {
 .prov-form {
   display: grid;
   gap: 12px;
+  /* 字段多起来之后自己滚。弹层用 grid-template-rows 把标题和按钮钉住了，
+     所以滚的只有这一段 */
+  overflow-y: auto;
+  min-height: 0;
+  /* 滚动条别贴着输入框 */
+  padding-right: 4px;
 }
 
 .prov-field {
@@ -1747,4 +1762,34 @@ select.prov-modal-input {
 .flow-side .dim {
   min-width: 52px;
   text-align: right;
+}
+
+/* ---- 模型选择行：下拉 + 按钮并排 ---- */
+/* 用 grid 而不是 flex：select 要吃掉剩余宽度，按钮固定。
+   minmax(0,1fr) 是必须的——模型名可能很长，不给 min-width:0 会把按钮
+   挤出容器 */
+.model-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.model-row select {
+  min-width: 0;
+}
+
+/* 选择结果的两句说明。错误用红、已生效用绿——但都做成小字而不是横幅，
+   免得盖住表单 */
+.prov-hint.err-text {
+  color: var(--bad);
+}
+
+.prov-hint.ok-text {
+  color: var(--ok);
+}
+
+.prov-hint code {
+  font: 11.5px var(--mono);
+  padding: 0 3px;
 }

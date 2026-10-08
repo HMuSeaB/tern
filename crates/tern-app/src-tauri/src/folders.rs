@@ -583,7 +583,13 @@ pub fn folders_set_expanded(name: String, expanded: bool) -> Result<Vec<Provider
 }
 
 /// 一次"按域名归组"的结果。
+///
+/// `rename_all` 不能省：前端 `types.ts` 的 `DomainGroup` 接口读的是 `providerIds` /
+/// `isNew`，而 Rust 默认给的是 `provider_ids` / `is_new`——少了这一行，
+/// 前端拿到的是 `undefined.length`，直接 TypeError 崩掉整个供应商页。
+/// v0.1.0/v0.1.1 就是带着这个 crash 发出去的。
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DomainGroup {
     /// 文件夹名（域名根）
     pub name: String,
@@ -617,6 +623,7 @@ pub fn folders_group_by_domain() -> Result<Vec<DomainGroup>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     fn folder(name: &str, sort_index: Option<usize>) -> ProviderFolder {
         ProviderFolder {
@@ -1062,5 +1069,59 @@ mod tests {
             domain_root_of("https://www.mcgrox.top").as_deref(),
             Some("mcgrox.top")
         );
+    }
+
+    /// `DomainGroup` 的 JSON 键名必须和前端 `types.ts` 的接口对得上。
+    ///
+    /// Rust 默认按字段名原样序列化（`provider_ids`），而前端读的是 camelCase
+    /// （`providerIds`）。这个测试就是那道该在 CI 里拦住崩溃的闸——断言的是
+    /// **序列化出来的实际键名**，不是 Rust 字段名，所以少写 `rename_all`
+    /// 立刻红。
+    #[test]
+    fn domain_group_serializes_with_the_keys_the_frontend_reads() {
+        let group = DomainGroup {
+            name: "deepseek.com".into(),
+            provider_ids: vec!["a".into(), "b".into()],
+            is_new: true,
+        };
+        let json = serde_json::to_value(&group).unwrap();
+        let object = json.as_object().expect("应当是个对象");
+
+        for expected in ["name", "providerIds", "isNew"] {
+            assert!(
+                object.contains_key(expected),
+                "缺键 {expected}：前端读到 undefined 就会在 .length 上崩。实际键 = {:?}",
+                object.keys().collect::<Vec<_>>()
+            );
+        }
+        // 顺便锁住值本身，防止哪天 rename 写错对象
+        assert_eq!(json["providerIds"], serde_json::json!(["a", "b"]));
+        assert_eq!(json["isNew"], serde_json::json!(true));
+    }
+
+    /// 同一条命令返回的 `Vec<DomainGroup>` 也要对。
+    ///
+    /// 上面那条测的是单个结构体；这条测的是命令实际返回的形状——
+    /// 前端 `groups.reduce((sum, g) => sum + g.providerIds.length, 0)` 崩在第二层。
+    #[test]
+    fn a_group_of_domain_groups_keeps_the_frontend_keys() {
+        let groups = vec![
+            DomainGroup {
+                name: "a.com".into(),
+                provider_ids: vec!["p1".into()],
+                is_new: false,
+            },
+            DomainGroup {
+                name: "b.com".into(),
+                provider_ids: vec!["p2".into(), "p3".into()],
+                is_new: true,
+            },
+        ];
+        let json: Value = serde_json::to_value(&groups).unwrap();
+        let first = &json[0];
+        assert_eq!(first["providerIds"].as_array().map(Vec::len), Some(1));
+        assert_eq!(json[1]["providerIds"].as_array().map(Vec::len), Some(2));
+        assert_eq!(json[1]["isNew"], serde_json::json!(true));
+        assert_eq!(json[0]["isNew"], serde_json::json!(false));
     }
 }

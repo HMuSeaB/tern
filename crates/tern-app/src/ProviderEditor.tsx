@@ -37,6 +37,8 @@ export interface ProviderDetail {
 export interface ProbeReport {
   reachable: boolean;
   http_status: number | null;
+  /** 实际探测用的模型名。上游说 "model does not exist" 时要显示它 */
+  model: string;
   message: string;
   models: number;
   url: string;
@@ -103,7 +105,28 @@ export function ProviderEditor({
   const [probing, setProbing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
+  // ---- 模型选择 ----
+  const [models, setModels] = useState<string[]>([]);
+  const [modelLoading, setModelLoading] = useState(false);
+  const [modelError, setModelError] = useState<string | null>(null);
+  /** 下拉里选中的那个。空串 = 没选 */
+  const [model, setModel] = useState("");
+  /** Claude Code 现在实际在用的模型名。用来在下拉旁说明"会改成什么" */
+  const [currentModel, setCurrentModel] = useState<string | null>(null);
+
   const managed = isManaged(detail?.auth_kind ?? "");
+
+  // 进来时读一次 Claude Code 当前在用的模型。弹层不是常驻的，
+  // 每次打开重读才对——用户可能刚在 Settings 里改过
+  useEffect(() => {
+    let alive = true;
+    invoke<string | null>("claude_model")
+      .then((value) => alive && setCurrentModel(value))
+      .catch(() => alive && setCurrentModel(null));
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   // 编辑时拉详情。新建没有可拉的，直接给空表单
   useEffect(() => {
@@ -168,6 +191,46 @@ export function ProviderEditor({
       setProbing(false);
     }
   }, [mode, providerId]);
+
+  /** 向上游问它有哪些模型。复用 providers 列表行的那个命令——
+   *  同一个上游同一个问题，答案必须一样，所以不另写一个。 */
+  const loadModels = useCallback(async () => {
+    if (mode !== "edit" || !providerId) return;
+    setModelLoading(true);
+    setModelError(null);
+    try {
+      const list = await invoke<string[]>("fetch_provider_models", { id: providerId });
+      setModels(list);
+      // 拉到了但里面已经有当前在用的那个，就选中它——用户多半是想改成同一家
+      // 的另一个模型，而不是从零挑
+      if (currentModel && list.includes(currentModel)) setModel(currentModel);
+    } catch (e) {
+      setModelError(String(e));
+      setModels([]);
+    } finally {
+      setModelLoading(false);
+    }
+  }, [mode, providerId, currentModel]);
+
+  /** 选中一个模型 → 写进 Claude Code 的 settings.json。
+   *
+   *  立刻生效，不等"保存供应商"：选模型和存供应商信息是两件事，
+   *  把它们绑在一起会让用户为了换个模型而被迫把整个表单再确认一遍。 */
+  const pickModel = useCallback(
+    async (value: string) => {
+      setModel(value);
+      if (!value) return;
+      setModelError(null);
+      try {
+        await invoke<string[]>("set_claude_model", { model: value });
+        const latest = await invoke<string | null>("claude_model");
+        setCurrentModel(latest);
+      } catch (e) {
+        setModelError(`模型没写进去：${String(e)}`);
+      }
+    },
+    [],
+  );
 
   const remove = useCallback(async () => {
     setError(null);
@@ -308,6 +371,62 @@ export function ProviderEditor({
               中转站的折扣倍率，用于用量计价。填 0.3 表示实际花费是标价的 3 折。
             </span>
           </label>
+
+          {/* 模型选择。cc-switch 有这一步，tern 之前没有——用户只能去手改
+              settings.json。放在地址和 key 后面：它是"这家有哪些模型可选"的
+              答案，得先知道地址和 key 才拉得到 */}
+          {!managed && (
+            <div className="prov-field">
+              <span className="prov-label">
+                默认模型
+                <span className="prov-label-dim">
+                  {mode === "edit" ? "写入 ~/.claude/settings.json" : "保存后可选"}
+                </span>
+              </span>
+              <div className="model-row">
+                <select
+                  className="prov-modal-input"
+                  value={model}
+                  disabled={modelLoading || models.length === 0}
+                  onChange={(e) => void pickModel(e.target.value)}
+                >
+                  <option value="">
+                    {models.length === 0 ? "（尚未获取）" : "选一个模型…"}
+                  </option>
+                  {models.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  className="prov-mini"
+                  onClick={() => void loadModels()}
+                  disabled={modelLoading || mode !== "edit"}
+                  title={
+                    mode === "edit" ? "向这个供应商询问它有哪些模型" : "先保存，再回来选模型"
+                  }
+                >
+                  {modelLoading ? "拉取中…" : models.length ? "刷新" : "获取模型"}
+                </button>
+              </div>
+              {modelError && <span className="prov-hint err-text">{modelError}</span>}
+              {currentModel && model && currentModel !== model && (
+                <span className="prov-hint">
+                  Claude Code 现在用的是 <code>{currentModel}</code>，选了会改成这个。
+                </span>
+              )}
+              {model === currentModel && model !== "" && (
+                <span className="prov-hint ok-text">当前生效的就是这个模型。</span>
+              )}
+              {/* 没解释的话，用户不会知道这一步动的是别处的文件 */}
+              <span className="prov-hint">
+                选中的模型名会写进 Claude Code 的
+                <code> ANTHROPIC_MODEL</code> 等四个档位（已有值的档位不覆盖）。
+                不选就不动它。
+              </span>
+            </div>
+          )}
         </div>
 
         {probe && (
@@ -319,6 +438,10 @@ export function ProviderEditor({
                 {probe.http_status ? `HTTP ${probe.http_status}` : "无响应"}
                 {probe.models > 0 && ` · ${probe.models} 个模型`} · {probe.elapsed_ms}ms
               </code>
+              {/* 发的是哪个模型名要说出来。上游回 "model does not exist" 时，
+                  用户得看见那个名字才知道去换——用 claude-sonnet-4-6 探测一家
+                  没有它的中转站，报错看起来会像"地址错了" */}
+              {probe.model && <code className="notice-cmd">探测模型: {probe.model}</code>}
               <code className="notice-cmd" style={{ wordBreak: "break-all" }}>
                 {probe.url}
               </code>
