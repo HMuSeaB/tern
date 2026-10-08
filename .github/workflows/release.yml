@@ -82,28 +82,44 @@ jobs:
         working-directory: ${{ env.APP_DIR }}
         run: pnpm tauri build
 
-      # 产物路径按 Tauri 2 的布局推：`target/release/bundle/<target>/`。
-      # 本地从没执行过 release 构建，所以这条路径**未经本地验证**——
-      # 用 Get-ChildItem 扫整个 bundle 目录而不是硬编码 nsis/，是为了在
-      # "targets 配了但落点不同"时也能找到，而不是让 release 空手失败
+      # 产物在**仓库根**的 target/release/bundle/ 下，不是 crates/tern-app/src-tauri/target/。
+      #
+      # 这是 Cargo workspace 的行为：workspace 共享一个 target 目录，
+      # tauri build 建的是 src-tauri 那个 crate，它属于这个 workspace，于是
+      # 落点被提升到 workspace 根。单 crate 项目才会在 src-tauri/target 下——
+      # 第一版就是照单 crate 的惯例推的，结果什么都没找到。
+      #
+      # 两个位置都扫：万一以后 tern-app 被拆成独立 workspace，产物位置会变回去，
+      # 而那时不该又靠一次失败的构建来发现。
       - name: 收集安装包
         shell: pwsh
         run: |
-          $bundle = "${{ env.APP_DIR }}/src-tauri/target/release/bundle"
-          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
-          $exe = Get-ChildItem -Path $bundle -Filter "*-setup.exe" -Recurse |
-                 Where-Object { $_.Name -notlike '*.webpack*' } |
-                 Select-Object -First 1
+          $roots = @(
+            "${{ env.APP_DIR }}/src-tauri/target/release/bundle",
+            "target/release/bundle"
+          )
+          $exe = $null
+          foreach ($root in $roots) {
+            if (-not (Test-Path $root)) { continue }
+            $exe = Get-ChildItem -Path $root -Filter "*-setup.exe" -Recurse |
+                   Where-Object { $_.Name -notlike '*.webpack*' } |
+                   Select-Object -First 1
+            if ($exe) { break }
+          }
           if (-not $exe) {
-            Write-Host "bundle 目录下有什么："
-            Get-ChildItem -Path $bundle -Recurse -ErrorAction SilentlyContinue |
+            Write-Host "这两个位置都没有 bundle："
+            $roots | ForEach-Object { Write-Host "  $_ (存在: $(Test-Path $_))" }
+            Write-Host "target 下实际有什么："
+            Get-ChildItem -Path "target" -ErrorAction SilentlyContinue |
               Select-Object -First 20 -ExpandProperty FullName
             throw "没找到 NSIS 安装包"
           }
+          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
           $name = "tern-$($env:GITHUB_REF_NAME -replace '^v','')-setup-x64.exe"
           Copy-Item $exe.FullName -Destination "release-assets/$name"
           # .sig 只在配了 updater 签名时才会生成；没有就不该把它挂上去
-          $sig = Get-ChildItem -Path $bundle -Filter "*.sig" -Recurse | Select-Object -First 1
+          $sig = Get-ChildItem -Path (Split-Path $exe.DirectoryName) -Filter "*.sig" -Recurse |
+                 Select-Object -First 1
           if ($sig) { Copy-Item $sig.FullName -Destination "release-assets/$name.sig" }
           Write-Host "产物: $name ($([math]::Round($exe.Length / 1MB, 1)) MB)，来自 $($exe.FullName)"
 
