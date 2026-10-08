@@ -162,4 +162,98 @@ Tauri 2 + React + Tailwind，图表用 recharts（cc-switch 现成经验）。
 ## 待定问题
 
 - 是否要导入 cc-switch 的历史用量数据（`proxy_request_logs` 表），口径需要逐列核对
-- 桌面应用是否需要托盘常驻
+
+## 托盘图标及其之后（2026-10-08 立）
+
+按你确认要做托盘常驻来排。顺序的理据：托盘是**外壳收口**，它之后界面才能从一个
+"用完即关的窗口"变成"常驻 + 按需开"的东西，所以 tab 化、面板补全都挂在它后面。
+
+### T. 托盘常驻（已完成，待装机验收）
+
+目标：关窗不杀进程，网关照转，托盘一个图标管开合/启停。
+
+- [x] `tauri` 加 `tray-icon` feature（workspace 的 `Cargo.toml`）。tray-icon 本来就在
+      tauri 的依赖树里，开特性不引入新 crate，离线构建认得
+- [x] 新模块 `src-tauri/src/tray.rs`：`TrayIconBuilder` + 菜单
+      **打开面板 / 网关启停 / 退出**
+- [x] 菜单文本随状态刷：`server_start` / `server_stop` 之后立刻刷，鼠标进入图标时
+      也刷（网关可能从面板之外启停，静态菜单会是个点了没反应的按钮）
+- [x] 拦 `close_requested`：`api.prevent_close()` + 记住外坐标 + `hide()`；
+      托盘"退出"走 `QUITTING` 标志让拦截放行，再 `app.exit(0)`
+- [x] 窗口坐标只在进程内记忆，唤回时用 `available_monitors()` 验它还在不在屏上，
+      不在就 `center()`——不裸还原坐标。cc-switch 在这栽过
+      （`.window-state.json` 残留的 `prev_x/prev_y` 把窗口甩出屏）
+- [x] 托盘建失败不阻断启动：`on_window_event` 先问 `is_installed`，没装就放行关闭。
+      拦了又没有托盘 = 亲手把界面弄丢
+- [x] 图标用 `app.default_window_icon()`（即打包图标），不运行时生成
+- [ ] 验收：起网关 → 关窗 → 托盘显示运行中 → 重开面板不重连数据库 / 不重记账
+
+**没做**：`tauri.conf.json` 的 `visible: false` + `setup` 里 `show()` 那套留着。
+它和托盘不冲突（启动时正常显示，关窗才隐藏），而且去掉会让 Tauri 在窗口就绪前
+先闪一下白底。真要动它属于"启动体验"，归到 tab 化那一轮更合适。
+
+风险点两个的处置：`close_requested` 拦失败那条用 `is_installed` 兜住了；托盘菜单
+事件不碰 `AppState`——启停走 `server::start_gateway_now()` /
+`stop_gateway_now()`，和 `server_status` 同一条读法，没新建并发路径。
+
+### T+1. 界面 tab 化（你说的"全堆一个 tab"）
+
+现在 `App.tsx` 没有 tab，四块上下堆一个滚动页：Providers(261) / PanelView(311) /
+Permissions(127) / Wire(178)。改成横滑 tab 容器，四块各占一页。
+
+- 容器管 `translateX` 过渡 + tab 指示条；四块只搬内容，逻辑一行不改
+- **供应商是默认页**（ROADMAP 阶段 6 已说"最常用的操作"），权限/接线收进次级
+- 横滑要求 tab 内容区固定高度 + `overflow: hidden`，现在卡片是自然流高，套一层即可
+- 1107 行 `styles.css` 只加 tab 与 slide 样式，不动既有 `.card`
+
+> 这一条你说"跟想象差距大"的就是它，不是拖拽。先讲清免得做完发现不是你要的。
+
+### T+2. 供应商管理补齐（ROADMAP 阶段 7 剩余）
+
+- 增删改 + 连通性测试（现在只有列表、切默认、拉模型，见 `2bccd40` / `c9a7cf8`）
+- [x] **文件夹分组**：新模块 `src-tauri/src/folders.rs`，注册表落
+      `%APPDATA%	ernolders.json`（`tern.json` 旁边）。三种视图：平铺 /
+      按地址 / 按文件夹。按地址的键由 Rust 侧算（`folders::group_key`，
+      口径逐条对齐 cc-switch 的 `normalizeUrl`：完整 URL、协议与 host 小写、
+      path 大小写保留、去末尾斜杠），前端只做 Map 归拢
+- [x] 批量移动（勾选 + 操作条）、新建 / 重命名 / 解散文件夹、按域名一键归组
+      （同域名根两个以上才建组，本地地址一律跳过）
+- [x] 从 cc-switch 导入时把分组一起搬：注册表取 `settings` 表的
+      `provider_folders_{app_type}`，归属取每个供应商的 `meta.folder`；
+      与 `tern.json` 分开合并，不会把 tern 侧已有的分组清掉
+- [x] 未分组恒沉底、注册表铺骨架让空文件夹也显示、刻意不用 `localeCompare`
+- [ ] 智能分组：cc-switch 那边是 LLM（TypeSafe choice）+ 本地启发式两级。
+      tern 先落了离线那级（按域名归组），LLM 那级要看用户想不想为一个分组功能
+      多带一个上游依赖
+- 订阅登录（Copilot / ChatGPT / xAI），实现 `TokenProvider`，这是 `ProviderAuth`
+  里三个订阅变体现在只有占位 `AuthInfo` 的根因
+- 验收：能纯靠面板从零加一个中转站并切过去，不碰 `tern.json`
+
+### T+3. 用量面板补全（你最看重的）
+
+- Rust 侧补查询命令：`breakdown` / `sessions` / `trend`，前端只拿聚合不拉明细
+- 按 `design/` 三版里选定的版式做：趋势堆叠柱、花在哪（环形/treemap）、模型流向、
+  缓存省了多少、会话视图、请求流、失败面板
+- 深浅双主题、空状态引导、tabular-nums
+- 验收：本机真实攒的数据能对上 `tern usage` CLI 输出
+
+### T+4. 健壮性（ROADMAP 阶段 8，按真实问题排序）
+
+- 熔断与故障转移接上（`proxy/circuit_breaker.rs` 已搬）
+- Copilot 动态端点、按模型厂商选 Responses / Chat
+- Gemini OAuth refresh token 换取
+- 原生 Anthropic 上游的请求头大小写保持（部分中转站按指纹校验）
+
+## 设计记录：分组数据放哪
+
+`folders.json` 而不是 `tern.json` 的一个字段，也不进 `usage.db`：
+
+- `tern.json` 是网关和 agent 都要读的东西。分组是纯 UI 概念，塞进去之后
+  "改分组"也要 rewrite 网关配置，而 `write_config` 每次都备份一份 `.bak`
+- 面板的 `usage.db` 是**只读**打开的（`db.rs` 没写方行为），记账的库不承担配置职责
+- 归属表按 provider id 存而不是按文件夹名：改名只动注册表一处。cc-switch 那边名字
+  才是主键（重命名要连着改所有供应商的 `folder`），tern 的 id 导入后不再变，用 id 更稳
+
+## 已决定
+
+- 桌面应用托盘常驻：**做**。关窗隐藏、托盘退出（原待定问题已消）

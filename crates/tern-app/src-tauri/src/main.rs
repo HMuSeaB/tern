@@ -1,15 +1,38 @@
 use tauri::Manager;
 
+use tern_app_lib::{AppState, tray};
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(tern_app_lib::AppState::default())
+        .manage(AppState::default())
         .setup(|app| {
+            // 托盘先建：它决定了"关窗"是隐藏还是退出。建失败也不阻断启动——
+            // 没有托盘时退化成普通窗口应用，路由和面板照常能用
+            if let Err(error) = tray::build(app) {
+                log::error!("[tern-app] 托盘建不起来，关窗将直接退出: {error}");
+            }
+
             let window = app
                 .get_webview_window("main")
                 .expect("tauri.conf.json 里应定义 label 为 main 的窗口");
             let _ = window.show();
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let app = window.app_handle();
+                if tray::should_prevent_close(app) {
+                    // 拦下来藏到托盘：网关照跑（agent 是独立进程），用量继续记。
+                    // 窗口坐标在隐藏前记一份，托盘唤回时先验它还在不在屏上
+                    api.prevent_close();
+                    if let Some(panel) = app.get_webview_window("main") {
+                        tray::remember_and_hide(&panel);
+                    }
+                    log::info!("[tern-app] 面板已隐藏到托盘");
+                }
+                // 没有托盘，或用户从托盘点了"退出"：放行，让进程正常收尾
+            }
         })
         .invoke_handler(tauri::generate_handler![
             // 面板

@@ -68,24 +68,44 @@ fn agent_absent() -> ServerStatus {
     }
 }
 
+/// 面板自己点的启停。带 `AppHandle` 是为了顺手把托盘菜单刷了——
+/// 不刷的话用户刚在面板里停了网关，托盘上还写着"停止网关"。
 #[tauri::command]
-pub fn server_start() -> Result<ServerStatus> {
-    Ok(to_server_status(agent::start_gateway()?))
+pub fn server_start(app: tauri::AppHandle) -> Result<ServerStatus> {
+    let status = start_gateway_now()?;
+    crate::tray::refresh(&app);
+    Ok(status)
 }
 
 #[tauri::command]
-pub fn server_stop() -> Result<ServerStatus> {
-    Ok(to_server_status(agent::stop_gateway()?))
+pub fn server_stop(app: tauri::AppHandle) -> Result<ServerStatus> {
+    let status = stop_gateway_now()?;
+    crate::tray::refresh(&app);
+    Ok(status)
 }
 
 #[tauri::command]
 pub fn server_status() -> Result<ServerStatus> {
+    Ok(server_status_now())
+}
+
+// ---- 不带 tauri 命令层的版本：托盘菜单和面板共用 ----
+
+/// 问一次状态。agent 不在时给"停了"而不是报错——那是常态（用户还没启动过），
+/// 不是异常，抛错会让托盘刷新变成一片红色日志。
+pub fn server_status_now() -> ServerStatus {
     match agent::status() {
-        Ok(status) => Ok(to_server_status(status)),
-        // agent 不在：给出"停了"的状态而不是把错误抛到前端。
-        // 这是常态（用户还没启动过），不是异常
-        Err(_) => Ok(agent_absent()),
+        Ok(status) => to_server_status(status),
+        Err(_) => agent_absent(),
     }
+}
+
+pub fn start_gateway_now() -> Result<ServerStatus> {
+    Ok(to_server_status(agent::start_gateway()?))
+}
+
+pub fn stop_gateway_now() -> Result<ServerStatus> {
+    Ok(to_server_status(agent::stop_gateway()?))
 }
 
 /// 导入过供应商后调它：跑着的网关还拿着旧配置。

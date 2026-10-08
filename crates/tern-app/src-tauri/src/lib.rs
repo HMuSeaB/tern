@@ -24,14 +24,23 @@ mod error;
 pub mod folders;
 pub mod permissions;
 pub mod server;
+pub mod tray;
 pub mod wire;
 
 pub use error::{AppError, Result};
 
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use db::ReadonlyDb;
 use tern_store::Store;
+
+/// 用户是不是从托盘点了"退出"。
+///
+/// 有了它，`CloseRequested` 才能区分"想关窗"和"想退出应用"：托盘退出走
+/// `app.exit()`，那条路径上窗口的关闭请求也会被触发，不设这个标志的话
+/// `on_window_event` 会把退出拦住，用户点了退出什么都不会发生。
+pub static QUITTING: AtomicBool = AtomicBool::new(false);
 
 /// 应用运行期状态。
 pub struct AppState {
