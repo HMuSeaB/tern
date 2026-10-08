@@ -82,22 +82,30 @@ jobs:
         working-directory: ${{ env.APP_DIR }}
         run: pnpm tauri build
 
-      # tauri 装的是 nsis 包，产物在 src-tauri/target/release/bundle/nsis/。
-      # 手动收集而不是用 tauri-action：产物只有一种、重命名的逻辑就两行，
-      # 引一个 action 只为了 cp 一次文件不值得
+      # 产物路径按 Tauri 2 的布局推：`target/release/bundle/<target>/`。
+      # 本地从没执行过 release 构建，所以这条路径**未经本地验证**——
+      # 用 Get-ChildItem 扫整个 bundle 目录而不是硬编码 nsis/，是为了在
+      # "targets 配了但落点不同"时也能找到，而不是让 release 空手失败
       - name: 收集安装包
         shell: pwsh
         run: |
-          $bundle = "${{ env.APP_DIR }}/src-tauri/target/release/bundle/nsis"
+          $bundle = "${{ env.APP_DIR }}/src-tauri/target/release/bundle"
           New-Item -ItemType Directory -Force -Path release-assets | Out-Null
-          $exe = Get-ChildItem -Path $bundle -Filter "*.exe" -Recurse | Select-Object -First 1
-          if (-not $exe) { throw "没找到 NSIS 安装包：$bundle" }
+          $exe = Get-ChildItem -Path $bundle -Filter "*-setup.exe" -Recurse |
+                 Where-Object { $_.Name -notlike '*.webpack*' } |
+                 Select-Object -First 1
+          if (-not $exe) {
+            Write-Host "bundle 目录下有什么："
+            Get-ChildItem -Path $bundle -Recurse -ErrorAction SilentlyContinue |
+              Select-Object -First 20 -ExpandProperty FullName
+            throw "没找到 NSIS 安装包"
+          }
           $name = "tern-$($env:GITHUB_REF_NAME -replace '^v','')-setup-x64.exe"
           Copy-Item $exe.FullName -Destination "release-assets/$name"
           # .sig 只在配了 updater 签名时才会生成；没有就不该把它挂上去
           $sig = Get-ChildItem -Path $bundle -Filter "*.sig" -Recurse | Select-Object -First 1
           if ($sig) { Copy-Item $sig.FullName -Destination "release-assets/$name.sig" }
-          Write-Host "产物: $name ($([math]::Round($exe.Length / 1MB, 1)) MB)"
+          Write-Host "产物: $name ($([math]::Round($exe.Length / 1MB, 1)) MB)，来自 $($exe.FullName)"
 
       # 手动触发时 GITHUB_REF_NAME 是分支名（main），那不是一个版本。
       # 这种情况下沿用仓库里最新的 tag，都没有才退回 latest
