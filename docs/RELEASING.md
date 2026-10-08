@@ -23,14 +23,25 @@ Tauri 带着 webview，本地 release 构建实测吃 **1~2 GB 内存**。这条
 
 2. **`cargo test --workspace` 在本地过**。CI 也跑，但本地先过能省一轮。
 
-3. **版本号要不要动**。三个地方现在是同一个 `0.1.0`：
+3. **版本号**。三个地方要保持一致：
    - `Cargo.toml` 的 `workspace.package.version`
    - `crates/tern-app/package.json`
    - `crates/tern-app/src-tauri/tauri.conf.json`
 
-   tag 名（`v0.1.0`）和这三个里的版本号**不联动**，tag 是给 release 页面看的，
-   安装包内的版本号由 tauri.conf.json 决定。保持一致靠人工——要不要在 CI 里加一
-   条"tag 名与 tauri.conf.json 不一致就失败"的检查，等第一次真发布时再定。
+   tag 名和这三个里的版本号**不联动**：tag 给 release 页面和文件名用，
+   安装包内部版本由 tauri.conf.json 决定（`tern_0.1.1_x64-struct.exe` 里的就是它）。
+   所以 `v0.1.1` 这个 tag 装配出来的包内部版本还是 0.1.0——第一次发的时候没同步，
+   之后每次发布前把三处一起改。
+
+## 已知的两个坑（都是发布时才炸的类型）
+
+**安装包落点在 workspace 根**。`src-tauri` 属于这个 workspace，Cargo 共享一个
+target 目录，于是 bundle 被提到根的 `target/release/bundle/nsis/` 下，**不是**
+`src-tauri/target/`。workflow 里两个位置都扫了。照着单 crate 的惯例推会白跑一轮
+13 分钟的构建——`v0.1.0` 那一轮就是这么废的（安装包本身是好的，8.9 MB）。
+
+**删掉的 tag 不能用**。`v0.1.0` 指向一个构建失败的提交，删远端 tag 要单独授权，
+所以它还在。别复用旧 tag 号，往下发新版即可。
 
 ## 试用一次不正式发版本
 
