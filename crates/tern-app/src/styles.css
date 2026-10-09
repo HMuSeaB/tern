@@ -74,6 +74,45 @@
   padding: 0;
 }
 
+/* ---- 自定义滚动条 ----
+   Tauri 在 Windows 上走 WebView2（Chromium 内核），
+   ::-webkit-scrollbar 生效。加上标准属性以防未来切换 */
+
+/* 标准属性（Firefox / 未来标准） */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--dim-2) 36%, transparent) transparent;
+}
+
+/* Webkit / Chromium 详细控制 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--dim-2) 42%, transparent);
+  border-radius: 99px;
+  transition: background 0.18s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--dim) 72%, transparent);
+}
+
+/* 极窄容器（弹层表单）里再收一格，别挤输入框 */
+.prov-form::-webkit-scrollbar {
+  width: 4px;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 html,
 body,
 #root {
@@ -170,8 +209,8 @@ body {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: 0 22px 24px;
-  max-width: 960px;
+  padding: 0 24px 24px;
+  max-width: 1040px;
   width: 100%;
   margin: 0 auto;
 }
@@ -634,7 +673,8 @@ body {
   gap: 1px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  overflow: hidden;
+  overflow-y: auto;
+  max-height: 280px;
   font-size: 13px;
 }
 
@@ -894,7 +934,7 @@ body {
 
 .prov-row {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: 1fr auto;
   gap: 12px;
   align-items: center;
   width: 100%;
@@ -905,6 +945,10 @@ body {
   color: inherit;
   text-align: left;
   cursor: pointer;
+}
+
+.prov-row.has-check {
+  grid-template-columns: auto 1fr auto;
 }
 
 .prov-row:hover {
@@ -1584,6 +1628,7 @@ select.prov-modal-input {
   min-width: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   /* 横向不另加内边距：tab 栏已经用负 margin 吃到边，这里再吃一次会和卡片错位 */
   padding: 18px 0 12px;
 }

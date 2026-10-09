@@ -1,3 +1,7 @@
+// Release 构建使用 Windows GUI 子系统：不分配控制台窗口，
+// 用户双击 exe 不会再看到一个黑色 cmd 闪一下
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use tauri::Manager;
 
 use tern_app_lib::{tray, AppState};

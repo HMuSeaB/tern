@@ -17,3 +17,6 @@ crates/tern-app/src-tauri/gen/
 
 # agent 的副本，由 scripts/prepare-agent.mjs 在打包前生成，不该进仓库
 crates/tern-app/src-tauri/resources/
+
+# Antigravity 辅助文档工件目录
+.antigravity_docs/

@@ -92,10 +92,10 @@ pub fn permission_presets() -> Vec<(&'static str, &'static str, &'static str, &'
             "Bash(git:*)",
         ),
         (
-            "tern-files",
-            "tern 项目文件",
-            "允许读写 D:\\4rchive\\Code\\tern 下的文件",
-            "Edit(//D:/4rchive/Code/tern/**)",
+            "workspace-files",
+            "工作区文件编辑",
+            "允许编辑当前工作区目录下的文件",
+            "Edit(**)",
         ),
     ]
 }

@@ -15,6 +15,8 @@
 //! 看 tern-agent.exe 是否在自己的 exe 旁边，是就 spawn 它。
 //! spawn 时带 `CREATE_NO_WINDOW`：否则每次启动都会闪一个控制台黑框。
 
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::sync::Arc;
 
 use tern_agent::control::{self, ControlConfig};

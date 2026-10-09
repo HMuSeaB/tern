@@ -187,6 +187,11 @@ pub fn select_provider(id: String) -> Result<ConfigSummary> {
     }
     config.default_provider = Some(id);
     write_config(&path, &config)?;
+    // 网关在跑时重新加载配置，确保路由表与当前选择一致。
+    // 失败不阻断切换本身：配置已经落盘
+    if let Err(error) = restart_after_config_change() {
+        log::warn!("[server] 切换默认供应商后重起网关失败: {error}");
+    }
     Ok(summary_of(&path, config))
 }
 

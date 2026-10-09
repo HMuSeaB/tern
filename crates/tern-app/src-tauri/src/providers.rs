@@ -364,34 +364,30 @@ fn write_config_at(
 /// 实际哪都没错，只是这家不叫这个名。StepFun 就是这么回事。
 const PROBE_MODEL: &str = "claude-sonnet-4-6";
 
-/// 探测实际用的模型名。
+/// 探测实际用的模型名与模型总数。
 ///
-/// 先问上游要一份模型列表，取第一个。拿不到才退回 [`PROBE_MODEL`]。
-/// 顺带把模型数一起返回，前端能显示"用 X 探测的"。
+/// 一次性拉取上游模型列表（避免重复发起网络请求），取第一个作为探测模型。
+/// 拿不到或上游不提供 /models 时退回 [`PROBE_MODEL`]。
 fn probe_model(spec: &tern_gateway::ProviderSpec) -> (String, usize) {
-    let count = model_count(spec);
-    let first = first_model(spec);
-    match first {
-        Some(model) => (model, count),
-        None => (PROBE_MODEL.to_string(), count),
-    }
-}
-
-/// 上游的第一个模型名（已按 id 排序，和「获取模型列表」同一个次序）。
-fn first_model(spec: &tern_gateway::ProviderSpec) -> Option<String> {
-    // 订阅登录的 token 在网关手里，这里拿不到
     let tern_gateway::ProviderAuth::ApiKey { key, .. } = &spec.auth else {
-        return None;
+        return (PROBE_MODEL.to_string(), 0);
     };
     let key = key.trim();
     if key.is_empty() || key == crate::config::PLACEHOLDER_KEY {
-        return None;
+        return (PROBE_MODEL.to_string(), 0);
     }
-    tern_gateway::models::fetch_models(&spec.effective_base_url(), key, spec.full_url, None)
-        .ok()?
-        .into_iter()
-        .map(|model| model.id)
-        .next()
+    match tern_gateway::models::fetch_models(&spec.effective_base_url(), key, spec.full_url, None) {
+        Ok(models) if !models.is_empty() => {
+            let count = models.len();
+            let first = models
+                .into_iter()
+                .next()
+                .map(|m| m.id)
+                .unwrap_or_else(|| PROBE_MODEL.to_string());
+            (first, count)
+        }
+        _ => (PROBE_MODEL.to_string(), 0),
+    }
 }
 
 /// 连通性测试：向这个上游发一条最小的请求，看它怎么回。
@@ -521,21 +517,6 @@ pub fn probe(spec: &tern_gateway::ProviderSpec) -> ProbeReport {
         url,
         elapsed_ms: started.elapsed().as_millis(),
     }
-}
-
-/// 上游的模型数。没有 `/models` 或不给读就是 0，不当失败。
-fn model_count(spec: &tern_gateway::ProviderSpec) -> usize {
-    // 只对静态 key 的供应商问：订阅登录的 token 在网关手里，这里拿不到
-    let tern_gateway::ProviderAuth::ApiKey { key, .. } = &spec.auth else {
-        return 0;
-    };
-    let key = key.trim();
-    if key.is_empty() || key == crate::config::PLACEHOLDER_KEY {
-        return 0;
-    }
-    tern_gateway::models::fetch_models(&spec.effective_base_url(), key, spec.full_url, None)
-        .map(|models| models.len())
-        .unwrap_or(0)
 }
 
 /// 从 Anthropic / OpenAI 两种风格的错误体里挖 message。挖不到就退回原文截断。

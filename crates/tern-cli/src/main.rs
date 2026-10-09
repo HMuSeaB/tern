@@ -100,7 +100,15 @@ fn launch_panel() -> Result<()> {
         );
     };
 
-    std::process::Command::new(&panel)
+    let mut command = std::process::Command::new(&panel);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        command.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
+    }
+    command
         .spawn()
         .with_context(|| format!("启动 {} 失败", panel.display()))?;
     println!("已启动面板 {}", panel.display());
