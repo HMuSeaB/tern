@@ -29,9 +29,10 @@ Tauri 带着 webview，本地 release 构建实测吃 **1~2 GB 内存**。这条
    - `crates/tern-app/src-tauri/tauri.conf.json`
 
    tag 名和这三个里的版本号**不联动**：tag 给 release 页面和文件名用，
-   安装包内部版本由 tauri.conf.json 决定（`tern_0.1.1_x64-struct.exe` 里的就是它）。
-   所以 `v0.1.1` 这个 tag 装配出来的包内部版本还是 0.1.0——第一次发的时候没同步，
-   之后每次发布前把三处一起改。
+   安装包内部版本由 tauri.conf.json 决定（`tern_0.1.2_x64-setup.exe` 里的就是它）。
+   `v0.1.1` 那版忘了同步，装出来的包内部版本还是 0.1.0——从 `v0.1.2` 起三处
+   每次发布前一起改。`Cargo.lock` 里六个 `tern-*` 条目也要跟着改，
+   CI 不传 `--locked`，不改只是留一个脏 diff，不会红。
 
 ## 已知的两个坑（都是发布时才炸的类型）
 
