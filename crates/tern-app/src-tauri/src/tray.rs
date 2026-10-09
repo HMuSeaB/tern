@@ -235,9 +235,22 @@ fn toggle_gateway(app: &AppHandle) {
 /// 这里不能只 `app.exit(0)`：`exit` 走的是 `RunEvent::ExitRequested`，而窗口的
 /// `CloseRequested` 也会在那条路径上被触发，`on_window_event` 会把退出拦住——
 /// 用户点了"退出"什么都不会发生。所以先把状态标成"正在退出"，让拦截逻辑放行。
+///
+/// # 退出前先让 agent 走
+///
+/// agent 是常驻进程，`app.exit` 不会带走它（它本来就被设计成比面板活得久）。
+/// 但**用户点"退出"的意图就是"全关"**，留一个后台进程在跑既占用内存，
+/// 又会让他下次装新版时撞上"覆盖不了正在运行的 exe"。
+///
+/// 所以先 POST /api/agent/exit 让它优雅收尾：在途的流补记 aborted、写入队列
+/// 排空，用量不丢。硬杀能做到同样的事，但会丢最多一条 in-flight 的记账。
+///
+/// 这一步失败不阻断退出——用户想走就走，agent 留着下次安装器会处理它。
 fn quit(app: &AppHandle) {
     crate::QUITTING.store(true, std::sync::atomic::Ordering::SeqCst);
     log::info!("[tray] 用户选择退出，正在收尾");
+    // 优雅退：不等它，最多让它有一秒收尾时间。失败就失败，下面照旧退出
+    let _ = crate::agent::exit_agent();
     app.exit(0);
 }
 

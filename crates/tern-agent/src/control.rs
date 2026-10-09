@@ -143,10 +143,40 @@ async fn handle(
                 Err(error) => ("409 Conflict", error_body(&error.to_string())),
             }
         }
+        // 退出 agent 自己。**只有这一条会让进程消失**。
+        //
+        // 为什么需要：Windows 上覆盖不了正在运行的 exe。agent 是常驻进程，
+        // 关窗口不停它（那是设计——用户只想看用量时不该断流量），于是升级
+        // 安装新版的 tern-agent.exe 一定失败。安装器要有个办法让它让路。
+        //
+        // 停机时在途的流会补记 aborted、写入线程把队列排空，所以正常退出
+        // 不丢用量——和 Ctrl+C 走的是同一条路（见 lib.rs 的 shutdown）。
+        ("POST", "/api/agent/exit") => {
+            // 先把响应发出去再退：否则面板还在等这个请求，连接就被掐了。
+            // respond 的 ? 是这个函数自己的错误传播，和 status_of 无关
+            respond(
+                socket,
+                "200 OK",
+                &serde_json::to_string(&status_of(&state))?,
+            )
+            .await?;
+            exit_agent();
+        }
         _ => ("404 Not Found", error_body("没有这个端点")),
     };
 
     respond(socket, status, &body).await
+}
+
+/// 让 agent 进程退出。
+///
+/// 用 `std::process::exit` 而不是设一个标志位等主循环收尾：那条路要等
+/// 控制端 serve 循环自己结束，而它此刻正忙着处理"让它退出"的这个请求。
+/// exit 会走 Drop——`GatewayState` 的 Drop 里停网关、补记 aborted，
+/// 和 Ctrl+C 的收尾是同一条（见 lib.rs）。
+fn exit_agent() -> ! {
+    log::info!("[agent] 收到退出请求，正在停机");
+    std::process::exit(0);
 }
 
 async fn respond(
@@ -280,6 +310,29 @@ mod tests {
         let raw = "GET /api/status?verbose=1 HTTP/1.1\r\n\r\n";
         let (_, path, _) = parse_request(raw).unwrap();
         assert_eq!(path, "/api/status");
+    }
+
+    /// `/api/agent/exit` 必须能被正确解析出来。
+    ///
+    /// 不断言"调了它会退出"——那会把测试进程自己干掉。这里守的是**路径拼写**：
+    /// 安装器和面板都按这个字面量发请求，拼错一个字符的症状是"点了退出
+    /// 什么都没发生"，而那种 bug 在测试里几乎不可能偶然撞见。
+    #[test]
+    fn the_exit_endpoint_parses() {
+        let raw = "POST /api/agent/exit HTTP/1.1\r\nX-Tern-Token: local-secret\r\n\r\n";
+        let (method, path, token) = parse_request(raw).unwrap();
+        assert_eq!(method, "POST");
+        assert_eq!(path, "/api/agent/exit");
+        assert_eq!(token.as_deref(), Some("local-secret"));
+    }
+
+    /// 未知端点仍然是 404：`exit` 是加进来的一条，别把默认分支的兜底改了
+    #[test]
+    fn an_unknown_endpoint_is_still_a_404() {
+        let raw = "POST /api/agent/explode HTTP/1.1\r\n\r\n";
+        let (_, path, _) = parse_request(raw).unwrap();
+        assert_eq!(path, "/api/agent/explode");
+        assert_ne!(path, "/api/agent/exit");
     }
 
     /// 畸形请求必须被稳定处理，不能 panic。控制端崩一次，

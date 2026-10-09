@@ -97,6 +97,38 @@ pub fn restart_gateway() -> Result<AgentStatus> {
     request("POST", "/api/gateway/restart", None)
 }
 
+/// 让 agent 进程退出。
+///
+/// # 什么时候用
+///
+/// 装新版本之前。Windows 上覆盖不了正在运行的 exe，而 agent 是常驻进程
+/// （关窗口不停它，那是设计）。不先让它退出，安装器会报
+/// `Can't write: ...\tern-agent.exe` 然后整个升级失败。
+///
+/// # 为什么不用 taskkill
+///
+/// `taskkill /F` 是硬杀，在途的请求补不了 aborted、写入队列没排空就没了。
+/// 走 HTTP 让 agent 自己收尾，用量不丢。
+///
+/// agent 本来没起时**不报错**：那正是想要的状态。但也别为它特意拉起一个
+/// 再杀——所以这里直接问，连不上就当已经退出。
+pub fn exit_agent() -> Result<()> {
+    if !reachable() {
+        return Ok(());
+    }
+    match request("POST", "/api/agent/exit", None) {
+        Ok(_) => {
+            log::info!("[tern-app] 常驻进程已退出");
+            Ok(())
+        }
+        // 响应回来之前进程就没了，连接被掐断是正常的。看结果不看错误
+        Err(error) => {
+            log::info!("[tern-app] 常驻进程退出（连接随进程结束）: {error}");
+            Ok(())
+        }
+    }
+}
+
 fn reachable() -> bool {
     matches!(status(), Ok(status) if !status.agent_version.is_empty())
 }
