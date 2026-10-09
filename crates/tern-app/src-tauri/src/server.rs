@@ -187,12 +187,63 @@ pub fn select_provider(id: String) -> Result<ConfigSummary> {
     }
     config.default_provider = Some(id);
     write_config(&path, &config)?;
+
+    // 切到哪家,就把那家的模型映射写给 Claude Code。
+    // 只在**已接线**时做:没接线说明用户没让 tern 接管 settings.json,
+    // 往那个文件里写模型是越权。失败不阻断切换——配置已经落盘了,
+    // 那才是要紧的;模型下次接线时会补上
+    if let Err(error) = apply_provider_model_env(&config) {
+        log::warn!("[server] 切换后应用模型映射失败: {error}");
+    }
+
     // 网关在跑时重新加载配置，确保路由表与当前选择一致。
     // 失败不阻断切换本身：配置已经落盘
     if let Err(error) = restart_after_config_change() {
         log::warn!("[server] 切换默认供应商后重起网关失败: {error}");
     }
     Ok(summary_of(&path, config))
+}
+
+/// 把当前默认供应商的 `client_env` 写进 `~/.claude/settings.json`。
+///
+/// # 为什么单独一个函数
+///
+/// `select_provider` 已经够长了,而这件事有自己的失败模式(文件不在、被别的
+/// 进程占用、JSON 形状不对),单独拆出来日志能说清是哪一步出的问题。
+///
+/// # 覆盖规则
+///
+/// **该供应商配了的档位一律以它为准,没配的保留现值。**
+/// 理由是这些映射本来就是用户当初为这家逐个挑的(cc-switch 里 39 家,
+/// 每家的 Opus/Sonnet 档都不一样),切到 StepFun 却还用着上一家的 Opus 档,
+/// 等于"切了但没完全切"。而它没配的档位(多数第三方站只配 Opus/Sonnet,
+/// 不配 Haiku)保留现值,免得把用户手工指定的那个抹成空。
+///
+/// 这与 `model.rs::set_model` 的"已有值不覆盖"刻意不同:那边是用户主动选一个
+/// 模型,这边是"这家配套的档位组合",语义不是一回事。
+fn apply_provider_model_env(config: &tern_gateway::GatewayConfig) -> crate::error::Result<()> {
+    // 没接线就不碰用户文件
+    if !crate::wire::wire_status()?.wired {
+        return Ok(());
+    }
+    let Some(active) = config
+        .providers
+        .iter()
+        .find(|spec| Some(&spec.id) == config.default_provider.as_ref())
+    else {
+        return Ok(());
+    };
+    if active.client_env.is_empty() {
+        return Ok(());
+    }
+    let claude_dir = crate::model::claude_dir()?;
+    crate::model::apply_env(&claude_dir, &active.client_env)?;
+    log::info!(
+        "[server] 已把「{}」的 {} 个模型键写给 Claude Code",
+        active.name,
+        active.client_env.len()
+    );
+    Ok(())
 }
 
 /// 拉一个供应商的模型列表（「获取模型列表」按钮）。

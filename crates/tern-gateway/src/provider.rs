@@ -4,6 +4,7 @@
 //! `ProviderSpec` 是 tern 自己的中立供应商定义，替代 cc-switch 里
 //! "按 agent 存一份配置快照（settings_config）"的做法。
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -209,6 +210,23 @@ pub struct ProviderSpec {
     /// 成本倍率（十进制字符串，如中转站的 `"0.3"`）。网关本身不用，供用量计价
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_multiplier: Option<String>,
+    /// **选中这家时要写给客户端的 env 键值对**。
+    ///
+    /// cc-switch 给每个供应商存一整套 env（`ANTHROPIC_MODEL`、四档
+    /// `ANTHROPIC_DEFAULT_*_MODEL`、`ANTHROPIC_REASONING_MODEL`、
+    /// `CLAUDE_CODE_SUBAGENT_MODEL`…），而**每家的映射都不一样**：StepFun 的
+    /// Opus 档是 `step-5-preview[1M]`，dandan 的是 `claude-fable-5`。这些是
+    /// "用哪家的模型"的配置，丢了就得手工重设一遍。
+    ///
+    /// 为什么不按 Anthropic 专用字段逐个列：实测 45 家里出现过的 env 键有 15 种，
+    /// 还混着 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` 这种不是模型名的开关。
+    /// 逐个列字段等于每加一种键都要改一次结构体，而网关**本来就不该知道
+    /// `ANTHROPIC_MODEL` 是什么**（ROADMAP：网关只回答"这个模型名发给哪家"）。
+    ///
+    /// 所以存成通用 map，网关保持中立，只负责"这家活跃时把这些键设上"。
+    /// `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` 不在这里——那两个已有专门字段。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub client_env: BTreeMap<String, String>,
 }
 
 impl ProviderSpec {
@@ -232,6 +250,7 @@ impl ProviderSpec {
             max_output_tokens: None,
             codex_fast_mode: false,
             cost_multiplier: None,
+            client_env: BTreeMap::new(),
         }
     }
 

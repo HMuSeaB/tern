@@ -32,6 +32,14 @@ export interface ProviderDetail {
   web_tools_at_risk: boolean;
   is_default: boolean;
   cost_multiplier: string | null;
+  /** 这家的模型档位映射,按 Claude Code 的档位层级排好序 */
+  model_env: ModelEnvEntry[];
+}
+
+/** 一个模型档位。key 是 env 键名,value 是模型名 */
+export interface ModelEnvEntry {
+  key: string;
+  value: string;
 }
 
 export interface ProbeReport {
@@ -71,6 +79,20 @@ function isManaged(authKind: string): boolean {
   );
 }
 
+/** env 键名 → 人话。`ANTHROPIC_DEFAULT_OPUS_MODEL` 对用户没有意义,
+ *  而且它比 `ANTHROPIC_MODEL` 长得多,原样显示会把输入框挤没。
+ *  认不出的键原样显示(cc-switch 的键集会变)。 */
+const TIER_LABEL: Record<string, string> = {
+  ANTHROPIC_MODEL: "主模型",
+  ANTHROPIC_DEFAULT_OPUS_MODEL: "Opus 档",
+  ANTHROPIC_DEFAULT_SONNET_MODEL: "Sonnet 档",
+  ANTHROPIC_DEFAULT_HAIKU_MODEL: "Haiku 档",
+  ANTHROPIC_DEFAULT_FABLE_MODEL: "Fable 档",
+  ANTHROPIC_REASONING_MODEL: "推理档",
+  CLAUDE_CODE_SUBAGENT_MODEL: "子代理",
+  CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "Agent Teams",
+};
+
 export function ProviderEditor({
   mode,
   providerId,
@@ -104,6 +126,10 @@ export function ProviderEditor({
   const [probe, setProbe] = useState<ProbeReport | null>(null);
   const [probing, setProbing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+
+  /** 这家的模型档位映射。独立于 form：它有增删逻辑,
+   *  塞进 form 会让改一个模型名就重建整个表单对象 */
+  const [modelEnv, setModelEnv] = useState<ModelEnvEntry[]>([]);
 
   // ---- 模型选择 ----
   const [models, setModels] = useState<string[]>([]);
@@ -166,17 +192,20 @@ export function ProviderEditor({
       api_key: "",
       cost_multiplier: d.cost_multiplier ?? "",
     });
+    setModelEnv(d.model_env ?? []);
   }
 
   const save = useCallback(async () => {
     setError(null);
     try {
-      const summary = await invoke<ConfigSummary>("provider_save", { draft: form });
+      const summary = await invoke<ConfigSummary>("provider_save", {
+        draft: { ...form, model_env: modelEnv },
+      });
       onSaved(summary);
     } catch (e) {
       setError(String(e));
     }
-  }, [form, onSaved]);
+  }, [form, modelEnv, onSaved]);
 
   const runProbe = useCallback(async () => {
     if (mode !== "edit" || !providerId) return;
@@ -425,6 +454,49 @@ export function ProviderEditor({
                 <code> ANTHROPIC_MODEL</code> 等四个档位（已有值的档位不覆盖）。
                 不选就不动它。
               </span>
+            </div>
+          )}
+
+          {/* 模型档位映射：cc-switch 里给每家逐个挑的那一套。
+              和上面的「默认模型」是两件事：那个是全局的、立刻改四个键；
+              这里是「这家配套的档位组合」，切到这家时才应用 */}
+          {!managed && (
+            <div className="prov-field">
+              <span className="prov-label">
+                模型档位映射
+                <span className="prov-label-dim">切到这家时生效</span>
+              </span>
+              {modelEnv.length === 0 ? (
+                <span className="prov-hint">
+                  这家没有配档位映射。从 cc-switch 导入的供应商会带上（每家不一样，
+                  StepFun 的 Opus 档可能是 <code>step-5-preview[1M]</code>）。
+                </span>
+              ) : (
+                <>
+                  {modelEnv.map((entry, i) => (
+                    <div className="model-row" key={entry.key}>
+                      <code className="model-env-key" title={entry.key}>
+                        {TIER_LABEL[entry.key] ?? entry.key}
+                      </code>
+                      <input
+                        className="prov-modal-input"
+                        value={entry.value}
+                        placeholder="模型名，留空删除这一档"
+                        onChange={(e) => {
+                          const next = [...modelEnv];
+                          next[i] = { ...entry, value: e.target.value };
+                          setModelEnv(next);
+                        }}
+                      />
+                    </div>
+                  ))}
+                  <span className="prov-hint">
+                    切到这家时，这些键会写进 <code>~/.claude/settings.json</code>
+                    （该家配了的档位以它为准，没配的保留现值）。上面「默认模型」是
+                    全局立即生效的，这里是这家配套的组合。
+                  </span>
+                </>
+              )}
             </div>
           )}
         </div>

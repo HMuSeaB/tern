@@ -605,10 +605,38 @@ fn convert(row: &CcSwitchProvider) -> Result<ProviderSpec, SkipReason> {
         ProviderAuth::api_key(key),
     );
     spec.cost_multiplier = multiplier_of(&meta.cost_multiplier);
+    spec.client_env = client_env_of(&settings.env);
     // 文件夹不进 ProviderSpec：分组是纯 UI 数据，网关不读它。
     // finish() 会把它搬去导入报告，最终落到 tern 侧的分组文件
 
     Ok(spec)
+}
+
+/// `settings_config.env` 里除凭据 / 地址之外的键——也就是模型映射那部分。
+///
+/// # 为什么要搬
+///
+/// cc-switch 给每家存一整套 env，其中模型档位映射**每家都不一样**（实测 45 家
+/// 39 家配了）。只搬 `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` 的话，这些
+/// 映射全丢，用户得手工重设一遍——39 家就是 39 遍。
+///
+/// # 为什么按"排除"而不是按"白名单"
+///
+/// 实测出现过的 env 键有 15 种，还混着 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`
+/// 这种不是模型名的开关，且键集会随 cc-switch 版本变。白名单意味着每加一种键
+/// 都要来这里补一次，漏了就静默丢数据；排除只认"地址和凭据已有专门字段"这三项，
+/// 新键自动跟过来。
+fn client_env_of(env: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    /// 已有专门字段的键，不该重复进 client_env
+    const OWNED: [&str; 3] = [
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_API_KEY",
+    ];
+    env.iter()
+        .filter(|(k, v)| !OWNED.contains(&k.as_str()) && !v.trim().is_empty())
+        .map(|(k, v)| (k.clone(), v.trim().to_string()))
+        .collect()
 }
 
 /// cc-switch 的 meta.api_format 是字符串，映射到 tern 的枚举。
@@ -674,6 +702,86 @@ mod tests {
         assert_eq!(spec.base_url, "https://api.deepseek.com/anthropic");
         assert_eq!(spec.api_format, ApiFormat::Anthropic);
         assert!(matches!(spec.auth, ProviderAuth::ApiKey { .. }));
+    }
+
+    /// 模型映射必须跟着过来。cc-switch 给每家的档位都不一样（StepFun 是
+    /// step-5-preview[1M]，dandan 的 Sonnet 档是 claude-fable-5），丢了就得
+    /// 手工重设一遍
+    #[test]
+    fn carries_model_env_over() {
+        let spec = convert(&row(
+            r#"{"env":{
+                "ANTHROPIC_BASE_URL":"https://api.stepfun.com/step_plan",
+                "ANTHROPIC_AUTH_TOKEN":"tok",
+                "ANTHROPIC_MODEL":"step-5-preview[1M]",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL":"step-5-preview[1M]",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL":"step-5-preview[1M]",
+                "CLAUDE_CODE_SUBAGENT_MODEL":"step-3.5-flash"
+            }}"#,
+            "{}",
+        ))
+        .unwrap();
+        assert_eq!(
+            spec.client_env.get("ANTHROPIC_MODEL").map(String::as_str),
+            Some("step-5-preview[1M]")
+        );
+        assert_eq!(
+            spec.client_env
+                .get("ANTHROPIC_DEFAULT_SONNET_MODEL")
+                .map(String::as_str),
+            Some("step-5-preview[1M]")
+        );
+        // 不是模型名的开关也照样搬：键集会变,白名单会静默漏数据
+        assert_eq!(
+            spec.client_env
+                .get("CLAUDE_CODE_SUBAGENT_MODEL")
+                .map(String::as_str),
+            Some("step-3.5-flash")
+        );
+    }
+
+    /// 地址和凭据不重复进 client_env：那两个已有专门字段,
+    /// 再存一份等于同一个信息有两个真相源
+    #[test]
+    fn client_env_excludes_url_and_credentials() {
+        let spec = convert(&row(
+            r#"{"env":{
+                "ANTHROPIC_BASE_URL":"https://api.deepseek.com/anthropic",
+                "ANTHROPIC_AUTH_TOKEN":"sk-x",
+                "ANTHROPIC_API_KEY":"sk-y",
+                "ANTHROPIC_MODEL":"deepseek-chat"
+            }}"#,
+            "{}",
+        ))
+        .unwrap();
+        assert!(spec.client_env.get("ANTHROPIC_BASE_URL").is_none());
+        assert!(spec.client_env.get("ANTHROPIC_AUTH_TOKEN").is_none());
+        assert!(spec.client_env.get("ANTHROPIC_API_KEY").is_none());
+        assert_eq!(spec.client_env.len(), 1);
+    }
+
+    /// 空值不搬。cc-switch 里有些键是空串(用户清过),
+    /// 搬过去会把 settings.json 里已有的值覆盖成空
+    #[test]
+    fn client_env_skips_empty_values() {
+        let spec = convert(&row(
+            r#"{"env":{
+                "ANTHROPIC_BASE_URL":"https://api.deepseek.com/anthropic",
+                "ANTHROPIC_AUTH_TOKEN":"sk-x",
+                "ANTHROPIC_MODEL":"",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL":"   ",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL":"deepseek-chat"
+            }}"#,
+            "{}",
+        ))
+        .unwrap();
+        assert_eq!(spec.client_env.len(), 1);
+        assert_eq!(
+            spec.client_env
+                .get("ANTHROPIC_DEFAULT_SONNET_MODEL")
+                .map(String::as_str),
+            Some("deepseek-chat")
+        );
     }
 
     #[test]

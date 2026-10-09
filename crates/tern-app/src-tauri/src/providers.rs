@@ -37,6 +37,18 @@ pub struct ProviderDraft {
     /// 成本倍率，十进制字符串。空串 = 不用倍率
     #[serde(default)]
     pub cost_multiplier: String,
+    /// 模型档位映射。编辑时整段替换该家的 `client_env` 里这些键。
+    /// 空 vec = 这家不配任何模型映射（导入的老数据就是这样）
+    #[serde(default)]
+    pub model_env: Vec<ModelEnvDraft>,
+}
+
+/// 表单里的一个模型键值。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelEnvDraft {
+    pub key: String,
+    /// 空串 = 把这个键从这家上删掉
+    pub value: String,
 }
 
 /// 一个供应商的完整信息。字段与 `server::ProviderSummary` 对齐，
@@ -52,6 +64,24 @@ pub struct ProviderDetail {
     pub web_tools_at_risk: bool,
     pub is_default: bool,
     pub cost_multiplier: Option<String>,
+    /// 这家的模型档位映射（`ANTHROPIC_MODEL` / 四档 / 子代理…），按固定顺序。
+    ///
+    /// 切到这家时会原样写进 `~/.claude/settings.json`，所以编辑框里要能看见、
+    /// 能改。只回传**模型相关**的键：`client_env` 理论上能装任何东西
+    /// （cc-switch 的 env 是自由 map），把未知键透给渲染进程没有理由。
+    ///
+    /// 用 `Vec` 而不是 map：档位有层级（主对话 → Opus → Sonnet → …），
+    /// 按字母排会把 `ANTHROPIC_DEFAULT_*` 甩到 `ANTHROPIC_MODEL` 后面。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_env: Vec<ModelEnvEntry>,
+}
+
+/// `model_env` 的一项。
+#[derive(Debug, Serialize, Clone)]
+pub struct ModelEnvEntry {
+    /// env 键名，如 `ANTHROPIC_DEFAULT_OPUS_MODEL`
+    pub key: String,
+    pub value: String,
 }
 
 /// 连通性测试的结果。
@@ -176,7 +206,38 @@ pub fn detail_of(
         ),
         is_default: config.default_provider.as_deref() == Some(spec.id.as_str()),
         cost_multiplier: spec.cost_multiplier.clone(),
+        model_env: model_env_of(spec),
     }
+}
+
+/// 模型相关的 env 键，按固定顺序。
+///
+/// 白名单而不是"全给"：`client_env` 能装任何东西，而编辑框只需要模型那几项。
+/// 顺序按 Claude Code 的档位层级排，不按字母——那样 `ANTHROPIC_DEFAULT_*` 会
+/// 插在 `ANTHROPIC_MODEL` 后面，读起来反的。
+fn model_env_of(spec: &tern_gateway::ProviderSpec) -> Vec<ModelEnvEntry> {
+    /// 顺序即层级：主对话 → Opus → Sonnet → Haiku → Fable → 推理 → 子代理 → 开关
+    const ORDER: [&str; 8] = [
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "ANTHROPIC_DEFAULT_FABLE_MODEL",
+        "ANTHROPIC_REASONING_MODEL",
+        "CLAUDE_CODE_SUBAGENT_MODEL",
+        "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
+    ];
+    ORDER
+        .iter()
+        .filter_map(|key| {
+            let value = spec.client_env.get(*key)?;
+            let value = value.trim();
+            (!value.is_empty()).then(|| ModelEnvEntry {
+                key: (*key).to_string(),
+                value: value.to_string(),
+            })
+        })
+        .collect()
 }
 
 /// 表单草稿 → `ProviderSpec`。
@@ -224,7 +285,35 @@ pub fn spec_of(
         // 订阅登录的 key 不在 tern 手里，表单里那个框填什么都不该生效
     }
     spec.cost_multiplier = parse_multiplier(&draft.cost_multiplier)?;
+    apply_model_env(&mut spec, &draft.model_env);
     Ok(spec)
+}
+
+/// 把表单里的模型键值应用到 spec。
+///
+/// # 只碰表单里出现的键
+///
+/// `client_env` 可能装着表单没显示的键（`model_env_of` 是白名单，只回 8 个）。
+/// 整段替换会把它们静默删掉——用户只是在编辑框里改了 Opus 档，
+/// 没打算删掉某个 tern 不认识的东西。所以逐个键增删改。
+///
+/// # 空值 = 删除这个键
+///
+/// 用户在编辑框里清空一个模型名，意思是"这家不配这个档位"。留着空串会让
+/// `apply_env` 跳过它，界面上看着配了、实际没生效。
+fn apply_model_env(spec: &mut tern_gateway::ProviderSpec, draft: &[ModelEnvDraft]) {
+    for entry in draft {
+        let key = entry.key.trim();
+        if key.is_empty() {
+            continue;
+        }
+        let value = entry.value.trim();
+        if value.is_empty() {
+            spec.client_env.remove(key);
+        } else {
+            spec.client_env.insert(key.to_string(), value.to_string());
+        }
+    }
 }
 
 fn auth_kind(auth: &tern_gateway::ProviderAuth) -> &'static str {
@@ -629,6 +718,7 @@ mod tests {
             api_format: "anthropic".into(),
             api_key: key.into(),
             cost_multiplier: String::new(),
+            model_env: Vec::new(),
         }
     }
 
@@ -872,5 +962,90 @@ mod tests {
             Some("rate limited")
         );
         assert_eq!(upstream_message("<html>404</html>"), None);
+    }
+
+    /// 编辑时表单里改的档位要真的落到 spec 上。
+    /// cc-switch 的 39 家里每家的映射都不一样,这里是用户改它的入口
+    #[test]
+    fn editing_the_model_env_reaches_the_spec() {
+        let mut draft = draft("stepfun", "https://api.stepfun.com/step_plan", "sk-real");
+        draft.model_env = vec![
+            ModelEnvDraft {
+                key: "ANTHROPIC_MODEL".into(),
+                value: "step-5-preview[1M]".into(),
+            },
+            ModelEnvDraft {
+                key: "ANTHROPIC_DEFAULT_OPUS_MODEL".into(),
+                value: "step-5-preview[1M]".into(),
+            },
+        ];
+        let spec = spec_of(&draft, None).unwrap();
+        assert_eq!(
+            spec.client_env.get("ANTHROPIC_MODEL").map(String::as_str),
+            Some("step-5-preview[1M]")
+        );
+        assert_eq!(spec.client_env.len(), 2);
+    }
+
+    /// 表单只回 8 个模型键(白名单),所以编辑时**不能整段替换** client_env——
+    /// 那会把表单没显示的键静默删掉。用户改 Opus 档不等于想删别的东西
+    #[test]
+    fn editing_keeps_env_keys_the_form_does_not_show() {
+        let mut existing = tern_gateway::ProviderSpec::new(
+            "x".to_string(),
+            "X".to_string(),
+            "https://api.example.com".to_string(),
+            tern_gateway::ApiFormat::Anthropic,
+            tern_gateway::ProviderAuth::api_key("sk-old".to_string()),
+        );
+        // 表单不显示的键(不在白名单里)
+        existing
+            .client_env
+            .insert("SOME_FUTURE_KEY".into(), "keep-me".into());
+
+        let mut draft = draft("x", "https://api.example.com", "");
+        draft.model_env = vec![ModelEnvDraft {
+            key: "ANTHROPIC_MODEL".into(),
+            value: "new-model".into(),
+        }];
+
+        let spec = spec_of(&draft, Some(&existing)).unwrap();
+        assert_eq!(
+            spec.client_env.get("SOME_FUTURE_KEY").map(String::as_str),
+            Some("keep-me"),
+            "表单没显示的键不该被删"
+        );
+        assert_eq!(
+            spec.client_env.get("ANTHROPIC_MODEL").map(String::as_str),
+            Some("new-model")
+        );
+    }
+
+    /// 清空一个模型名 = 删掉这一档。留着空串会让 apply_env 跳过它,
+    /// 界面上看着配了、实际没生效
+    #[test]
+    fn clearing_a_model_env_value_removes_the_key() {
+        let mut existing = tern_gateway::ProviderSpec::new(
+            "x".to_string(),
+            "X".to_string(),
+            "https://api.example.com".to_string(),
+            tern_gateway::ApiFormat::Anthropic,
+            tern_gateway::ProviderAuth::api_key("sk-old".to_string()),
+        );
+        existing
+            .client_env
+            .insert("ANTHROPIC_DEFAULT_HAIKU_MODEL".into(), "old-haiku".into());
+
+        let mut draft = draft("x", "https://api.example.com", "");
+        draft.model_env = vec![ModelEnvDraft {
+            key: "ANTHROPIC_DEFAULT_HAIKU_MODEL".into(),
+            value: "   ".into(),
+        }];
+
+        let spec = spec_of(&draft, Some(&existing)).unwrap();
+        assert!(spec
+            .client_env
+            .get("ANTHROPIC_DEFAULT_HAIKU_MODEL")
+            .is_none());
     }
 }

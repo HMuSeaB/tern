@@ -1906,6 +1906,21 @@ select.prov-modal-input {
   min-width: 0;
 }
 
+/* 档位映射那一行：左边是「Opus 档」这样的短标签，右边是模型名输入框。
+   复用 .model-row 的 grid 但改列宽——标签不该占一半，
+   而 ANTHROPIC_DEFAULT_OPUS_MODEL 那么长的键名会把输入框挤没 */
+.model-row .model-env-key {
+  font: 11.5px var(--mono);
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-row:has(.model-env-key) {
+  grid-template-columns: 88px minmax(0, 1fr);
+}
+
 /* 选择结果的两句说明。错误用红、已生效用绿——但都做成小字而不是横幅，
    免得盖住表单 */
 .prov-hint.err-text {

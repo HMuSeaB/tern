@@ -22,6 +22,7 @@
 //! 写前备份、只碰自己负责的键。这里照搬那套规矩——同一个文件，两处写法分叉会让
 //! 备份策略和 BOM 处理出现不一致，而那正是最难查的一类问题。
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
@@ -111,6 +112,47 @@ pub fn set_model(claude_dir: &Path, model: &str) -> Result<Vec<String>> {
         }
     }
 
+    if changed.is_empty() {
+        return Ok(changed);
+    }
+    write_settings(&path, &root)?;
+    Ok(changed)
+}
+
+/// 把一组 env 键值写进 `settings.json`。返回实际改动过的键名。
+///
+/// # 与 [`set_model`] 的覆盖规则区别
+///
+/// `set_model` 是用户**主动选一个模型**,所以"已有值不覆盖"——保护手工指定过
+/// 的 Opus 档不被一刀切抹掉。
+///
+/// 这里是**切换供应商时应用该家配套的档位组合**,所以"配了就覆盖":cc-switch 里
+/// 39 家每家的 Opus/Sonnet 档都不一样,切到 StepFun 却留着上一家的 Opus 档,
+/// 等于切了但没完全切。它没配的键不动,免得把用户另设的抹成空。
+pub fn apply_env(claude_dir: &Path, env: &BTreeMap<String, String>) -> Result<Vec<String>> {
+    let path = claude_dir.join("settings.json");
+    let mut root = read_settings(&path)?;
+    let Value::Object(ref mut obj) = root else {
+        return Err(AppError::Config("settings.json 顶层不是对象".into()));
+    };
+    let target = ensure_env(obj)?;
+
+    let mut changed = Vec::new();
+    for (key, value) in env {
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        let same = target
+            .get(key)
+            .and_then(Value::as_str)
+            .is_some_and(|old| old == value);
+        if same {
+            continue;
+        }
+        target.insert(key.clone(), Value::String(value.to_string()));
+        changed.push(key.clone());
+    }
     if changed.is_empty() {
         return Ok(changed);
     }
@@ -289,6 +331,63 @@ mod tests {
         );
         assert_eq!(env["ANTHROPIC_MODEL"], "step-3.5-flash");
         assert_eq!(env["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "step-3.5-flash");
+    }
+
+    /// 切供应商时,该家配了的档位一律以它为准。
+    /// 否则切到 StepFun 却留着上一家的 Opus 档,等于"切了但没完全切"。
+    /// 这与 set_model 的"不覆盖"刻意相反,见 apply_env 的注释。
+    #[test]
+    fn apply_env_overwrites_keys_the_provider_configured() {
+        let (_g, dir) = dir();
+        write(
+            &dir,
+            r#"{"env":{
+                "ANTHROPIC_MODEL":"上一家的模型",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL":"上一家的-opus",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL":"我手工指定的-haiku"
+            }}"#,
+        );
+        let mut env = BTreeMap::new();
+        env.insert(
+            "ANTHROPIC_MODEL".to_string(),
+            "step-5-preview[1M]".to_string(),
+        );
+        env.insert(
+            "ANTHROPIC_DEFAULT_OPUS_MODEL".to_string(),
+            "step-5-preview[1M]".to_string(),
+        );
+        let changed = apply_env(&dir, &env).unwrap();
+
+        let out = read(&dir)["env"].as_object().unwrap().clone();
+        assert_eq!(out["ANTHROPIC_MODEL"], "step-5-preview[1M]");
+        assert_eq!(out["ANTHROPIC_DEFAULT_OPUS_MODEL"], "step-5-preview[1M]");
+        // 该家没配的键保留现值:第三方站多数只配 Opus/Sonnet,不配 Haiku
+        assert_eq!(out["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "我手工指定的-haiku");
+        assert_eq!(changed.len(), 2, "只有两个键的值真的变了");
+    }
+
+    /// 值一样就不该算改动。切换来切换去会频繁回到同一家,
+    /// 每次都算 changed 会让前端报"改了 6 个键"而实际什么都没动
+    #[test]
+    fn apply_env_reports_no_change_when_values_match() {
+        let (_g, dir) = dir();
+        write(&dir, r#"{"env":{"ANTHROPIC_MODEL":"already-set"}}"#);
+        let mut env = BTreeMap::new();
+        env.insert("ANTHROPIC_MODEL".to_string(), "already-set".to_string());
+        assert!(apply_env(&dir, &env).unwrap().is_empty());
+    }
+
+    /// 空值不写。cc-switch 里有些键是空串(用户清过),
+    /// 写进去等于把 settings.json 里已有的值抹成空
+    #[test]
+    fn apply_env_skips_empty_values() {
+        let (_g, dir) = dir();
+        write(&dir, r#"{"env":{"ANTHROPIC_MODEL":"keep-me"}}"#);
+        let mut env = BTreeMap::new();
+        env.insert("ANTHROPIC_MODEL".to_string(), "  ".to_string());
+        env.insert("ANTHROPIC_DEFAULT_OPUS_MODEL".to_string(), "".to_string());
+        assert!(apply_env(&dir, &env).unwrap().is_empty());
+        assert_eq!(read(&dir)["env"]["ANTHROPIC_MODEL"], "keep-me");
     }
 
     /// 空值算没设：用户留了个空串时应当被补上。
