@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 /**
@@ -40,22 +40,37 @@ function shortDate(ms: number | null): string {
 }
 
 export function CcSwitchUsageCard({ onDone }: { onDone: () => void }) {
+  /** null = 还没探测过。不在 mount 时自动跑，理由见 check() 的注释 */
   const [preview, setPreview] = useState<ImportOutcome | null>(null);
   const [result, setResult] = useState<ImportOutcome | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [hidden, setHidden] = useState(false);
 
-  // 预览是只读的，失败就当"没有可导的"——不弹错误。
-  // 多数人机器上没装 cc-switch，那是常态而不是异常
-  useEffect(() => {
-    let alive = true;
-    invoke<ImportOutcome>("cc_switch_usage_preview")
-      .then((value) => alive && setPreview(value))
-      .catch(() => alive && setPreview(null));
-    return () => {
-      alive = false;
-    };
+  /** 只读探测：不写盘。
+   *
+   *  # 为什么不自动跑
+   *
+   *  「用量」页是 inert 离屏页——四页在启动时全部 mount。在这里自动探测
+   *  等于每次开面板都读一遍 cc-switch 那个 11 MB 的库，还要跑两次全表扫描
+   *  加一次聚合，而用户此刻正看着「供应商」页，没打算导历史用量。
+   *
+   *  更要紧的是那些命令是**同步**的：跑起来整个界面冻结。开面板卡三四秒
+   *  就是这么来的——用户什么都没点，界面先死一会儿。 */
+  const check = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const value = await invoke<ImportOutcome>("cc_switch_usage_preview");
+      setPreview(value);
+    } catch (e) {
+      // 读库失败要说出来，别静默显示成"没有可导的"——
+      // 那会让用户以为自己的历史用量已经齐了
+      setPreview(null);
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
   }, []);
 
   const runImport = useCallback(async () => {
@@ -73,9 +88,59 @@ export function CcSwitchUsageCard({ onDone }: { onDone: () => void }) {
     }
   }, [onDone]);
 
-  // 没有可导的，或者用户已导过并说"知道了"，就不占地方
-  const nothingToImport = preview === null || preview.imported === 0;
-  if (hidden || nothingToImport) return null;
+  // 用户说"知道了"就不占地方。preview === null 不是隐藏条件——
+  // 那是"还没检查过"的初始态，要显示检查入口
+  if (hidden) return null;
+
+  // ---- 还没探测：给一个检查入口，不自动读库 ----
+  if (preview === null) {
+    return (
+      <section className="card">
+        <div className="head">
+          <span className="title">导入历史用量</span>
+          <span className="act">来自 cc-switch</span>
+        </div>
+        <p className="perm-hint">
+          tern 只记自己启动之后的请求。装过 cc-switch 的话，它那边攒的历史
+          用量可以导进来，趋势和占比才是一个完整的月。
+        </p>
+        <div className="wire-row">
+          <button className="btn primary" onClick={() => void check()} disabled={busy}>
+            {busy ? "检查中…" : "检查有没有可导的"}
+          </button>
+        </div>
+        {error && (
+          <div className="notice err" style={{ marginTop: 14 }}>
+            <span className="notice-ic">!</span>
+            <span className="notice-body">{error}</span>
+          </div>
+        )}
+        <p className="perm-foot">
+          检查是只读的：不写盘、不改任何数据。读的是本机 cc-switch 的库，
+          没装就什么都找不到。
+        </p>
+      </section>
+    );
+  }
+
+  // 探测过了但没东西可导：一句话说完
+  if (preview.imported === 0) {
+    return (
+      <section className="card">
+        <div className="head">
+          <span className="title">导入历史用量</span>
+          <span className="act">来自 cc-switch</span>
+        </div>
+        <p className="perm-hint">没有可导的历史用量。</p>
+        {error && (
+          <div className="notice err" style={{ marginTop: 14 }}>
+            <span className="notice-ic">!</span>
+            <span className="notice-body">{error}</span>
+          </div>
+        )}
+      </section>
+    );
+  }
 
   return (
     <section className="card">

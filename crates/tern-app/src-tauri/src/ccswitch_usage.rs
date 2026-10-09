@@ -362,9 +362,31 @@ fn default_db() -> std::path::PathBuf {
 ///
 /// 和 [`import_cc_switch_usage`] 分开：导入是**覆盖用量库**级别的操作，
 /// 用户得先看见"会搬多少条、覆盖哪段日期"再决定。这个函数只读源库。
+///
+/// # 为什么是 async
+///
+/// 同步的 tauri 命令跑在主线程，而 WebView 的 IPC 也在主线程——跑起来
+/// **整个界面冻结**。这里要开一个 11 MB 的库、跑两次全表扫描加一次聚合，
+/// 实测约 10 ms，但那是空载读数；库里攒到几万条、或磁盘在喘的时候，
+/// 几百毫秒到几秒都是可能的。用户什么都不点，界面先死一会儿。
+///
+/// 丢进 `spawn_blocking` 之后它跑在线程池，主线程该干嘛干嘛。
 #[tauri::command]
-pub fn cc_switch_usage_preview() -> Result<ImportOutcome> {
+pub async fn cc_switch_usage_preview() -> Result<ImportOutcome> {
+    tauri::async_runtime::spawn_blocking(preview_from_cc_switch)
+        .await
+        .map_err(|e| AppError::Config(format!("任务失败: {e}")))?
+}
+
+/// 探测的本体。拆出来是为了能单测——`spawn_blocking` 的闭包拿不到测试夹具。
+fn preview_from_cc_switch() -> Result<ImportOutcome> {
     let db = default_db();
+    preview_at(&db)
+}
+
+/// 在指定路径上探测。和 [`preview_from_cc_switch`] 分开只为了让测试能注入路径——
+/// 真跑的时候走 `~/.cc-switch/cc-switch.db`，那个路径在测试里不可控。
+fn preview_at(db: &std::path::Path) -> Result<ImportOutcome> {
     if !db.exists() {
         return Err(AppError::Config(format!(
             "cc-switch 数据库不存在：{}。装了 cc-switch 才会有这个文件",
@@ -411,17 +433,81 @@ pub fn cc_switch_usage_preview() -> Result<ImportOutcome> {
 ///
 /// 走内嵌网关那份 `Store`（`AppState::shared_store`）：它是写方，
 /// 和记账用的同一份，口径不会分叉。
+///
+/// # 为什么是 async
+///
+/// 要搬一万七千条，还要逐条重算成本。同步命令跑起来主线程冻结，
+/// 用户会以为面板卡死了。`spawn_blocking` 让它跑在线程池。
 #[tauri::command]
-pub fn cc_switch_usage_import(state: tauri::State<'_, crate::AppState>) -> Result<ImportOutcome> {
+pub async fn cc_switch_usage_import(
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<ImportOutcome> {
+    // Store 是 Arc，克隆一份进闭包；tauri 的 State 借引用不能跨 await
     let store = state.shared_store().ok_or_else(|| {
         AppError::Config("网关还没启动过，没有可写入的用量库。先启动网关再导入。".into())
     })?;
-    import_from_cc_switch(&default_db(), &store)
+    tauri::async_runtime::spawn_blocking(move || import_from_cc_switch(&default_db(), &store))
+        .await
+        .map_err(|e| AppError::Config(format!("任务失败: {e}")))?
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 探测要把 `_session` 那些剔掉。它们是从 Claude Code 会话日志反推的，
+    /// token 口径和代理请求不同，混进"将导入 N 条"会让数字虚高
+    #[test]
+    fn preview_excludes_session_rows() {
+        let (_dir, path) = source_db();
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let sql = "INSERT INTO proxy_request_logs VALUES (%s)";
+            let placeholders = vec!["?"; 27].join(",");
+            let sql = sql.replace("%s", &placeholders);
+            for (id, provider) in [("r1", "deepseek"), ("r2", "_session"), ("r3", "_session")] {
+                conn.execute(
+                    &sql,
+                    rusqlite::params_from_iter(row(id, provider, (10, 5, 0, 0), 1_700_000_000)),
+                )
+                .unwrap();
+            }
+        }
+        let outcome = preview_at(&path).unwrap();
+        assert_eq!(outcome.total, 3, "库里总共 3 条");
+        assert_eq!(outcome.imported, 1, "只有 1 条算得上可导入");
+        assert_eq!(outcome.skipped_session, 2);
+    }
+
+    /// 日期范围按**秒**转毫秒。cc-switch 的 created_at 是 Unix 秒，
+    /// tern 用毫秒，差 1000 倍。不转会全部落到 1970 年
+    #[test]
+    fn preview_converts_seconds_to_milliseconds() {
+        let (_dir, path) = source_db();
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let sql = "INSERT INTO proxy_request_logs VALUES (%s)"
+                .replace("%s", &vec!["?"; 27].join(","));
+            conn.execute(
+                &sql,
+                rusqlite::params_from_iter(row("r1", "deepseek", (10, 5, 0, 0), 1_700_000_000)),
+            )
+            .unwrap();
+        }
+        let outcome = preview_at(&path).unwrap();
+        assert_eq!(outcome.from_ms, Some(1_700_000_000_000));
+        assert_eq!(outcome.to_ms, Some(1_700_000_000_000));
+    }
+
+    /// 库不在时要报错，不能返回一个"0 条"的假结果。
+    /// 那会让前端显示"没有可导的"，用户以为自己的历史用量已经齐了
+    #[test]
+    fn preview_reports_a_missing_db_rather_than_claiming_nothing_to_import() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("nope.db");
+        let error = preview_at(&missing).unwrap_err().to_string();
+        assert!(error.contains("不存在"), "{error}");
+    }
 
     /// 造一个只读的 cc-switch 风格源库。
     fn source_db() -> (tempfile::TempDir, std::path::PathBuf) {
