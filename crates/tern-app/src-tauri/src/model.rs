@@ -83,7 +83,10 @@ pub fn set_model(claude_dir: &Path, model: &str) -> Result<Vec<String>> {
         .and_then(Value::as_str)
         .map(str::trim);
     if current_main != Some(model) {
-        env.insert("ANTHROPIC_MODEL".to_string(), Value::String(model.to_string()));
+        env.insert(
+            "ANTHROPIC_MODEL".to_string(),
+            Value::String(model.to_string()),
+        );
         changed.push("ANTHROPIC_MODEL".to_string());
     }
 
@@ -94,10 +97,7 @@ pub fn set_model(claude_dir: &Path, model: &str) -> Result<Vec<String>> {
         "ANTHROPIC_DEFAULT_SONNET_MODEL",
         "ANTHROPIC_DEFAULT_OPUS_MODEL",
     ] {
-        let current_val = env
-            .get(key)
-            .and_then(Value::as_str)
-            .map(str::trim);
+        let current_val = env.get(key).and_then(Value::as_str).map(str::trim);
 
         let should_update = match current_val {
             None => true,

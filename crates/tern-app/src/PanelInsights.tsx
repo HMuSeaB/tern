@@ -268,6 +268,8 @@ function pivotTrend(points: QueryRow[] | null): {
   let total = 0;
 
   for (const point of points) {
+    // 趋势按天分列,没有 day 的行放不进任何一天,跳过而不是塞进 "undefined" 桶
+    if (!point.day) continue;
     if (point.key && !keys.includes(point.key)) keys.push(point.key);
     let row = byDay.get(point.day);
     if (!row) {

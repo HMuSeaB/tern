@@ -302,7 +302,10 @@ pub fn write(file: &FolderFile) -> Result<()> {
         if std::fs::copy(&temp, &path).is_ok() {
             let _ = std::fs::remove_file(&temp);
         } else {
-            return Err(AppError::Folders(format!("替换 {} 失败: {e}", path.display())));
+            return Err(AppError::Folders(format!(
+                "替换 {} 失败: {e}",
+                path.display()
+            )));
         }
     }
 
