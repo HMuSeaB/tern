@@ -68,18 +68,49 @@ pub fn set_model(claude_dir: &Path, model: &str) -> Result<Vec<String>> {
     };
     let env = ensure_env(obj)?;
 
+    let old_main = env
+        .get("ANTHROPIC_MODEL")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
     let mut changed = Vec::new();
-    for key in MODEL_KEYS {
-        let occupied = env
+
+    // 1. 主模型键始终以用户选中的为准
+    let current_main = env
+        .get("ANTHROPIC_MODEL")
+        .and_then(Value::as_str)
+        .map(str::trim);
+    if current_main != Some(model) {
+        env.insert("ANTHROPIC_MODEL".to_string(), Value::String(model.to_string()));
+        changed.push("ANTHROPIC_MODEL".to_string());
+    }
+
+    // 2. 其余档位键：为空或原值曾跟随旧主模型批量设置的，跟随更新；
+    //    用户单独定制过的（与旧主模型不一致）予以保留
+    for key in [
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    ] {
+        let current_val = env
             .get(key)
             .and_then(Value::as_str)
-            .is_some_and(|value| !value.trim().is_empty());
-        if occupied {
-            continue;
+            .map(str::trim);
+
+        let should_update = match current_val {
+            None => true,
+            Some(v) if v.is_empty() => true,
+            Some(v) => old_main.as_deref() == Some(v) && v != model,
+        };
+
+        if should_update {
+            env.insert(key.to_string(), Value::String(model.to_string()));
+            changed.push(key.to_string());
         }
-        env.insert(key.to_string(), Value::String(model.to_string()));
-        changed.push(key.to_string());
     }
+
     if changed.is_empty() {
         return Ok(changed);
     }

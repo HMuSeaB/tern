@@ -71,6 +71,9 @@ fn main() {
             tern_app_lib::commands::import_preview,
             tern_app_lib::commands::import_from_cc_switch,
             tern_app_lib::commands::write_sample_config,
+            // 从 cc-switch 导入历史用量
+            tern_app_lib::ccswitch_usage::cc_switch_usage_preview,
+            tern_app_lib::ccswitch_usage::cc_switch_usage_import,
             // Claude Code 权限的一键放行
             tern_app_lib::permissions::list_permissions,
             tern_app_lib::permissions::allow_permission,

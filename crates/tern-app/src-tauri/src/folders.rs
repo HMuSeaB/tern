@@ -289,8 +289,23 @@ pub fn write(file: &FolderFile) -> Result<()> {
     let text = serde_json::to_string_pretty(file)?;
     std::fs::write(&temp, text + "\n")
         .map_err(|e| AppError::Folders(format!("写 {} 失败: {e}", temp.display())))?;
-    std::fs::rename(&temp, &path)
-        .map_err(|e| AppError::Folders(format!("替换 {} 失败: {e}", path.display())))?;
+
+    #[cfg(windows)]
+    {
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    if let Err(e) = std::fs::rename(&temp, &path) {
+        // 兜底：若 rename 失败（如跨卷或特定锁），尝试复制并清理临时文件
+        if std::fs::copy(&temp, &path).is_ok() {
+            let _ = std::fs::remove_file(&temp);
+        } else {
+            return Err(AppError::Folders(format!("替换 {} 失败: {e}", path.display())));
+        }
+    }
+
     Ok(())
 }
 

@@ -42,16 +42,18 @@ import type { Summary } from "./types";
 /** panel_trend / panel_breakdown / panel_sessions / panel_model_flow 共用的行。
  *  四个命令返回的形状一致（一个 key + 一个 Summary），所以一个类型就够。 */
 export interface QueryRow {
-  /** 维度键：趋势是天、占比是供应商 id / 模型名、会话是 session_id */
-  key: string;
-  /** 模型流向专用：客户端模型名（此时 key 是下游 / 实际模型） */
-  day: string;
+  key?: string;
+  day?: string;
   summary: Summary;
-  /** 会话专用：这次会话里出现过的角色 */
+  /** 会话专用字段 */
+  session_id?: string;
   roles?: string[];
   client?: string;
   started_at_ms?: number;
   ended_at_ms?: number;
+  /** 模型流向专用字段 */
+  client_model?: string;
+  response_model?: string | null;
 }
 
 const RANGES: ReadonlyArray<{ days: number; label: string }> = [
@@ -373,17 +375,21 @@ function ModelFlowCard({ days }: { days: number }) {
   if (!data) return <Loading />;
 
   const edges = data
-    .map((row) => ({
-      from: row.day,
-      to: row.key,
-      cost: Number(row.summary.cost),
-      requests: row.summary.requests,
-      tokens:
-        row.summary.fresh_input +
-        row.summary.output +
-        row.summary.cache_read +
-        row.summary.cache_write,
-    }))
+    .map((row) => {
+      const from = row.client_model || row.day || "未知模型";
+      const to = row.response_model || row.key || from;
+      return {
+        from,
+        to,
+        cost: Number(row.summary.cost),
+        requests: row.summary.requests,
+        tokens:
+          row.summary.fresh_input +
+          row.summary.output +
+          row.summary.cache_read +
+          row.summary.cache_write,
+      };
+    })
     .sort((a, b) => b.cost - a.cost || b.requests - a.requests)
     .slice(0, 12);
   // 被换过模型的排前面：那是"钱花在不是你要的模型上"的唯一线索
@@ -466,10 +472,11 @@ function SessionsCard({ days }: { days: number }) {
               row.summary.output +
               row.summary.cache_read +
               row.summary.cache_write;
+            const sessionId = row.session_id || row.key || "未知会话";
             return (
-              <tr key={`${row.key}-${i}`}>
-                <td className="mono" title={row.key}>
-                  {row.key.slice(0, 10)}
+              <tr key={`${sessionId}-${i}`}>
+                <td className="mono" title={sessionId}>
+                  {sessionId.slice(0, 10)}
                 </td>
                 <td>
                   {(row.roles ?? []).map((r) => (
