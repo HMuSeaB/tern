@@ -4967,7 +4967,7 @@ dependencies = [
 
 [[package]]
 name = "tern-agent"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4984,7 +4984,7 @@ dependencies = [
 
 [[package]]
 name = "tern-app"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5008,7 +5008,7 @@ dependencies = [
 
 [[package]]
 name = "tern-cli"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5029,7 +5029,7 @@ dependencies = [
 
 [[package]]
 name = "tern-gateway"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "async-stream",
  "axum",
@@ -5067,7 +5067,7 @@ dependencies = [
 
 [[package]]
 name = "tern-store"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "chrono",
  "log",
@@ -5082,7 +5082,7 @@ dependencies = [
 
 [[package]]
 name = "tern-tui"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "chrono",
  "crossterm 0.29.0",
