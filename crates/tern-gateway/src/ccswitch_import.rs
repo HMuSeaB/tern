@@ -312,16 +312,141 @@ fn finish(rows: Vec<CcSwitchProvider>, folder_names: Vec<String>) -> ImportRepor
     report
 }
 
-/// 解析 cc-switch SQL 导出里的 `INSERT INTO "providers" (...)` 段。
+/// 从 `CREATE TABLE "providers" (...)` 里取列名，顺序即列序。
+///
+/// # 为什么需要
+///
+/// sqlite3 `.dump` 和 cc-switch 自己的导出都写成
+/// `INSERT INTO "providers" VALUES (...)`——**不写列名**。那种形状下字段位置
+/// 只能由 CREATE TABLE 告诉解析器。只认显式列名的话，用户拿标准导出导入会得到
+/// 一句"没有 app_type = claude 的供应商"，而他的库里明明有 39 家。
+///
+/// # 跨行，且括号里可能还有括号
+///
+/// `.dump` 把 CREATE TABLE 写成一行一个列定义（实测 18 列 = 18 行以上）。
+/// 所以要从 CREATE TABLE 那行一直读到**深度归零**为止，不能只看单行——
+/// 只看单行的话拿到的是 `CREATE TABLE providers (`，一个列名都没有。
+///
+/// 深度计数而不是 `rfind(')')`：列定义里会有 `DEFAULT ('(')` 这种值，
+/// 按第一个 `)` 截断会把后面的列全丢掉。
+///
+/// 列定义按顶层逗号切。切出来的首段是列名（`id TEXT NOT NULL` → `id`）。
+/// 只取第一个词并去引号，类型和约束自然被丢掉。
+fn create_table_columns(text: &str, from: usize) -> Option<Vec<String>> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut depth = 0i32;
+    let mut started = false;
+    let mut body = String::new();
+
+    for line in &lines[from..] {
+        for ch in line.chars() {
+            // 只收**第二层及以下**的内容。最外层那对括号是 CREATE TABLE 的定界符，
+            // 不是列定义的一部分——把它收进去，split_top_level 的深度就从 1 起算，
+            // 顶层逗号一个都匹配不上，整段会被当成一列（症状：app_type 找不到，
+            // 于是"这份导出里没有 app_type = claude 的供应商"）。
+            // 判据用 depth == 1 而不是 >= 1：>= 1 会把开括号自己也收进来
+            if started && depth == 1 {
+                body.push(ch);
+            }
+            match ch {
+                '(' => {
+                    depth += 1;
+                    started = true;
+                }
+                ')' => depth -= 1,
+                _ => {}
+            }
+        }
+        body.push('\n');
+        if started && depth <= 0 {
+            break;
+        }
+    }
+    if !started {
+        return None;
+    }
+
+    let columns = split_top_level(&body)
+        .into_iter()
+        .filter_map(|def| {
+            let name = def.split_whitespace().next()?;
+            let name = name.trim_matches('"').trim();
+            (!name.is_empty()).then(|| name.to_string())
+        })
+        // 表级约束不是列：`PRIMARY KEY (...)`、`UNIQUE (...)`、`CHECK (...)`、
+        // `FOREIGN KEY ...`、`CONSTRAINT ...`。它们在 CREATE TABLE 里排在最后，
+        // 所以 `position()` 找列名时照样能找到——但 `columns.len()` 会多一，
+        // 而 INSERT 的字段数是按真列数来的。于是每一条都过不了
+        // `fields.len() != columns.len()` 那道检查，整份导入静默变空。
+        // 症状极难查：报的是"没有 app_type = claude 的供应商"，
+        // 而用户的库里明明有 39 家。
+        .filter(|name| !is_table_constraint(name))
+        .collect::<Vec<_>>();
+    (!columns.is_empty()).then_some(columns)
+}
+
+/// 表级约束的名字。它们不是列定义，却会长在列清单里。
+fn is_table_constraint(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "PRIMARY" | "UNIQUE" | "CHECK" | "FOREIGN" | "CONSTRAINT" | "KEY" | "INDEX"
+    )
+}
+
+/// 按**顶层**逗号切分。括号内的逗号不算分隔符——
+/// `DEFAULT ('a,b')` 这种值里带逗号，一刀切会多出一个假列。
+fn split_top_level(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut current = String::new();
+    let mut in_string = false;
+
+    for ch in text.chars() {
+        match ch {
+            '\'' => {
+                in_string = !in_string;
+                current.push(ch);
+            }
+            '(' if !in_string => {
+                depth += 1;
+                current.push(ch);
+            }
+            ')' if !in_string => {
+                depth -= 1;
+                current.push(ch);
+            }
+            ',' if depth == 0 && !in_string => {
+                out.push(std::mem::take(&mut current));
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.trim().is_empty() {
+        out.push(current);
+    }
+    out
+}
+
+/// 解析 cc-switch SQL 导出里的 `INSERT INTO "providers"` 段。
 ///
 /// SQL 文本的字符串字面量用 `''` 转义单引号，值里不会有裸单引号。按这个规则手工切
 /// 元组比引一个 SQL 解析库划算——只需要在这一种语句上正确。
 ///
+/// # 列名两种形状都要认
+///
+/// 1. `INSERT INTO "providers" ("id", "app_type", ...) VALUES (...)` —— 列名显式写出
+/// 2. `INSERT INTO "providers" VALUES (...)` —— **不写列名**，列序隐含在 CREATE TABLE 里
+///
+/// 第 2 种是 sqlite3 `.dump` 和 cc-switch 自己的导出用的形状，也是用户最可能拿到的。
+/// 只认第 1 种的话，用户导出完导入得到一句"没有 app_type = claude 的供应商"——
+/// 而他的库里明明有 39 家。所以要从同一份文本的 CREATE TABLE 里推列序。
+///
+/// 死记列序也不行：cc-switch 加过列（实测 18 列，比早先的 schema 多）。
+///
 /// # 跨行
 ///
-/// cc-switch 的导出把 `... ) VALUES` 单独放一行，元组从**下一行**才开始（本次用户给的
-/// 3 MB 导出就是这样，sqlite3 的 `.dump` 也如此）。所以要从 INSERT 那一行一直读到
-/// 语句结束的 `;` 为止，不能只看单行。
+/// cc-switch 的导出把 `... ) VALUES` 单独放一行，元组从**下一行**才开始（sqlite3 的
+/// `.dump` 也如此）。所以要从 INSERT 那一行一直读到语句结束的 `;` 为止，不能只看单行。
 fn parse_providers_insert(
     text: &str,
     app_type: &str,
@@ -329,33 +454,47 @@ fn parse_providers_insert(
     let mut out = Vec::new();
     let lines: Vec<&str> = text.lines().collect();
     let mut i = 0;
+    // 无列名的 INSERT 靠它定位字段。整份文本扫一遍就够，
+    // 但要在第一个 INSERT 之前拿到——所以边扫边记
+    let mut schema_columns: Option<Vec<String>> = None;
 
     while i < lines.len() {
         let trimmed = lines[i].trim_start();
         if !trimmed.starts_with("INSERT INTO") || !trimmed.contains("providers") {
+            // CREATE TABLE 只定义一次，通常在 INSERT 之前。晚到的（格式怪）就忽略。
+            // 要传整个 text 和当前行号：CREATE TABLE 是跨行的，
+            // 单行里只有 "CREATE TABLE providers ("，一个列名都没有
+            if schema_columns.is_none() && trimmed.starts_with("CREATE TABLE") {
+                schema_columns = create_table_columns(text, i);
+            }
             i += 1;
             continue;
         }
 
-        // 列名在第一个圆括号里，用它们定位 id/name/settings_config/meta 的下标。
-        // 死记列序不安全：cc-switch 加过列（本次导出就有 18 列，比 schema 定义时多）。
-        let Some(open) = trimmed.find('(') else {
+        // 列名清单：**必须在 VALUES 之前**才算。
+        // `INSERT INTO "providers" VALUES (...)` 里第一个 `(` 属于 VALUES，
+        // 拿它当列名清单会切出 "VALUES" 这种"列"，于是四个字段一个都对不上
+        let values_at = trimmed.find("VALUES");
+        let declared = match values_at {
+            Some(at) => trimmed[..at].find('(').map(|open| {
+                let close = trimmed[open..]
+                    .find(')')
+                    .map(|c| open + c)
+                    .unwrap_or(trimmed.len());
+                trimmed[open + 1..close]
+                    .split(',')
+                    .map(|c| c.trim().trim_matches('"').to_string())
+                    .collect::<Vec<_>>()
+            }),
+            None => None,
+        };
+        // 声明过的按声明，没声明的按 CREATE TABLE 推
+        let columns = declared.or_else(|| schema_columns.clone());
+        let Some(columns) = columns else {
             i += 1;
             continue;
         };
-        let Some(close) = trimmed.find(')') else {
-            i += 1;
-            continue;
-        };
-        if open >= close {
-            i += 1;
-            continue;
-        }
-        let columns: Vec<&str> = trimmed[open + 1..close]
-            .split(',')
-            .map(|c| c.trim().trim_matches('"'))
-            .collect();
-        let index_of = |name: &str| columns.iter().position(|c| *c == name);
+        let index_of = |name: &str| columns.iter().position(|c| c == name);
 
         let (Some(i_id), Some(i_name), Some(i_config), Some(i_meta), Some(i_app)) = (
             index_of("id"),
@@ -389,7 +528,12 @@ fn parse_providers_insert(
 
         for tuple in split_tuples(&body) {
             let fields = split_fields(&tuple);
-            if fields.len() != columns.len() {
+            // 够取就行，不要求全等：列数推导差一点（多一个表级约束、
+            // cc-switch 加了列而 CREATE TABLE 没跟上）都不该让整条被丢掉。
+            // 真丢了也是静默的——报的会是"没有 app_type = claude 的供应商"，
+            // 而用户的库明明有 39 家。宽松一点，让下面的按名取值自己兜
+            let need = i_id.max(i_name).max(i_config).max(i_meta).max(i_app);
+            if fields.len() <= need {
                 continue;
             }
             // 一份导出里通常同时含 claude / codex，只取要的那类
@@ -1039,6 +1183,60 @@ mod tests {
         let path = dir.path().join("export.sql");
         std::fs::write(&path, contents).unwrap();
         SqlFile { _dir: dir, path }
+    }
+
+    /// **sqlite3 `.dump` 的真实形状**：CREATE TABLE 跨行、一个列定义一行，
+    /// INSERT 不写列名。
+    ///
+    /// 这条必须单测：此前只测了带列名的 INSERT，而那是理想形状。用户从
+    /// cc-switch 拿到的、或自己 `.dump` 出来的都是不带列名的那种——
+    /// 症状是导入得到一句"没有 app_type = claude 的供应商"，而他的库里
+    /// 明明有 39 家。
+    #[test]
+    fn parses_a_standard_sqlite_dump_without_column_names() {
+        let sql = "PRAGMA foreign_keys=OFF;\n\
+             BEGIN TRANSACTION;\n\
+             CREATE TABLE providers (\n\
+             \tid TEXT NOT NULL,\n\
+             \tapp_type TEXT NOT NULL,\n\
+             \tname TEXT NOT NULL,\n\
+             \tsettings_config TEXT NOT NULL,\n\
+             \tmeta TEXT NOT NULL DEFAULT '{}'\n\
+             );\n\
+             INSERT INTO \"providers\" VALUES('deepseek','claude','DeepSeek',\
+             '{\"env\":{\"ANTHROPIC_BASE_URL\":\"https://api.deepseek.com/anthropic\",\"ANTHROPIC_AUTH_TOKEN\":\"sk-x\"}}','{}');\n\
+             COMMIT;\n";
+        let file = write_temp_sql(sql);
+
+        let report = import_providers_from_sql(&file.path, "claude").unwrap();
+        assert_eq!(report.specs.len(), 1, "不带列名的 INSERT 也该解析出来");
+        assert_eq!(report.specs[0].id, "deepseek");
+        assert_eq!(
+            report.specs[0].base_url,
+            "https://api.deepseek.com/anthropic"
+        );
+    }
+
+    /// 同一份导出里混着 claude / codex，只取要的那类。
+    /// 不带列名时列序完全由 CREATE TABLE 决定，app_type 是第 2 列——
+    /// 位置错一位就会把 codex 的当成 claude 的
+    #[test]
+    fn dump_shape_still_filters_by_app_type() {
+        let sql = "CREATE TABLE \"providers\" (\n\
+             \t\"id\" TEXT,\n\
+             \t\"app_type\" TEXT,\n\
+             \t\"name\" TEXT,\n\
+             \t\"settings_config\" TEXT,\n\
+             \t\"meta\" TEXT\n\
+             );\n\
+             INSERT INTO \"providers\" VALUES\n\
+             ('a','claude','A','{\"env\":{\"ANTHROPIC_BASE_URL\":\"https://a.example.com\",\"ANTHROPIC_AUTH_TOKEN\":\"k\"}}','{}'),\n\
+             ('b','codex','B','{\"env\":{\"ANTHROPIC_BASE_URL\":\"https://b.example.com\",\"ANTHROPIC_AUTH_TOKEN\":\"k\"}}','{}');\n";
+        let file = write_temp_sql(sql);
+
+        let report = import_providers_from_sql(&file.path, "claude").unwrap();
+        assert_eq!(report.specs.len(), 1);
+        assert_eq!(report.specs[0].id, "a", "只该拿到 claude 那条");
     }
 
     #[test]

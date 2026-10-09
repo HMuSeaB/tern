@@ -260,6 +260,135 @@ pub fn import_from_cc_switch(state: State<'_, AppState>) -> Result<CcSwitchPrevi
     Ok(preview_of(&db, report))
 }
 
+/// 从 cc-switch **补**档位映射。
+///
+/// # 为什么需要单独一条
+///
+/// `client_env` 是后加的功能。此前导入过的人（比如从 0.1.4 升上来的）
+/// 配置里 38 个供应商的 `client_env` 全是空的——导入是一次性的，补了代码
+/// 不会追溯已经导完的数据。手工补 38 家不现实，所以要有这条把映射补上。
+///
+/// # 只补空的，不动已配的
+///
+/// 用户在面板里改过的映射是**当前的意图**，拿 cc-switch 的旧值盖掉它没有
+/// 道理。所以判据是 `client_env.is_empty()`：空的才补，非空的原样留。
+/// 宁可少补一家，也不能把用户刚调好的抹回旧值。
+///
+/// # 只碰 client_env
+///
+/// 地址、key、倍率一律不动。那条路是 `import_from_cc_switch` 的事，
+/// 而它是"整个 providers 列表换掉"——这边只想补一个字段，混在一起会让
+/// "我只想补映射"变成"顺手把 key 也换成 cc-switch 的"。
+#[derive(Debug, Serialize)]
+pub struct ModelEnvBackfillReport {
+    /// 库路径，前端展示"从哪儿补的"
+    pub db_path: String,
+    /// 本机有没有 cc-switch。没有时前端直接隐藏入口
+    pub found: bool,
+    /// 补了几家
+    pub patched: usize,
+    /// cc-switch 里配了映射、但 tern 这边已经有值的（没动）
+    pub skipped_configured: usize,
+    /// cc-switch 里也没配映射的（没东西可补）
+    pub skipped_empty: usize,
+    /// 补了什么，逐家一行给人看
+    pub details: Vec<String>,
+}
+
+/// 只有真的 apply、且真有改动时才落盘。patched > 0 但 apply = false
+/// 是预览，不能写
+#[tauri::command]
+pub async fn cc_switch_backfill_model_env(apply: bool) -> Result<ModelEnvBackfillReport> {
+    // 同步跑的话主线程冻结：要开 cc-switch 那个 11 MB 的库、读 45 家、
+    // 解析每家一整套 env。实测约 30 ms，但磁盘在喘的时候没上限。
+    // 用户点的是「检查有没有可补的」，不该连界面一起卡住
+    tauri::async_runtime::spawn_blocking(move || backfill_model_env(apply))
+        .await
+        .map_err(|e| crate::error::AppError::Config(format!("任务失败: {e}")))?
+}
+
+/// 本体。拆出来是为了能单测——`spawn_blocking` 的闭包拿不到夹具。
+fn backfill_model_env(apply: bool) -> Result<ModelEnvBackfillReport> {
+    let db = tern_gateway::ccswitch_import::default_cc_switch_db()
+        .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
+    let empty = ModelEnvBackfillReport {
+        db_path: db.display().to_string(),
+        found: false,
+        patched: 0,
+        skipped_configured: 0,
+        skipped_empty: 0,
+        details: Vec::new(),
+    };
+    if !db.exists() {
+        return Ok(empty);
+    }
+
+    let report = tern_gateway::ccswitch_import::import_providers(&db, "claude")
+        .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
+
+    let config_path = crate::config::config_path()?;
+    let mut config = crate::config::load(&config_path)?;
+
+    let mut patched = 0;
+    let mut skipped_configured = 0;
+    let mut skipped_empty = 0;
+    let mut details = Vec::new();
+
+    for spec in &report.specs {
+        let Some(target) = config.providers.iter_mut().find(|p| p.id == spec.id) else {
+            // tern 这边没这家（用户删过 / 从没导过它）。不新建——
+            // 那会往用户没想用的列表里加东西
+            continue;
+        };
+        if !target.client_env.is_empty() {
+            skipped_configured += 1;
+            continue;
+        }
+        if spec.client_env.is_empty() {
+            skipped_empty += 1;
+            continue;
+        }
+        // 预览模式只报"会补几家"，不动 config——否则一进面板就改配置，
+        // 用户根本不知道发生了什么。写盘只发生在 apply = true
+        if !apply {
+            patched += 1;
+            details.push(format!("{}（{} 个档位）", spec.name, spec.client_env.len()));
+            continue;
+        }
+        target.client_env = spec.client_env.clone();
+        patched += 1;
+        details.push(format!("{}（{} 个档位）", spec.name, spec.client_env.len()));
+    }
+
+    // 只有真的 apply、且真有改动时才落盘。patched > 0 但 apply = false
+    // 是预览，不能写
+    if apply && patched > 0 {
+        // 写前备份，和其他写配置的路径同一套规矩
+        if config_path.exists() {
+            let backup = config_path.with_extension("json.bak");
+            if let Err(error) = std::fs::copy(&config_path, &backup) {
+                log::warn!("[tern-app] 备份 {config_path:?} 失败: {error}");
+            }
+        }
+        std::fs::write(&config_path, serde_json::to_string_pretty(&config)? + "\n")
+            .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
+        // 网关还拿着旧配置。不重起的话面板显示新的、路由用旧的
+        if let Err(error) = crate::server::restart_after_config_change() {
+            log::warn!("[tern-app] 补档位映射后重起网关失败: {error}");
+        }
+        log::info!("[tern-app] 从 cc-switch 补了 {patched} 家的档位映射");
+    }
+
+    Ok(ModelEnvBackfillReport {
+        db_path: db.display().to_string(),
+        found: true,
+        patched,
+        skipped_configured,
+        skipped_empty,
+        details,
+    })
+}
+
 /// cc-switch 不在时的预览结果。
 fn missing_cc_switch(db: std::path::PathBuf) -> CcSwitchPreview {
     CcSwitchPreview {

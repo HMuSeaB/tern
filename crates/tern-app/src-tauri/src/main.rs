@@ -74,6 +74,8 @@ fn main() {
             // 从 cc-switch 导入历史用量
             tern_app_lib::ccswitch_usage::cc_switch_usage_preview,
             tern_app_lib::ccswitch_usage::cc_switch_usage_import,
+            // 补档位映射（此前导入的供应商没有 client_env）
+            tern_app_lib::commands::cc_switch_backfill_model_env,
             // Claude Code 权限的一键放行
             tern_app_lib::permissions::list_permissions,
             tern_app_lib::permissions::allow_permission,

@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { CcSwitchUsageCard } from "./CcSwitchUsageCard";
+import { ModelEnvBackfillCard } from "./ModelEnvBackfillCard";
 import { PanelView } from "./PanelView";
 import { Permissions } from "./Permissions";
 import { Providers } from "./Providers";
@@ -189,6 +190,7 @@ function Tabs({
                   "最常用的操作"先看到，二级视图要用户主动展开 */}
               <PanelView panel={panel.state.panel} onRefresh={panel.refresh} />
               <CcSwitchUsageCard onDone={panel.refresh} />
+              <ModelEnvBackfillCard onDone={panel.refresh} />
               <section className="card">
                 <button
                   className="disclosure"

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ConfigSummary } from "./types";
 
@@ -93,6 +93,35 @@ const TIER_LABEL: Record<string, string> = {
   CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "Agent Teams",
 };
 
+/** 可添加的档位，顺序即 Claude Code 的层级。
+ *
+ *  和 TIER_LABEL 分开而不是复用它的 keys()：那边是"认识哪些键"（含未知键的
+ *  兜底显示），这边是"能新建哪些"。真要枚举就得有一份确定的清单。 */
+const ADDABLE_TIERS: ReadonlyArray<{ key: string; hint: string }> = [
+  { key: "ANTHROPIC_MODEL", hint: "主对话用的模型" },
+  { key: "ANTHROPIC_DEFAULT_OPUS_MODEL", hint: "/model opus 走这个" },
+  { key: "ANTHROPIC_DEFAULT_SONNET_MODEL", hint: "/model sonnet 走这个" },
+  { key: "ANTHROPIC_DEFAULT_HAIKU_MODEL", hint: "后台小活走这个，要便宜快" },
+  { key: "ANTHROPIC_DEFAULT_FABLE_MODEL", hint: "Fable 档" },
+  { key: "ANTHROPIC_REASONING_MODEL", hint: "推理档" },
+  { key: "CLAUDE_CODE_SUBAGENT_MODEL", hint: "子代理用的模型" },
+  { key: "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", hint: "开关，不是模型名" },
+];
+
+/** 档位在列表里的位置。认不出的键排到最后而不是打乱前面的——
+ *  cc-switch 的键集会变，新键不该把已知的层级冲散。 */
+function tierIndex(key: string): number {
+  const at = ADDABLE_TIERS.findIndex((t) => t.key === key);
+  return at === -1 ? ADDABLE_TIERS.length : at;
+}
+
+/** 还没配过的档位。配过的不再列：重复添加同一个键会让两条 input
+ *  争一个值，而 Rust 侧是后者覆盖前者。 */
+function addableTiersOf(configured: ModelEnvEntry[]) {
+  const taken = new Set(configured.map((e) => e.key));
+  return ADDABLE_TIERS.filter((t) => !taken.has(t.key));
+}
+
 export function ProviderEditor({
   mode,
   providerId,
@@ -141,6 +170,9 @@ export function ProviderEditor({
   const [currentModel, setCurrentModel] = useState<string | null>(null);
 
   const managed = isManaged(detail?.auth_kind ?? "");
+
+  /** 还没配过的档位，供「添加一个档位」下拉用 */
+  const addableTiers = useMemo(() => addableTiersOf(modelEnv), [modelEnv]);
 
   // 进来时读一次 Claude Code 当前在用的模型。弹层不是常驻的，
   // 每次打开重读才对——用户可能刚在 Settings 里改过
@@ -466,36 +498,67 @@ export function ProviderEditor({
                 模型档位映射
                 <span className="prov-label-dim">切到这家时生效</span>
               </span>
-              {modelEnv.length === 0 ? (
+
+              {modelEnv.length === 0 && (
                 <span className="prov-hint">
-                  这家没有配档位映射。从 cc-switch 导入的供应商会带上（每家不一样，
-                  StepFun 的 Opus 档可能是 <code>step-5-preview[1M]</code>）。
+                  这家还没配档位映射。cc-switch 里给每家逐个挑的就是它——StepFun 的
+                  Opus 档可能是 <code>step-5-preview[1M]</code>，dandan 的 Sonnet
+                  档是 <code>claude-fable-5</code>。以前导入的供应商没带上，在下面补一个即可。
                 </span>
-              ) : (
-                <>
-                  {modelEnv.map((entry, i) => (
-                    <div className="model-row" key={entry.key}>
-                      <code className="model-env-key" title={entry.key}>
-                        {TIER_LABEL[entry.key] ?? entry.key}
-                      </code>
-                      <input
-                        className="prov-modal-input"
-                        value={entry.value}
-                        placeholder="模型名，留空删除这一档"
-                        onChange={(e) => {
-                          const next = [...modelEnv];
-                          next[i] = { ...entry, value: e.target.value };
-                          setModelEnv(next);
-                        }}
-                      />
-                    </div>
-                  ))}
-                  <span className="prov-hint">
-                    切到这家时，这些键会写进 <code>~/.claude/settings.json</code>
-                    （该家配了的档位以它为准，没配的保留现值）。上面「默认模型」是
-                    全局立即生效的，这里是这家配套的组合。
-                  </span>
-                </>
+              )}
+
+              {modelEnv.map((entry, i) => (
+                <div className="model-row" key={entry.key}>
+                  <code className="model-env-key" title={entry.key}>
+                    {TIER_LABEL[entry.key] ?? entry.key}
+                  </code>
+                  <input
+                    className="prov-modal-input"
+                    value={entry.value}
+                    placeholder="模型名，留空保存即删掉这一档"
+                    onChange={(e) => {
+                      const next = [...modelEnv];
+                      next[i] = { ...entry, value: e.target.value };
+                      setModelEnv(next);
+                    }}
+                  />
+                </div>
+              ))}
+
+              {/* 还能加哪些档位。已配过的不再列出来——重复添加同一个键
+                  会让两条 input 争一个值，而 Rust 侧后者覆盖前者 */}
+              {addableTiers.length > 0 && (
+                <div className="model-row">
+                  <select
+                    className="prov-modal-input"
+                    value=""
+                    onChange={(e) => {
+                      const key = e.target.value;
+                      if (!key) return;
+                      // 新档位按 ADDABLE_TIERS 的层级插到正确位置，
+                      // 不 append 到末尾——那样 Opus 档会跑到子代理后面
+                      const next = [...modelEnv, { key, value: "" }].sort(
+                        (a, b) => tierIndex(a.key) - tierIndex(b.key),
+                      );
+                      setModelEnv(next);
+                    }}
+                  >
+                    <option value="">+ 添加一个档位…</option>
+                    {addableTiers.map((t) => (
+                      <option key={t.key} value={t.key} title={t.hint}>
+                        {TIER_LABEL[t.key] ?? t.key}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {modelEnv.length > 0 && (
+                <span className="prov-hint">
+                  切到这家时，这些键会写进 <code>~/.claude/settings.json</code>
+                  （该家配了的档位以它为准，没配的保留现值）。上面「默认模型」是
+                  全局立即生效的，这里是这家配套的组合。
+                </span>
               )}
             </div>
           )}
