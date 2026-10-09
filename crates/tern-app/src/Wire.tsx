@@ -105,6 +105,7 @@ export function Wire({
         <button className="btn" onClick={() => void runProbe()} disabled={probing}>
           {probing ? "正在发一条测试请求…" : "发一条测试请求"}
         </button>
+        <span className="wire-cost">会消耗约 1 次调用的费用</span>
       </div>
 
       {status.wired && !running && (

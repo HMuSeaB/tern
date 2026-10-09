@@ -319,6 +319,32 @@ export function Providers({
     [urlGroups],
   );
 
+  /** 文件夹视图的「全部收起 / 全部展开」。
+   *
+   *  会话集合和注册表里的 isExpanded 都要改：只改会话的话，重开面板又回到原状；
+   *  只改注册表的话，会话里残留的 collapsed 会盖住它（见下面 open 的计算）。
+   *  所以两边一起改。 */
+  const setAllFolders = useCallback(
+    async (expanded: boolean) => {
+      const titles = folderGroups.map((g) => g.title);
+      setCollapsed(expanded ? new Set() : new Set(titles));
+      // 串行写：每次返回的都是完整注册表快照，并发的话后返回的快照会盖掉先返回的
+      let latest: ProviderFolder[] | null = null;
+      try {
+        for (const folder of folders) {
+          latest = await invoke<ProviderFolder[]>("folders_set_expanded", {
+            name: folder.name,
+            expanded,
+          });
+        }
+      } catch {
+        // 展开状态存不住不影响使用，和 saveExpanded 一样不为它弹错误
+      }
+      if (latest) setFolders(latest);
+    },
+    [folderGroups, folders],
+  );
+
   if (!config) {
     return (
       <div className="card">
@@ -381,7 +407,7 @@ export function Providers({
           {p.key_state === "empty" && <span className="prov-bad">key 为空</span>}
           {/* 编辑：换名字、修地址、改 key、测连通性都在这儿 */}
           <button
-            className="prov-models-btn"
+            className="prov-edit-link"
             onClick={() => setEditor({ mode: "edit", id: p.id })}
             title={`编辑「${p.name}」：地址、key、成本倍率、连通性测试`}
           >
@@ -470,6 +496,26 @@ export function Providers({
           >
             按域名归组
           </button>
+          {mode === "folder" && folderGroups.length > 0 && (
+            <>
+              <button
+                className="prov-mini"
+                onClick={() => void setAllFolders(false)}
+                disabled={folderBusy}
+                title="把当前可见的所有文件夹收起来,下次打开面板也保持收起"
+              >
+                全部收起
+              </button>
+              <button
+                className="prov-mini"
+                onClick={() => void setAllFolders(true)}
+                disabled={folderBusy}
+                title="展开所有文件夹"
+              >
+                全部展开
+              </button>
+            </>
+          )}
         </div>
       </div>
 

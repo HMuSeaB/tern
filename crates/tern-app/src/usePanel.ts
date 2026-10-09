@@ -35,8 +35,19 @@ export function usePanel(pollMs = 15_000) {
   useEffect(() => {
     void refresh();
     // 面板是观察窗口，轮询而不是推送：网关才是数据源，实时性要求不高
-    const timer = window.setInterval(() => void refresh(), pollMs);
-    return () => window.clearInterval(timer);
+    const timer = window.setInterval(() => {
+      // 窗口隐藏时(托盘常驻时关窗只是 hide)不查库:没人在看,
+      // 每 15 秒开一次数据库只是白耗。切回可见时由下面的监听立即补拉
+      if (document.visibilityState === "visible") void refresh();
+    }, pollMs);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [refresh, pollMs]);
 
   return { state, refresh };

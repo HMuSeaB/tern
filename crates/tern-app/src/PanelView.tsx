@@ -8,7 +8,7 @@ import {
   formatTime,
   formatTokens,
 } from "./format";
-import type { Panel } from "./types";
+import type { Panel, RecentRequest } from "./types";
 
 /** 主面板。版式照 design/b-workbench.html 的皮，但信息密度对齐 cc-switch 使用统计页：
  *  hero 一个大数字 + 4 小卡 + 一条命中率 + 两条醒目提示。趋势/占比放二级视图。 */
@@ -75,11 +75,25 @@ export function PanelView({ panel, onRefresh }: { panel: Panel; onRefresh: () =>
       )}
       {panel.failures.length > 0 && <FailureNotice failures={panel.failures} />}
 
+      {/* 失败是最常见的"我刚才怎么了"。它不在首屏就得展开「最近请求」才能找到,
+          所以最近一次失败直接挂在 hero 上面,点它展开请求流并滚到那一块 */}
+      {panel.recent.some((r) => r.outcome === "failed") && (
+        <LatestFailure
+          request={panel.recent.find((r) => r.outcome === "failed")!}
+          onOpen={() => {
+            setShowRecent(true);
+            // 展开后表在页面下方,不滚过去的话用户点了什么都没看见
+            requestAnimationFrame(() =>
+              document.getElementById("recent-requests")?.scrollIntoView({ behavior: "smooth", block: "start" }),
+            );
+          }}
+        />
+      )}
+
       <section className="card hero">
         <div className="hero-label">真实消耗 Tokens</div>
         <div className="hero-figure">
           <span className="hero-value tnum">{formatTokens(totalTokens)}</span>
-          <span className="hero-approx tnum">≈ {formatTokens(totalTokens * 10)} 含缓存</span>
         </div>
         <div className="hero-side">
           <SideStat label="总请求数" value={String(today.requests)} delta={reqDelta} />
@@ -92,21 +106,25 @@ export function PanelView({ panel, onRefresh }: { panel: Panel; onRefresh: () =>
           label="新增输入"
           value={formatTokens(today.fresh_input)}
           delta={deltaPercent(today.fresh_input, yesterday.fresh_input)}
+          hint="没走缓存的输入 token,按全价计费"
         />
         <Stat
           label="Output"
           value={formatTokens(today.output)}
           delta={outDelta}
+          hint="模型生成的输出 token"
         />
         <Stat
           label="创建"
           value={formatTokens(today.cache_write)}
           delta={deltaPercent(today.cache_write, yesterday.cache_write)}
+          hint="写入缓存的输入,比全价略贵,但之后能被命中"
         />
         <Stat
           label="命中"
           value={formatTokens(today.cache_read)}
           delta={deltaPercent(today.cache_read, yesterday.cache_read)}
+          hint="从缓存读出的输入,按折扣价计费"
         />
       </section>
 
@@ -118,6 +136,9 @@ export function PanelView({ panel, onRefresh }: { panel: Panel; onRefresh: () =>
         <div className="meter-track">
           <div className="meter-fill" style={{ width: `${(hit ?? 0) * 100}%` }} />
         </div>
+        <p className="meter-hint">
+          命中率 = 命中 ÷ (新增输入 + 创建 + 命中)。越高说明同一段上下文被反复用上了。
+        </p>
         {hitDelta !== null && (
           <div className={`meter-foot ${hitDelta >= 0 ? "up" : "down"}`}>
             较昨日 {hitDelta >= 0 ? "+" : ""}
@@ -134,7 +155,7 @@ export function PanelView({ panel, onRefresh }: { panel: Panel; onRefresh: () =>
         </section>
       )}
 
-      <section className="card">
+      <section className="card" id="recent-requests">
         <button className="disclosure" onClick={() => setShowRecent((v) => !v)}>
           <span className={`chevron ${showRecent ? "open" : ""}`}>▸</span>
           最近请求
@@ -170,18 +191,21 @@ function Stat({
   label,
   value,
   delta,
+  hint,
 }: {
   label: string;
   value: string;
   delta: number | null;
+  hint?: string;
 }) {
   return (
-    <div className="stat">
+    <div className="stat" title={hint}>
       <div className="stat-label">{label}</div>
       <div className="stat-value tnum">{value}</div>
       <div className={`stat-delta ${delta !== null && delta >= 0 ? "up" : "down"}`}>
         {formatDelta(delta)}
       </div>
+      {hint && <div className="stat-hint">{hint}</div>}
     </div>
   );
 }
@@ -222,6 +246,25 @@ function FailureNotice({ failures }: { failures: Panel["failures"] }) {
         失败不混入模型统计
       </span>
     </div>
+  );
+}
+
+function LatestFailure({
+  request,
+  onOpen,
+}: {
+  request: RecentRequest;
+  onOpen: () => void;
+}) {
+  const who = request.provider_id ?? "未路由";
+  return (
+    <button className="latest-fail" onClick={onOpen} title="展开最近请求查看全部">
+      <span className="latest-fail-tag">最近失败</span>
+      <span className="latest-fail-kind">{errorLabel(request.error_kind ?? "unknown")}</span>
+      <span className="latest-fail-who">{who}</span>
+      <span className="latest-fail-time tnum">{formatTime(request.started_at_ms)}</span>
+      <span className="latest-fail-more">查看 →</span>
+    </button>
   );
 }
 
