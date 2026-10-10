@@ -420,7 +420,7 @@ export function Providers({
               onClick={() => setExpanded(expanded === p.id ? null : p.id)}
               title="获取这个供应商的模型列表"
             >
-              {expanded === p.id ? "收起模型" : "获取模型列表"}
+              {expanded === p.id ? "收起" : "模型列表"}
             </button>
           )}
         </span>

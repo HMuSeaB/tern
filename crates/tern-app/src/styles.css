@@ -325,6 +325,33 @@ body {
   .prov-fmt {
     display: none;
   }
+
+  /* 最近请求表：角色徽章让位给模型列。"主对话/子代理"是附加信息，
+     而"请求的模型被换成了什么"是这张表最该说清的事。
+     等宽字体再收一档，模型列刚好够放完 claude-opus-4-6 → step-5-preview[1M] */
+  .recent .role {
+    display: none;
+  }
+
+  .recent .mono {
+    font-size: 11px;
+  }
+
+  /* 窄屏下收掉「客户端」列。它每一行都是同一个值 claude-code，
+     是六列里信息量最低的一个，而模型列那个"请求的 → 实际用的"长串
+     要 300px 才不被省略号吃尾巴。让掉这 107px 之后模型列拿到 380px，
+     余量才够。th 和 td 都要藏，只藏一列另一列还占着格子 */
+  .recent th:nth-child(3),
+  .recent td:nth-child(3) {
+    display: none;
+  }
+
+  /* 少了客户端列之后重分：时间 13 / 模型 57 / Token 9 / 成本 10 / 状态 11 */
+  .recent th:nth-child(1) { width: 13%; }
+  .recent th:nth-child(2) { width: 57%; }
+  .recent th:nth-child(4) { width: 9%; }
+  .recent th:nth-child(5) { width: 10%; }
+  .recent th:nth-child(6) { width: 11%; }
 }
 
 .stat-value {
@@ -534,11 +561,36 @@ body {
   transform: rotate(90deg);
 }
 
+/* 最近请求表。六列在 760px 窗口下必须一行放得下，否则每一行都折成两行高，
+   一屏能看到的请求数直接减半——而这张表存在的意义就是"最近发生了什么"。
+   auto 布局下各列按内容伸缩，模型列那个"请求的 → 实际用的"长串会把行高顶起来，
+   所以钉死列宽，让长内容在自己格子里省略 */
 .recent {
   width: 100%;
   border-collapse: collapse;
   margin-top: 14px;
   font-size: 13px;
+  table-layout: fixed;
+}
+
+/* 列宽按各列内容的 min-content 倒推，剩下的全给模型列——它是唯一可能很长的，
+   而且被省略号吃掉的恰恰是映射后的模型名，也就是这张表最该说清的东西。
+   注意分母是 **666px** 不是 712：窗口 760 时 .content 吃 48、.tab-page 的
+   scrollbar-gutter 再吃 6、卡片左右各 20，一路减下来表格就这么多。
+   按 666 分：时间 80 / 客户端 107 / Token 60 / 成本 67 / 状态 73，
+   五列合计 387，剩下 279 归模型列 */
+.recent th:nth-child(1) { width: 12%; }
+.recent th:nth-child(2) { width: 42%; }
+.recent th:nth-child(3) { width: 16%; }
+.recent th:nth-child(4) { width: 9%; }
+.recent th:nth-child(5) { width: 10%; }
+.recent th:nth-child(6) { width: 11%; }
+
+/* 格子里的长字符串在自己格子里省略，不撑行高 */
+.recent .cell-clip {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .recent th {
@@ -1120,12 +1172,18 @@ body {
   color: var(--accent-fg);
 }
 
+/* base URL 是这一行唯一显示完整地址的地方，被省略号吃掉尾巴很可惜——
+   中转站地址动辄 60 字符，而路径段（/v3/anthropic）恰恰是最后那段。
+   所以允许它折行，但最多两行：再长就交给 title 悬停，
+   不然 38 个供应商每行都三四行高，列表会变得没法扫 */
 .prov-url {
   font: 12px var(--mono);
   color: var(--dim);
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* 右边的状态与按钮组。

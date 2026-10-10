@@ -289,16 +289,20 @@ function RecentTable({ panel }: { panel: Panel }) {
           return (
             <tr key={`${r.started_at_ms}-${i}`}>
               <td className="mono dim">{formatTime(r.started_at_ms)}</td>
+              {/* cell-clip：映射后是两个模型名，最长能到 255px。
+                  不定列宽 + 不省略的话它靠折行把行高撑成两行 */}
               <td className="mono">
-                {mapped ? (
-                  <>
-                    <span className="requester">{r.client_model}</span>
-                    <span className="arrow">→</span>
-                    <span className="mapped">{r.response_model}</span>
-                  </>
-                ) : (
-                  r.response_model ?? r.client_model
-                )}
+                <div className="cell-clip">
+                  {mapped ? (
+                    <>
+                      <span className="requester">{r.client_model}</span>
+                      <span className="arrow">→</span>
+                      <span className="mapped">{r.response_model}</span>
+                    </>
+                  ) : (
+                    r.response_model ?? r.client_model
+                  )}
+                </div>
               </td>
               <td>
                 {r.client}
