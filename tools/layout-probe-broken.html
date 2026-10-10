@@ -1,0 +1,78 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>tern 布局探针</title>
+<link rel="stylesheet" href="../crates/tern-app/dist/assets/index-Dmk8sz7a.css">
+<style>
+  body { margin: 0; }
+  /* 探针自己的框，不参与被测布局 */
+  .probe-note { font: 12px sans-serif; padding: 6px 10px; background: #ffe; }
+</style>
+</head>
+<body>
+<div class="probe-note">结构 A：弹层在 .tab-track 里（修复前的样子）</div>
+<div id="root">
+  <div class="app">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark">t</span><span class="brand-name">tern</span></div>
+      <div class="server-toggle">
+        <span class="live-dot off"></span>
+        <span class="server-state">网关已停止</span>
+        <code class="server-addr">127.0.0.1:15800</code>
+        <button class="btn primary">启动</button>
+      </div>
+      <div class="spacer"></div>
+      <button class="btn icon">☀</button>
+    </header>
+    <main class="content">
+      <div class="tabs">
+        <div class="tabbar" role="tablist">
+          <button class="tabbtn on"><span>供应商</span></button>
+          <button class="tabbtn"><span>用量</span></button>
+          <button class="tabbtn"><span>接入</span></button>
+          <button class="tabbtn"><span>权限</span></button>
+          <span class="tab-ink" style="width:25%; transform:translateX(0)"></span>
+        </div>
+        <div class="tab-viewport">
+          <!-- 关键：这条 transform 就是 fixed 包含块的来源 -->
+          <div class="tab-track" style="transform:translateX(-0%)">
+            <section class="tab-page" id="panel-providers">
+              <div class="card">
+                <div class="head"><span class="title">供应商</span><span class="act">38 个</span></div>
+                <div class="prov-row"><span class="prov-name">StepFun</span><code class="prov-url">https://api.stepfun.com/step_plan</code><span class="prov-tag">使用中</span></div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ===== 结构 A：弹层长在 tab-track 里面（修复前） ===== -->
+  <div class="prov-modal-back" onclick="">
+    <div class="prov-modal" role="dialog">
+      <h3>编辑「StepFun」</h3>
+      <div class="prov-form">
+        <label class="prov-field"><span class="prov-label">id<span class="prov-label-dim">模型名前缀，不能改</span></span><input class="prov-modal-input" value="stepfun" readonly></label>
+        <label class="prov-field"><span class="prov-label">显示名</span><input class="prov-modal-input" value="StepFun"></label>
+        <label class="prov-field"><span class="prov-label">地址<span class="prov-label-dim">base URL</span></span><input class="prov-modal-input" value="https://api.stepfun.com/step_plan"></label>
+        <label class="prov-field"><span class="prov-label">协议</span><select class="prov-modal-input"><option>Anthropic</option></select><span class="prov-hint">/v1/messages，Claude Code 直连用这个</span></label>
+        <label class="prov-field"><span class="prov-label">API Key<span class="prov-label-dim">留空 = 不修改</span></span><input class="prov-modal-input" type="password" value="sk-xxxxxxxx"><span class="prov-hint">出于安全不回显原 key：要换就整段重填。</span></label>
+        <label class="prov-field"><span class="prov-label">成本倍率<span class="prov-label-dim">可空</span></span><input class="prov-modal-input" value="0.3"><span class="prov-hint">中转站的折扣倍率，用于用量计价。填 0.3 表示实际花费是标价的 3 折。</span></label>
+        <div class="prov-field"><span class="prov-label">默认模型<span class="prov-label-dim">写入 ~/.claude/settings.json</span></span><div class="model-row"><select class="prov-modal-input"><option>step-5-preview[1M]</option></select><button class="prov-mini">刷新</button></div><span class="prov-hint">选中的模型名会写进 Claude Code 的 <code>ANTHROPIC_MODEL</code> 等四个档位（已有值的档位不覆盖）。不选就不动它。</span></div>
+        <div class="prov-field"><span class="prov-label">模型档位映射<span class="prov-label-dim">切到这家时生效</span></span><span class="prov-hint">这家还没配档位映射。cc-switch 里给每家逐个挑的就是它——StepFun 的 Opus 档可能是 <code>step-5-preview[1M]</code>，dandan 的 Sonnet 档是 <code>claude-fable-5</code>。以前导入的供应商没带上，在下面补一个即可。</span><div class="model-row"><code class="model-env-key">Opus</code><input class="prov-modal-input" placeholder="模型名，留空保存即删掉这一档"></div><div class="model-row"><code class="model-env-key">Sonnet</code><input class="prov-modal-input" placeholder="模型名，留空保存即删掉这一档"></div><div class="model-row"><select class="prov-modal-input"><option>+ 添加一个档位…</option></select></div></div>
+        <label class="prov-field"><span class="prov-label">文件夹<span class="prov-label-dim">可空</span></span><input class="prov-modal-input" value="官方直连"></label>
+      </div>
+      <div class="prov-modal-actions">
+        <button class="btn ghost danger-text">删除</button>
+        <div class="spacer"></div>
+        <button class="btn ghost">测连通性</button>
+        <button class="btn ghost">取消</button>
+        <button class="btn primary">保存</button>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

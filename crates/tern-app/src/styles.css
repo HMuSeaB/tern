@@ -311,9 +311,19 @@ body {
   gap: 14px;
 }
 
-@media (max-width: 620px) {
+/* 阈值必须大于窗口的最小宽度 760（tauri.conf.json 的 minWidth）。
+   原来写 620：窗口根本窄不到 620，这条降级路径从来没执行过，
+   760px 下四张卡每张只有 156px 宽，提示文字全折成两行 */
+@media (max-width: 900px) {
   .grid {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  /* 窄行下先收起协议徽章。它是每行都有的常量信息（编辑弹层里也看得见），
+     而 base URL 只此一份——中转站的地址动辄 60 字符，少这一个徽章
+     省下的宽度基本够把它放完 */
+  .prov-fmt {
+    display: none;
   }
 }
 
@@ -566,6 +576,12 @@ body {
 }
 
 .recent .dim {
+  color: var(--dim-2);
+}
+
+/* 裸 .dim：不限于某张表内， Providers 的模型列表底部就用它。
+   没有这条的话那行字会按 --fg 渲染，看着像正文而不是附注 */
+.dim {
   color: var(--dim-2);
 }
 
@@ -958,10 +974,37 @@ body {
   white-space: nowrap;
 }
 
+/* 卡片标题行：左边一个标题，右边一行状态。
+   这条规则**不是可选的**——`.head` 默认是 block，`.title` 和 `.act` 是两个相邻的
+   inline span，JSX 里它们之间连空白文本节点都没有，于是渲染成
+   "供应商38 个 · 当前 StepFun"糊成一片；而 `.act` 上的 `margin-left:auto`
+   在 inline 元素上解析为 0，永远不可能右对齐。
+   七个组件二十处 `.head` 全指望着这条，缺了就是全站标题行错版 */
+.card .head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  /* 标题和下面的内容原本贴在一起，flex 之后更不能省这口气 */
+  margin-bottom: 10px;
+}
+
+.card .head .title {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
 .card .head .act {
-  margin-left: auto;
   font-size: 12px;
   color: var(--dim);
+  text-align: right;
+  /* 状态文案长短差很多（"未接入" vs "写入 ~/.claude/settings.json"），
+     不让它收缩的话长文案会把标题顶到左边去 */
+  flex: none;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---- 供应商列表 ---- */
@@ -1085,11 +1128,18 @@ body {
   text-overflow: ellipsis;
 }
 
+/* 右边的状态与按钮组。
+   `flex: none` 写在这里是空转：`.prov-side` 是 `.prov-row` 这个 **grid** 的子项，
+   flex 属性管不到它。真正起作用的是 min-width——不写的话它的自动最小尺寸等于
+   min-content，也就是四个 nowrap 子元素的宽度和，一点都缩不了，
+   压力全传到左边的 base URL 上，URL 被 ellipsis 砍掉。
+   URL 是这个界面的核心信息，该让路的是状态徽章 */
 .prov-side {
   display: flex;
   align-items: center;
   gap: 7px;
-  flex: none;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .prov-fmt {
@@ -1108,6 +1158,10 @@ body {
   padding: 2px 6px;
   border-radius: 5px;
   white-space: nowrap;
+  /* 窄窗口下让它们先让路：URL 是主信息，砍它不如砍徽章 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
   cursor: help;
 }
 
@@ -1130,6 +1184,9 @@ body {
   color: var(--dim);
   cursor: pointer;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .prov-models-btn:hover {
@@ -1406,9 +1463,14 @@ body {
   font-size: 12.5px;
 }
 
-/* 行首的勾选框。只在文件夹视图出现，网格列数随之多一列 */
+/* 行首的勾选框。只在文件夹视图出现，网格列数随之多一列。
+   注意列数必须是 3：文件夹视图下这一行的 DOM 子项就是三个
+   （勾选框 / .prov-pick / .prov-side）。曾经在文件末尾还写过一条四列的，
+   四条轨道放三个子项，`1fr` 会落到按钮组上而不是内容上——
+   结果 URL 短的时候「编辑」「获取模型列表」不贴右边缘，中间空一大块，
+   URL 长的时候又看不出来，是个时隐时现的错版 */
 .prov-row.has-check {
-  grid-template-columns: auto auto 1fr auto;
+  grid-template-columns: auto 1fr auto;
 }
 
 .prov-check {
@@ -1638,9 +1700,11 @@ select.prov-modal-input {
   display: flex;
   position: relative;
   flex: none;
-  /* 横向不吃 .content 的内边距：栏要和下面的卡片同宽，不然指示条对不齐内容 */
-  margin: 0 -22px;
-  padding: 0 22px;
+  /* 横向不吃 .content 的内边距：栏要和下面的卡片同宽，不然指示条对不齐内容。
+     两边必须是同一个数——.content 的 padding 是 24px，这里写 22px 的话
+     底部分割线左右各探出 2px，和卡片边缘对不齐（窄窗口下尤其明显） */
+  margin: 0 -24px;
+  padding: 0 24px;
   gap: 2px;
   /* 通到底的一条浅色分割线，指示条压在它上面 */
   border-bottom: 1px solid var(--line);

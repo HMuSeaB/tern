@@ -569,15 +569,23 @@ export function ProviderEditor({
           <div className={`notice ${probe.reachable ? "ok" : "err"}`}>
             <span className="notice-ic">{probe.reachable ? "✓" : "!"}</span>
             <span className="notice-body">
-              <b>{probe.message}</b>
+              <b>{probe.message}</b>{" "}
               <code className="notice-cmd">
                 {probe.http_status ? `HTTP ${probe.http_status}` : "无响应"}
                 {probe.models > 0 && ` · ${probe.models} 个模型`} · {probe.elapsed_ms}ms
-              </code>
+              </code>{" "}
               {/* 发的是哪个模型名要说出来。上游回 "model does not exist" 时，
                   用户得看见那个名字才知道去换——用 claude-sonnet-4-6 探测一家
-                  没有它的中转站，报错看起来会像"地址错了" */}
-              {probe.model && <code className="notice-cmd">探测模型: {probe.model}</code>}
+                  没有它的中转站，报错看起来会像"地址错了"。
+                  `{" "}` 不能省：三个 code 都是 nowrap 的行内元素，彼此之间
+                  没有空白文本节点就会合成一个不可断行的长串，
+                  把 message 从弹层右边缘顶出去（窄窗口下必现） */}
+              {probe.model && (
+                <>
+                  {" "}
+                  <code className="notice-cmd">探测模型: {probe.model}</code>
+                </>
+              )}{" "}
               <code className="notice-cmd" style={{ wordBreak: "break-all" }}>
                 {probe.url}
               </code>

@@ -1,0 +1,46 @@
+<!doctype html><meta charset="utf-8">
+<body style="margin:0">
+<iframe id="f" src="../index.html" style="border:0;display:block"></iframe>
+<script>
+  // 轮询等按钮出现再点：固定 timeout 会抢在数据回来之前，
+  // 那时候列表还没渲染，点了等于没点
+  const acts = (location.hash.slice(1) || "").split(",").filter(Boolean);
+  const f = document.getElementById("f");
+  f.style.width = innerWidth + "px";
+  f.style.height = innerHeight + "px";
+  addEventListener("resize", () => {
+    f.style.width = innerWidth + "px";
+    f.style.height = innerHeight + "px";
+  });
+  const done = new Set();
+  const timer = setInterval(() => {
+    let d;
+    try { d = f.contentDocument; } catch (e) { bar0.textContent = "跨域: " + e; return; }
+    if (!d) { bar0.textContent = "contentDocument 是 null"; return; }
+    for (const act of acts) {
+      if (done.has(act)) continue;
+      const [kind, text] = act.split(":");
+      const el = [...d.querySelectorAll("button")].find((b) => (b.textContent || "").trim().includes(text));
+      if (!el) continue;
+      el.click();
+      done.add(act);
+    }
+    if (done.size === acts.length) clearInterval(timer);
+  }, 200);
+  // 状态条：截图里能直接看见点没点中，省得猜
+  const bar0 = document.createElement("div");
+  bar0.style.cssText = "font:12px monospace;padding:2px 8px;background:#300;color:#f88";
+  bar0.textContent = "启动";
+  document.body.prepend(bar0);
+  const bar = document.createElement("div");
+  bar.style.cssText = "font:12px monospace;padding:4px 8px;background:#013";
+  bar.textContent = "等待 " + acts.join(" , ");
+  document.body.prepend(bar);
+  setInterval(() => {
+    let n = -1;
+    try { n = f.contentDocument.querySelectorAll("button").length; } catch {}
+    bar0.textContent = "iframe 里的 button 数: " + n;
+    bar.textContent = "已点: " + [...done].join(" , ") + " / 目标: " + acts.join(" , ");
+  }, 300);
+</script>
+</body>
