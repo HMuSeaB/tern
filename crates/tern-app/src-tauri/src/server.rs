@@ -70,23 +70,46 @@ fn agent_absent() -> ServerStatus {
 
 /// 面板自己点的启停。带 `AppHandle` 是为了顺手把托盘菜单刷了——
 /// 不刷的话用户刚在面板里停了网关，托盘上还写着"停止网关"。
+///
+/// # 为什么是 async
+///
+/// agent 不在时 `start_gateway_now` 要先把它拉起来再等它监听，最坏等满 10 秒。
+/// 同步命令跑在主线程上，那十秒里界面点哪儿都没反应——用户会以为面板卡死了。
+/// `spawn_blocking` 之后它跑在线程池，主线程该干嘛干嘛。
 #[tauri::command]
-pub fn server_start(app: tauri::AppHandle) -> Result<ServerStatus> {
-    let status = start_gateway_now()?;
+pub async fn server_start(app: tauri::AppHandle) -> Result<ServerStatus> {
+    let status = tauri::async_runtime::spawn_blocking(start_gateway_now)
+        .await
+        .map_err(join_error)??;
     crate::tray::refresh(&app);
     Ok(status)
 }
 
 #[tauri::command]
-pub fn server_stop(app: tauri::AppHandle) -> Result<ServerStatus> {
-    let status = stop_gateway_now()?;
+pub async fn server_stop(app: tauri::AppHandle) -> Result<ServerStatus> {
+    let status = tauri::async_runtime::spawn_blocking(stop_gateway_now)
+        .await
+        .map_err(join_error)??;
     crate::tray::refresh(&app);
     Ok(status)
 }
 
+/// 开面板就问一次。所以它慢一次，用户就等着看一次白屏——
+/// 这也是启动那三四秒的嫌疑之一，必须丢线程池。
 #[tauri::command]
-pub fn server_status() -> Result<ServerStatus> {
-    Ok(server_status_now())
+pub async fn server_status() -> Result<ServerStatus> {
+    tauri::async_runtime::spawn_blocking(server_status_now)
+        .await
+        .map_err(join_error)
+}
+
+/// `spawn_blocking` 的失败翻译成应用错误。
+///
+/// 注意错误类型是 `tauri::Error` 而不是 `tokio::task::JoinError`：
+/// `tauri::async_runtime::spawn_blocking` 是 Tauri 自己那一层，不直接透出
+/// tokio 的 JoinError。
+fn join_error(error: tauri::Error) -> crate::error::AppError {
+    crate::error::AppError::Config(format!("任务失败: {error}"))
 }
 
 // ---- 不带 tauri 命令层的版本：托盘菜单和面板共用 ----
@@ -162,11 +185,17 @@ fn key_state(auth: &tern_gateway::ProviderAuth) -> &'static str {
     }
 }
 
+/// 开面板就读。要解析整份配置（38 家供应商 + 分组文件），
+/// 同步跑就是主线程上的一段阻塞——启动慢的另一个嫌疑。
 #[tauri::command]
-pub fn config_summary() -> Result<ConfigSummary> {
-    let path = crate::config::config_path()?;
-    let config = crate::config::load(&path)?;
-    Ok(summary_of(&path, config))
+pub async fn config_summary() -> Result<ConfigSummary> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let path = crate::config::config_path()?;
+        let config = crate::config::load(&path)?;
+        Ok(summary_of(&path, config))
+    })
+    .await
+    .map_err(join_error)?
 }
 
 /// 切换默认供应商。
@@ -175,8 +204,27 @@ pub fn config_summary() -> Result<ConfigSummary> {
 /// `Arc<ProviderSpec>` 换一个进去就行。但 agent 是另一个进程，
 /// 它得知道这件事——所以走 HTTP 通知，通知失败也不阻断
 /// （配置已经落盘，用户下次重启照样生效）。
+/// 切供应商会写配置、可能重起网关（`restart_after_config_change` 是阻塞 HTTP），
+/// 所以一样丢线程池。
+///
+/// 代价是**丢了主线程原本白送的串行化**：同步命令在 Tauri 里是一个个排队跑的，
+/// 改异步之后连着点两家供应商就是两个并发请求，而这里是"读整份配置→改一项→写回"
+/// 的读改写，并发会互相覆盖。所以自己加一把锁把顺序补回来。
 #[tauri::command]
-pub fn select_provider(id: String) -> Result<ConfigSummary> {
+pub async fn select_provider(id: String) -> Result<ConfigSummary> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = SELECT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        select_provider_now(id)
+    })
+    .await
+    .map_err(join_error)?
+}
+
+/// 只护"切供应商"这一处读改写。别扩成全局配置锁：`provider_save` 那些还是
+/// 同步命令，本来就串行，让它们等这把锁只会平白多一层等待。
+static SELECT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn select_provider_now(id: String) -> Result<ConfigSummary> {
     let path = crate::config::config_path()?;
     let mut config = crate::config::load(&path)?;
     // 切成不存在的 id 会让路由表整体失效（网关起不来），所以先校验

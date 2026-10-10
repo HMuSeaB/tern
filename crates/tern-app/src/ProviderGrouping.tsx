@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { UNGROUPED_LABEL, type Group } from "./types";
 
 /**
@@ -78,7 +79,9 @@ export function FolderDialog({
   const [name, setName] = useState(initial);
   const trimmed = name.trim();
 
-  return (
+  // 挂到 body：理由同 ProviderEditor 的 portal()——`.tab-track` 上的 transform
+  // 会把 fixed 的包含块从视口改成那条四页宽的轨道
+  return createPortal(
     <div className="prov-modal-back" onClick={onClose}>
       <div
         className="prov-modal"
@@ -87,17 +90,19 @@ export function FolderDialog({
         onClick={(e) => e.stopPropagation()}
       >
         <h3>{mode === "create" ? "新建文件夹" : `重命名「${oldName}」`}</h3>
-        <input
-          className="prov-modal-input"
-          value={name}
-          autoFocus
-          placeholder="文件夹名，比如「NVIDIA」「官方直连」"
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && trimmed && !busy) onSubmit(trimmed);
-            if (e.key === "Escape") onClose();
-          }}
-        />
+        <div className="prov-form">
+          <input
+            className="prov-modal-input"
+            value={name}
+            autoFocus
+            placeholder="文件夹名，比如「NVIDIA」「官方直连」"
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && trimmed && !busy) onSubmit(trimmed);
+              if (e.key === "Escape") onClose();
+            }}
+          />
+        </div>
         <div className="prov-modal-actions">
           <button className="btn ghost" onClick={onClose} disabled={busy}>
             取消
@@ -111,7 +116,8 @@ export function FolderDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

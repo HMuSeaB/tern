@@ -65,13 +65,13 @@ pub fn agent_path() -> Option<std::path::PathBuf> {
 /// 问一次状态。agent 没起来时返回 Err，不自动拉起——
 /// 拉起是有副作用的动作，要么由 `ensure_agent` 显式做，要么用户点了启动。
 pub fn status() -> Result<AgentStatus> {
-    request("GET", "/api/status", None)
+    request("GET", "/api/status", None, STATUS_TIMEOUT)
 }
 
 /// 起网关。agent 不在时会先把它拉起来。
 pub fn start_gateway() -> Result<AgentStatus> {
     ensure_agent()?;
-    request("POST", "/api/gateway/start", None)
+    request("POST", "/api/gateway/start", None, Duration::from_secs(15))
 }
 
 /// 停网关。**不停 agent**：面板只是想知道"流量断了没"，
@@ -87,14 +87,19 @@ pub fn stop_gateway() -> Result<AgentStatus> {
             agent_version: String::new(),
         });
     }
-    request("POST", "/api/gateway/stop", None)
+    request("POST", "/api/gateway/stop", None, Duration::from_secs(15))
 }
 
 /// 重起网关。导入过供应商之后必须调它，否则跑着的还是旧配置——
 /// 用户会以为导入失败了。
 pub fn restart_gateway() -> Result<AgentStatus> {
     ensure_agent()?;
-    request("POST", "/api/gateway/restart", None)
+    request(
+        "POST",
+        "/api/gateway/restart",
+        None,
+        Duration::from_secs(15),
+    )
 }
 
 /// 让 agent 进程退出。
@@ -116,7 +121,7 @@ pub fn exit_agent() -> Result<()> {
     if !reachable() {
         return Ok(());
     }
-    match request("POST", "/api/agent/exit", None) {
+    match request("POST", "/api/agent/exit", None, EXIT_TIMEOUT) {
         Ok(_) => {
             log::info!("[tern-app] 常驻进程已退出");
             Ok(())
@@ -221,15 +226,40 @@ fn control_token() -> Option<String> {
         .filter(|token| !token.is_empty())
 }
 
+/// 共用一个阻塞客户端。
+///
+/// 每次 `Client::builder().build()` 都会新建一套 tokio 运行时和连接池，而
+/// `status()` 是托盘高频调用的那个——那点开销每问一次都要付一遍。reqwest 的
+/// 阻塞 Client 是 `Send + Sync`，放静态量里安全。
+static CONTROL_CLIENT: std::sync::LazyLock<reqwest::blocking::Client> =
+    std::sync::LazyLock::new(|| {
+        reqwest::blocking::Client::builder()
+            // 兜底超时。真正生效的是按请求覆盖的那个，见 request()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .unwrap_or_else(|_| reqwest::blocking::Client::new())
+    });
+
+/// 只问状态的超时。
+///
+/// 问的是本机回环接口，健康时几毫秒就回。等 15 秒没有任何意义——而托盘刷新
+/// 会调它，等满 15 秒意味着界面冻 15 秒。
+const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// 让 agent 退出的超时。同样不等：它僵住的话安装器会用 taskkill 收尾，
+/// 那边本来就硬杀，不差这一点。
+const EXIT_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// 发一次请求。用阻塞式 reqwest：这是个几十毫秒的本地调用，
 /// 为它引入异步是把简单事情搞复杂。
-fn request(method: &str, path: &str, body: Option<&str>) -> Result<AgentStatus> {
+///
+/// `timeout` 按请求覆盖：调用方自己知道能等多久（问状态的和起网关的完全不是
+/// 一回事），而超时正是冻住界面的唯一来源，必须逐个收窄。
+fn request(method: &str, path: &str, body: Option<&str>, timeout: Duration) -> Result<AgentStatus> {
     let url = format!("http://127.0.0.1:{CONTROL_PORT}{path}");
-    let mut request = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-        .map_err(|e| AppError::Config(e.to_string()))?
-        .request(method.parse().unwrap_or(reqwest::Method::GET), &url);
+    let mut request = CONTROL_CLIENT
+        .request(method.parse().unwrap_or(reqwest::Method::GET), &url)
+        .timeout(timeout);
 
     if let Some(token) = control_token() {
         request = request.header("x-tern-token", token);

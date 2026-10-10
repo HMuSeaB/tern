@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import type { ConfigSummary } from "./types";
 
@@ -310,16 +311,16 @@ export function ProviderEditor({
   }, [form.id, onDeleted]);
 
   if (!loaded) {
-    return (
+    return portal(
       <div className="prov-modal-back" onClick={onClose}>
         <div className="prov-modal" role="dialog" onClick={(e) => e.stopPropagation()}>
           <p className="empty-text">正在读取…</p>
         </div>
-      </div>
+      </div>,
     );
   }
 
-  return (
+  return portal(
     <div className="prov-modal-back" onClick={onClose}>
       <div
         className="prov-modal"
@@ -630,6 +631,26 @@ export function ProviderEditor({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
   );
+}
+
+/** 把弹层挂到 body 上。
+ *
+ *  # 为什么必须挂出去
+ *
+ *  这棵组件长在「供应商」页里，而 `.tab-track` 为了横滑带了一个 inline
+ *  `transform: translateX(...)`。**transform 会让元素成为后代 `position: fixed`
+ *  的包含块**——于是 `.prov-modal-back` 的 `inset: 0` 量的是那条四页宽的轨道，
+ *  不是视口。两个后果：
+ *
+ *  1. 遮罩盖不住顶栏（截图里顶栏没变暗，还能点"启动"和主题切换）
+ *  2. 更要命的是限高失效：`max-height` 按视口算，而轨道比视口矮一个顶栏，
+ *     弹层能从窗口底边漏出去，被窗口裁掉——而它又不在任何滚动容器里，
+ *     于是底下的字段和"保存"按钮**哪儿都够不着**。窄屏字段一多必然复现。
+ *
+ *  挂到 body 之后包含块回到视口，`max-height: 100%` 才量的是真实可用高度。
+ */
+function portal(node: React.ReactNode) {
+  return createPortal(node, document.body);
 }

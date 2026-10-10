@@ -1467,18 +1467,22 @@ body {
    "一行放得下 base URL" 和 "窄屏不浪费" 之间的折中 */
 .prov-modal {
   width: min(560px, 100%);
-  /* 字段加高后不能顶出屏幕。用 dvh 而不是 vh：移动端浏览器工具栏收起时
-     vh 不含它，会把弹层底边切掉 */
-  max-height: calc(100dvh - 40px);
+  /* 限高挂百分百，不写 dvh/vh。遮罩是 fixed + inset:0 + padding:20px，
+     它的内容盒高就是"视口减 40px"这个确定值，百分比直接继承。
+     原来写的 calc(100dvh - 40px) 看着等价，实则一踩就空：WebView2 认不出
+     dvh 时整条声明被丢弃，弹层不再限高，中间的表单跟着不滚——窄屏上字段
+     一多就复现"保存按钮在屏幕外，滚不下去" */
+  max-height: 100%;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 14px;
   padding: 18px 20px;
-  display: grid;
-  /* 三行：标题 / 可滚动的表单 / 底部按钮。中间 1fr + minmax(0,1fr) 是让表单
-     自己滚而不把按钮挤出屏幕的关键——grid 默认 min-height:auto 会让内容
-     把行高撑破 */
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  /* flex 而不是 grid：grid 那条 minmax(0, 1fr) 要容器有确定高度才生效，
+     容器是 auto 高 + max-height 时那一行会被内容撑破，限形同虚设 */
+  display: flex;
+  flex-direction: column;
+  /* 弹层自己是 flex 项时也要能缩，否则一样撑破 */
+  min-height: 0;
   gap: 14px;
   box-shadow: 0 18px 50px color-mix(in srgb, var(--fg) 22%, transparent);
 }
@@ -1506,9 +1510,14 @@ body {
 .prov-form {
   display: grid;
   gap: 12px;
-  /* 字段多起来之后自己滚。弹层用 grid-template-rows 把标题和按钮钉住了，
-     所以滚的只有这一段 */
+  /* 字段多起来之后自己滚。弹层用 flex + max-height 把标题和按钮钉住了，
+     所以滚的只有这一段。flex: 1 + min-height: 0 是"让出剩余高度"的那一对：
+     少了 min-height: 0，flex 项的默认 min-height:auto 会把内容高度当下限，
+     滚动永远不出现 */
+  flex: 1 1 auto;
   overflow-y: auto;
+  /* 滚到头别把背后那一页接着滚：弹层开着的时候背后是不该动的 */
+  overscroll-behavior: contain;
   min-height: 0;
   /* 滚动条别贴着输入框 */
   padding-right: 4px;

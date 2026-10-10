@@ -20,8 +20,17 @@
 //! 网关可能从面板之外启停（`tern serve`、agent 自己重启）。做成静态菜单的话，
 //! 用户点"启动网关"时它其实已经在跑，反馈是一个没反应的按钮。所以在鼠标进入
 //! 图标时刷新，以及面板自己启停之后立刻刷。
+//!
+//! # 刷新的铁律：不在主线程问 agent
+//!
+//! [`refresh`] 由 `TrayIconEvent::Enter` 触发，而 Windows 上鼠标只要停在托盘图标
+//! 上就会**连续**发 Enter。`server_status_now()` 是一次阻塞 HTTP（最坏要等满超时），
+//! 它要是跑在主线程上，整个界面当场冻住：菜单弹得出来，点哪儿都没反应，窗口也关
+//! 不掉——用户唯一的出路是任务管理器。所以问状态一律丢线程，菜单文本回主线程改。
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -34,6 +43,10 @@ const MENU_OPEN: &str = "open";
 const MENU_GATEWAY: &str = "gateway";
 const MENU_QUIT: &str = "quit";
 
+/// 两次真去问 agent 的最小间隔。鼠标在图标上抖一下就是好几个 Enter，
+/// 每个都问一遍既浪费又把线程占着——菜单文本不需要那么新。
+const REFRESH_MIN_INTERVAL: Duration = Duration::from_millis(400);
+
 /// 运行期状态。`None` 表示托盘没建起来，此时关窗就是真退出。
 #[derive(Default)]
 pub struct TrayState {
@@ -42,6 +55,12 @@ pub struct TrayState {
     gateway_item: Mutex<Option<MenuItem<tauri::Wry>>>,
     /// 隐藏前记住的窗口外坐标。见 [`show_panel`]。
     position: Mutex<Option<tauri::PhysicalPosition<i32>>>,
+    /// 最近一次已知的"网关在不在跑"。托盘按它显示文本，不再现问 agent。
+    running: AtomicBool,
+    /// 有没有一次刷新正在飞。Enter 是高频事件，不限流就会在线程里排一队。
+    refreshing: AtomicBool,
+    /// 上一次真去问 agent 的时刻。和 `refreshing` 一起做双保险。
+    last_ask: Mutex<Option<Instant>>,
 }
 
 /// 建托盘。失败不 panic：返回 Err 由调用方记日志，应用照常以"无托盘"运行。
@@ -88,17 +107,16 @@ pub fn build(app: &App) -> tauri::Result<()> {
 
     let state = app.state::<TrayState>();
     *state.icon.lock().unwrap_or_else(|p| p.into_inner()) = Some(tray);
+    // 建好立刻去问一次真实状态。问的过程丢线程，不占 setup 的时间——
+    // setup 是窗口露出来之前跑的，在这里同步等一次 HTTP 就是把启动拖慢
+    refresh(app.handle());
     Ok(())
 }
 
 fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
-    let gateway = MenuItem::with_id(
-        app,
-        MENU_GATEWAY,
-        gateway_label(crate::server::server_status_now().running),
-        true,
-        None::<&str>,
-    )?;
+    // 初始文本不现问 agent：build() 跑在 setup 里，那是一次主线程阻塞。
+    // 先按"没在跑"写，紧随其后的 refresh() 会把它改对
+    let gateway = MenuItem::with_id(app, MENU_GATEWAY, gateway_label(false), true, None::<&str>)?;
     let open = MenuItem::with_id(app, MENU_OPEN, "打开面板", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, MENU_QUIT, "退出", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
@@ -131,20 +149,95 @@ pub fn is_installed(app: &AppHandle) -> bool {
         .unwrap_or(false)
 }
 
-/// 按当前网关状态刷一遍托盘菜单。
+/// 缓存里记着的运行状态。
 ///
-/// 失败只记日志：托盘是状态显示器，它刷不刷新不该影响面板本身。
-pub fn refresh(app: &AppHandle) {
+/// 托盘自己判断"该显示启动还是停止"时用它，不现问 agent——现问就是主线程上的
+/// 一次阻塞 HTTP。缓存由 [`refresh`] 和 [`toggle_gateway`] 的结果推进。
+fn cached_running(app: &AppHandle) -> bool {
+    app.try_state::<TrayState>()
+        .map(|state| state.running.load(Ordering::SeqCst))
+        .unwrap_or(false)
+}
+
+/// 把"跑没跑"写进缓存。任何线程都能调，不碰窗口。
+fn cache_running(app: &AppHandle, running: bool) {
+    if let Some(state) = app.try_state::<TrayState>() {
+        state.running.store(running, Ordering::SeqCst);
+    }
+}
+
+/// 按缓存刷菜单文本。**只在主线程调**：`set_text` 底下是 Windows 的消息。
+fn sync_menu_text(app: &AppHandle) {
     let Some(state) = app.try_state::<TrayState>() else {
         return;
     };
-    let running = crate::server::server_status_now().running;
+    let running = state.running.load(Ordering::SeqCst);
     let guard = state.gateway_item.lock().unwrap_or_else(|p| p.into_inner());
     if let Some(item) = guard.as_ref() {
         if let Err(error) = item.set_text(gateway_label(running)) {
             log::warn!("[tray] 更新菜单文本失败: {error}");
         }
     }
+}
+
+/// 距上次真去问 agent 够不够久。
+///
+/// 抽成纯函数是为了能单测——它和 `refreshing` 一起构成"托盘不会把界面拖住"的
+/// 那道闸，而这道闸藏在 Tauri 状态后面，不拆出来等于没有测试。
+fn ask_due(last_ask: Option<Instant>) -> bool {
+    match last_ask {
+        Some(at) => at.elapsed() >= REFRESH_MIN_INTERVAL,
+        // 从没问过（进程刚起）：必须问一次，否则菜单文本一直是猜的
+        None => true,
+    }
+}
+
+/// 刷一遍托盘菜单。
+///
+/// # 为什么丢线程
+///
+/// 它是 `TrayIconEvent::Enter` 的回调，而 Windows 上鼠标只要停在托盘图标上就会
+/// 连续发 Enter。`server_status_now()` 是一次阻塞 HTTP，跑在主线程上等于把界面
+/// 冻住：菜单弹得出来但点哪儿都没反应，窗口也关不掉。丢线程之后最坏情况只是
+/// 菜单文本晚一步更新——那比整个应用卡死好得多。
+///
+/// 失败只记日志：托盘是状态显示器，它刷不刷新不该影响面板本身。
+pub fn refresh(app: &AppHandle) {
+    let Some(state) = app.try_state::<TrayState>() else {
+        return;
+    };
+    // 已经在飞就不叠。Enter 是高频事件，不限流就会在线程里排一队
+    if state.refreshing.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    {
+        let mut last = state.last_ask.lock().unwrap_or_else(|p| p.into_inner());
+        if !ask_due(*last) {
+            state.refreshing.store(false, Ordering::SeqCst);
+            return;
+        }
+        *last = Some(Instant::now());
+    }
+
+    let worker = app.clone();
+    std::thread::spawn(move || {
+        let running = crate::server::server_status_now().running;
+        // 先落缓存：哪怕回主线程那一步失败，下次弹菜单时文本也是对的
+        cache_running(&worker, running);
+        let main = worker.clone();
+        let posted = worker.run_on_main_thread(move || {
+            sync_menu_text(&main);
+            if let Some(state) = main.try_state::<TrayState>() {
+                state.refreshing.store(false, Ordering::SeqCst);
+            }
+        });
+        if posted.is_err() {
+            // 主线程已经没了（正在退出）。在飞标记必须放掉，否则托盘从此停更
+            if let Some(state) = worker.try_state::<TrayState>() {
+                state.refreshing.store(false, Ordering::SeqCst);
+            }
+        }
+    });
 }
 
 /// 打开面板。隐藏前记下的坐标如果还落在某台显示器的工作区内就还原，否则居中。
@@ -211,23 +304,42 @@ fn is_on_screen(window: &WebviewWindow, position: tauri::PhysicalPosition<i32>) 
 
 /// 托盘上的启停。失败时只在日志里说：面板关着的时候用户看不见错误，
 /// 而托盘菜单弹一个系统级对话框比什么都不做更烦。
+///
+/// # 为什么也丢线程
+///
+/// agent 不在时 `start_gateway` 要先把它拉起来再等它监听，最坏等满 10 秒。
+/// 这段等待发生在主线程上的话，点完"启动网关"有十秒界面点哪儿都没反应。
 fn toggle_gateway(app: &AppHandle) {
-    let running = crate::server::server_status_now().running;
-    let outcome = if running {
-        crate::server::stop_gateway_now()
-    } else {
-        crate::server::start_gateway_now()
-    };
-    match outcome {
-        Ok(_) => {
-            refresh(app);
-            log::info!("[tray] 已{}网关", if running { "停止" } else { "启动" });
+    // 用缓存判断当前状态，不现问：现问就是主线程上的一次阻塞 HTTP
+    let running = cached_running(app);
+    let worker = app.clone();
+    std::thread::spawn(move || {
+        let outcome = if running {
+            crate::server::stop_gateway_now()
+        } else {
+            crate::server::start_gateway_now()
+        };
+        match outcome {
+            Ok(status) => {
+                cache_running(&worker, status.running);
+                let main = worker.clone();
+                if worker
+                    .run_on_main_thread(move || sync_menu_text(&main))
+                    .is_err()
+                {
+                    log::debug!("[tray] 主线程已退出，菜单文本留待下次刷新");
+                }
+                log::info!(
+                    "[tray] 已{}网关",
+                    if status.running { "启动" } else { "停止" }
+                );
+            }
+            Err(error) => log::warn!(
+                "[tray] {}网关失败: {error}",
+                if running { "停止" } else { "启动" }
+            ),
         }
-        Err(error) => log::warn!(
-            "[tray] {}网关失败: {error}",
-            if running { "停止" } else { "启动" }
-        ),
-    }
+    });
 }
 
 /// 真退出。
@@ -286,5 +398,26 @@ mod tests {
     fn empty_saved_position_means_leave_the_window_alone() {
         let saved: Option<tauri::PhysicalPosition<i32>> = None;
         assert!(saved.is_none(), "None 时 restore 直接返回，不 center");
+    }
+
+    /// 从没问过就必须问一次：进程刚起时菜单文本还是猜的，
+    /// 不问的话它一直是"启动网关"，哪怕网关正在跑
+    #[test]
+    fn first_ever_ask_is_always_due() {
+        assert!(ask_due(None));
+    }
+
+    /// 刚问过就不该再问。鼠标在托盘图标上抖一下就是好几个 Enter，
+    /// 每个都放过去就是往线程池里排一队阻塞请求
+    #[test]
+    fn a_recent_ask_blocks_the_next_one() {
+        assert!(!ask_due(Some(Instant::now())));
+    }
+
+    /// 隔得够久就放行。用真睡而不是改常量：这条测试守的就是那个间隔本身
+    #[test]
+    fn an_old_ask_is_allowed_through() {
+        std::thread::sleep(REFRESH_MIN_INTERVAL + Duration::from_millis(20));
+        assert!(ask_due(Some(Instant::now() - REFRESH_MIN_INTERVAL)));
     }
 }

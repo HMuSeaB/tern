@@ -4,7 +4,9 @@
 //! 永远对得上。凡是上百万行的明细都走 `daily` 预聚合表，不把明细拉进前端。
 
 use serde::Serialize;
-use tauri::State;
+// Manager：`app.state::<AppState>()` 要靠它。State 借的是函数栈上的引用，
+// 跨不进 spawn_blocking 的 'static 闭包，所以异步命令改拿 AppHandle 自己取
+use tauri::{Manager, State};
 
 use crate::error::Result;
 use crate::AppState;
@@ -187,8 +189,16 @@ pub struct CcSwitchProviderPreview {
     pub api_format: String,
 }
 
+/// 只读探测。要开 cc-switch 那个 11 MB 的库并全表扫一遍，
+/// 同步命令跑在主线程上就是界面冻一会儿——丢线程池。
 #[tauri::command]
-pub fn import_preview() -> Result<CcSwitchPreview> {
+pub async fn import_preview() -> Result<CcSwitchPreview> {
+    tauri::async_runtime::spawn_blocking(preview_from_cc_switch)
+        .await
+        .map_err(|e| crate::error::AppError::Config(format!("任务失败: {e}")))?
+}
+
+fn preview_from_cc_switch() -> Result<CcSwitchPreview> {
     let db = tern_gateway::ccswitch_import::default_cc_switch_db()
         .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
     if !db.exists() {
@@ -201,8 +211,22 @@ pub fn import_preview() -> Result<CcSwitchPreview> {
 }
 
 /// 真正落盘。用户看过 [`import_preview`] 的结果并确认后才该调到这里。
+///
+/// # 为什么是 async
+///
+/// 要开 cc-switch 那个 11 MB 的库、把 39 家供应商写进配置、还可能重启网关。
+/// 同步命令跑在主线程上，用户点完"导入"有好几秒界面点哪儿都没反应。
 #[tauri::command]
-pub fn import_from_cc_switch(state: State<'_, AppState>) -> Result<CcSwitchPreview> {
+pub async fn import_from_cc_switch(app: tauri::AppHandle) -> Result<CcSwitchPreview> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        import_from_cc_switch_now(&state)
+    })
+    .await
+    .map_err(|e| crate::error::AppError::Config(format!("任务失败: {e}")))?
+}
+
+fn import_from_cc_switch_now(state: &AppState) -> Result<CcSwitchPreview> {
     let db = tern_gateway::ccswitch_import::default_cc_switch_db()
         .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
     if !db.exists() {
@@ -465,9 +489,16 @@ fn preview_of(
     }
 }
 
+/// 面板首屏的数据。`usePanel` 每隔几秒就拉一次，而它底下是好几次聚合查询——
+/// 同步跑的话每轮轮询都让主线程阻塞一回，翻页面会觉得"发涩"。
 #[tauri::command]
-pub fn panel_summary(state: State<'_, AppState>) -> Result<PanelDto> {
-    state.with_db(|db| db.with_conn(|conn| build_panel(conn, &state.db_path())))
+pub async fn panel_summary(app: tauri::AppHandle) -> Result<PanelDto> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        state.with_db(|db| db.with_conn(|conn| build_panel(conn, &state.db_path())))
+    })
+    .await
+    .map_err(|e| crate::error::AppError::Config(format!("任务失败: {e}")))?
 }
 
 /// 面板首屏的全部数据。抽成不依赖 tauri 的普通函数，测试可以直接调用。
