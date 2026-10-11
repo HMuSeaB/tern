@@ -93,7 +93,10 @@ fn recent_week_outweighs_the_three_weeks_before_it() {
     seed_daily(&conn, &day_ago(1), "lately", 10);
 
     let rows = build_provider_usage(&conn).unwrap();
-    assert_eq!(rows[0].provider_id, "lately", "最近一周的该排前面: {rows:?}");
+    assert_eq!(
+        rows[0].provider_id, "lately",
+        "最近一周的该排前面: {rows:?}"
+    );
     assert_eq!(rows[1].provider_id, "used_to");
     // 加权后的实际值：10 x 3 = 30，压过 20
     assert_eq!(rows[0].requests, 30);
