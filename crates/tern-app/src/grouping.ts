@@ -12,7 +12,47 @@ import { NO_URL_LABEL, UNGROUPED_LABEL } from "./types";
  * - **顺序反映真实顺序**：地址视图按第一次出现的顺序，文件夹视图按注册表顺序。
  *   两边都刻意不用 `localeCompare`——字母序会把用户排好的顺序打乱，而中文名按
  *   字母排出来基本是乱的，没好作用
+ *
+ * # 关于"常用地址排前面"
+ *
+ * `usage`（provider_id → 近 30 天加权请求数）是**次级排序**，不是整体重排。
+ * 整体按字母/用量重排会打乱用户自己排的顺序，那是这两条规则存在的理由。
+ * 所以只分成三档：
+ *
+ * 1. 含当前使用中供应商的组（`containsActive`，最该看见）
+ * 2. 有用量的组，按组内用量之和降序
+ * 3. 没用量的组，**保持原顺序不动**
+ *
+ * 第 3 档是关键：那 36 个不怎么用的供应商是用户排的、也是从 cc-switch
+ * 导入时的原始顺序，按用量排它们等于把导入成果洗掉。
  */
+
+/** 组内用量之和。同一个地址下挂几个供应商就累加几份——那正是
+ *  "这个上游被用了多少次"的含义，分组的意义也在这儿。 */
+function usageOf(
+  group: Group<ProviderSummary>,
+  usage: Map<string, number>,
+): number {
+  let sum = 0;
+  for (const p of group.providers) sum += usage.get(p.id) ?? 0;
+  return sum;
+}
+
+/** 次级排序：使用中的组最前，其次按用量，最后保持原顺序。
+ *
+ *  用稳定的 `Array.prototype.sort`（ES2019 起规定稳定），同档内不重排。
+ *  `usageOf` 每次比较都重算，38 个供应商的规模下无所谓；
+ *  真嫌它慢可以先 map 成带权值的元组再排，但那是优化不是正确性问题。 */
+function byUsage(
+  groups: Group<ProviderSummary>[],
+  usage: Map<string, number>,
+): Group<ProviderSummary>[] {
+  if (usage.size === 0) return groups;
+  return [...groups].sort((a, b) => {
+    if (a.containsActive !== b.containsActive) return a.containsActive ? -1 : 1;
+    return usageOf(b, usage) - usageOf(a, usage);
+  });
+}
 
 /** 按请求地址归组。
  *
@@ -22,9 +62,12 @@ import { NO_URL_LABEL, UNGROUPED_LABEL } from "./types";
  *
  * 摊平规则：只有 1 个供应商的地址不单独成组，直接当普通行渲染。一个组的卡片
  * 比一行没多说什么，却多占一块视觉重量。
+ *
+ * `usage` 可省略：探针和没有用量库的场景传空 Map，顺序退化成"第一次出现"。
  */
 export function buildUrlGroups(
   providers: ProviderSummary[],
+  usage: Map<string, number> = new Map(),
 ): Group<ProviderSummary>[] {
   const groups: Group<ProviderSummary>[] = [];
   const index = new Map<string, Group<ProviderSummary>>();
@@ -48,11 +91,13 @@ export function buildUrlGroups(
     if (provider.active) group.containsActive = true;
   }
 
-  // 未配置地址沉底：它不是正常分组，夹在中间只会打断阅读
-  return [
+  // 未配置地址沉底：它不是正常分组，夹在中间只会打断阅读。
+  // 沉底在排序之前做，否则"常用"会把一个没配地址的组顶到前面来
+  const ordered = [
     ...groups.filter((g) => g.key !== NO_URL_LABEL),
     ...groups.filter((g) => g.key === NO_URL_LABEL),
   ];
+  return byUsage(ordered, usage);
 }
 
 /** 按自定义文件夹归组。
@@ -66,6 +111,7 @@ export function buildUrlGroups(
 export function buildFolderGroups(
   providers: ProviderSummary[],
   folders: ProviderFolder[],
+  usage: Map<string, number> = new Map(),
 ): Group<ProviderSummary>[] {
   const groups: Group<ProviderSummary>[] = [];
   const index = new Map<string, Group<ProviderSummary>>();
@@ -94,10 +140,13 @@ export function buildFolderGroups(
     if (provider.active) group.containsActive = true;
   }
 
-  return [
+  // 未分组恒沉底：它通常是最多的那一组，放最前面会把用户自己排的组全推到下面。
+  // 同样先沉底再按用量排，否则"未分组"会因为装得多而被顶上来
+  const ordered = [
     ...groups.filter((g) => g.title !== UNGROUPED_LABEL),
     ...groups.filter((g) => g.title === UNGROUPED_LABEL),
   ];
+  return byUsage(ordered, usage);
 }
 
 /** 已建文件夹的名字，保持注册表顺序（Rust 侧已按 sortIndex 排好）。 */

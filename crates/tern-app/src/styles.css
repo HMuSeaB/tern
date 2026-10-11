@@ -1388,6 +1388,33 @@ body {
   white-space: nowrap;
 }
 
+/* 常用地址预设。比 prov-mini 再小一档、并且允许换行成多行：
+   弹层内容区是 560px 宽，8 个预设一行排不开，flex-wrap 让它们自己折，
+   比横向上加滚动条好——滚动条在小窗口下正是最难够着的东西 */
+.prov-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 2px;
+}
+
+.prov-preset {
+  font: 11.5px var(--sans);
+  padding: 4px 9px;
+  border-radius: 6px;
+  border: 1px dashed var(--line-2);
+  background: none;
+  color: var(--dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.prov-preset:hover {
+  border-style: solid;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* "新增供应商"是这一页唯一的主操作，比邻座的文件夹按钮重一档 */
 .prov-mini.accent {
   color: var(--accent);

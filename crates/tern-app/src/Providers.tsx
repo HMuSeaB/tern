@@ -12,6 +12,7 @@ import type {
   DomainGroup,
   ProviderFolder,
   ProviderSummary,
+  ProviderUsage,
 } from "./types";
 
 /**
@@ -72,10 +73,16 @@ export function Providers({
     { mode: "create" } | { mode: "edit"; id: string } | null
   >(null);
   const [editorBusy, setEditorBusy] = useState(false);
-  const [folderBusy, setFolderBusy] = useState(false);
+  /** 分组相关操作的忙态。改名/移动/归组/批量展开收起都走它——
+   *  不叫 folderBusy 了：地址视图的批量收起也归它管，跟文件夹没关系 */
+  const [groupBusy, setGroupBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   /** 收起来的分组名（含地址视图的分组键）。空集 = 全展开 */
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  /** provider_id → 近 30 天加权请求数。"常用地址排前面"的依据。
+   *  拿不到就空 Map，顺序退化成"按配置里的原序"——用量库不存在是正常情况
+   *  （还没跑过网关），不该因此让整页报错。 */
+  const [usage, setUsage] = useState<Map<string, number>>(new Map());
 
   const reload = useCallback(async () => {
     try {
@@ -90,6 +97,18 @@ export function Providers({
       setError(null);
     } catch (e) {
       setError(String(e));
+      return;
+    }
+    // 用量单独拉、单独吞错。不能塞进上面那个 Promise.all：库还没建
+    // （没跑过网关）时它会失败，把整个供应商列表一起拖崩，
+    // 而列表没有用量也完全能用，只是不按常用排序。
+    try {
+      const rows = await invoke<ProviderUsage[]>("provider_usage");
+      setUsage(new Map(rows.map((r) => [r.provider_id, r.requests])));
+    } catch {
+      // 用量拿不到不提示：那是"还没用过网关"的正常状态，
+      // 为它弹个错误反而像出了事
+      setUsage(new Map());
     }
   }, []);
 
@@ -142,7 +161,7 @@ export function Providers({
 
   const createFolder = useCallback(
     async (name: string) => {
-      setFolderBusy(true);
+      setGroupBusy(true);
       try {
         setFolders(await invoke<ProviderFolder[]>("folders_create", { name }));
         setDialog(null);
@@ -151,7 +170,7 @@ export function Providers({
       } catch (e) {
         setError(String(e));
       } finally {
-        setFolderBusy(false);
+        setGroupBusy(false);
       }
     },
     [],
@@ -159,7 +178,7 @@ export function Providers({
 
   const renameFolder = useCallback(
     async (oldName: string, name: string) => {
-      setFolderBusy(true);
+      setGroupBusy(true);
       try {
         // 返回值是被移动的供应商数。Rust 侧连归属表一起改，所以这里不用再逐个挪
         const moved = await invoke<number>("folders_rename", {
@@ -177,7 +196,7 @@ export function Providers({
       } catch (e) {
         setError(String(e));
       } finally {
-        setFolderBusy(false);
+        setGroupBusy(false);
       }
     },
     [reloadAfterFolderChange],
@@ -185,7 +204,7 @@ export function Providers({
 
   const removeFolder = useCallback(
     async (name: string) => {
-      setFolderBusy(true);
+      setGroupBusy(true);
       try {
         const moved = await invoke<number>("folders_delete", { name });
         setNotice(
@@ -198,7 +217,7 @@ export function Providers({
       } catch (e) {
         setError(String(e));
       } finally {
-        setFolderBusy(false);
+        setGroupBusy(false);
       }
     },
     [reloadAfterFolderChange],
@@ -208,7 +227,7 @@ export function Providers({
     async (target: string | null) => {
       const ids = [...picked];
       if (ids.length === 0) return;
-      setFolderBusy(true);
+      setGroupBusy(true);
       try {
         await invoke<number>("folders_assign", { ids, folder: target });
         setPicked(new Set());
@@ -222,7 +241,7 @@ export function Providers({
       } catch (e) {
         setError(String(e));
       } finally {
-        setFolderBusy(false);
+        setGroupBusy(false);
       }
     },
     [picked, reloadAfterFolderChange],
@@ -236,7 +255,7 @@ export function Providers({
    *  只把 >= 2 个供应商共用的域名建成文件夹——单例域名建组没有分组收益。
    */
   const groupByDomain = useCallback(async () => {
-    setFolderBusy(true);
+    setGroupBusy(true);
     try {
       const groups = await invoke<DomainGroup[]>("folders_group_by_domain");
       if (groups.length === 0) {
@@ -255,7 +274,7 @@ export function Providers({
     } catch (e) {
       setError(String(e));
     } finally {
-      setFolderBusy(false);
+      setGroupBusy(false);
     }
   }, [reloadAfterFolderChange]);
 
@@ -305,13 +324,30 @@ export function Providers({
     );
   }, [config, query]);
 
+  /** 平铺视图的顺序：使用中的最前，其次用的多的，没用过的保持原序。
+   *
+   *  为什么也要排：38 个平铺时最常干的事就是"切到现在常用的那个"，
+   *  让它埋在第二页和分组视图不排序是同一件事的两个面孔。
+   *
+   *  使用中必须单独一档置顶：它可能正好是那个"最近没发出请求"的
+   *  （比如一直在用缓存，或者刚切过来还没跑过会话）。只按用量排的话
+   *  当前供应商会掉到第七八 位，看着像"我没选它啊"。
+   *  同档内按用量降序，sort 稳定所以没用量的仍保持配置原序。 */
+  const visibleSorted = useMemo(() => {
+    if (usage.size === 0) return visible;
+    return [...visible].sort((a, b) => {
+      if (a.active !== b.active) return a.active ? -1 : 1;
+      return (usage.get(b.id) ?? 0) - (usage.get(a.id) ?? 0);
+    });
+  }, [visible, usage]);
+
   const urlGroups = useMemo(
-    () => (mode === "url" ? buildUrlGroups(visible) : []),
-    [mode, visible],
+    () => (mode === "url" ? buildUrlGroups(visible, usage) : []),
+    [mode, visible, usage],
   );
   const folderGroups = useMemo(
-    () => (mode === "folder" ? buildFolderGroups(visible, folders) : []),
-    [mode, visible, folders],
+    () => (mode === "folder" ? buildFolderGroups(visible, folders, usage) : []),
+    [mode, visible, folders, usage],
   );
   /** 按地址视图里那些"只有一家在用"的地址。摊平成一张平表，不单独占一张卡 */
   const singles = useMemo(
@@ -319,19 +355,38 @@ export function Providers({
     [urlGroups],
   );
 
-  /** 文件夹视图的「全部收起 / 全部展开」。
+  /** 当前视图的组。批量收起/展开只认这些——不该越过搜索去动看不见的组。
+   *  地址视图要再滤掉单例：那些不渲染成分组卡（见下面 render），
+   *  收它们等于什么都没发生。 */
+  const currentGroups = useMemo(
+    () =>
+      (mode === "url" ? urlGroups : mode === "folder" ? folderGroups : []).filter(
+        (g) => mode === "folder" || g.providers.length >= 2,
+      ),
+    [mode, urlGroups, folderGroups],
+  );
+
+  /** 当前视图的「全部收起 / 全部展开」。地址和文件夹两个分组视图共用。
    *
    *  会话集合和注册表里的 isExpanded 都要改：只改会话的话，重开面板又回到原状；
    *  只改注册表的话，会话里残留的 collapsed 会盖住它（见下面 open 的计算）。
-   *  所以两边一起改。 */
-  const setAllFolders = useCallback(
+   *  所以两边一起改。
+   *
+   *  只动**当前视图里看得见的组**。原来遍历整个注册表，一搜索之后"全部收起"
+   *  会把看不见的文件夹一起收掉，取消搜索才发觉少了一屏。
+   *
+   *  地址分组没有注册表项，`folders_set_expanded` 对未知名字静默无事，
+   *  所以那边只改会话集合——收起状态这一次会话有效，够用了。 */
+  const setAllGroups = useCallback(
     async (expanded: boolean) => {
-      const titles = folderGroups.map((g) => g.title);
+      const titles = currentGroups.map((g) => g.title);
       setCollapsed(expanded ? new Set() : new Set(titles));
+      const persisted = folders.filter((f) => titles.includes(f.name));
+      if (persisted.length === 0) return;
       // 串行写：每次返回的都是完整注册表快照，并发的话后返回的快照会盖掉先返回的
       let latest: ProviderFolder[] | null = null;
       try {
-        for (const folder of folders) {
+        for (const folder of persisted) {
           latest = await invoke<ProviderFolder[]>("folders_set_expanded", {
             name: folder.name,
             expanded,
@@ -342,7 +397,7 @@ export function Providers({
       }
       if (latest) setFolders(latest);
     },
-    [folderGroups, folders],
+    [currentGroups, folders],
   );
 
   if (!config) {
@@ -491,26 +546,32 @@ export function Providers({
           <button
             className="prov-mini"
             onClick={() => void groupByDomain()}
-            disabled={folderBusy}
+            disabled={groupBusy}
             title="按请求地址的域名根自动归组：同一域名下两个以上供应商才会建文件夹"
           >
             按域名归组
           </button>
-          {mode === "folder" && folderGroups.length > 0 && (
+          {/* 批量收起/展开：两个分组视图都要。文件夹视图会写进注册表，
+              地址视图只改这次会话 */}
+          {currentGroups.length > 0 && (
             <>
               <button
                 className="prov-mini"
-                onClick={() => void setAllFolders(false)}
-                disabled={folderBusy}
-                title="把当前可见的所有文件夹收起来,下次打开面板也保持收起"
+                onClick={() => void setAllGroups(false)}
+                disabled={groupBusy}
+                title={
+                  mode === "folder"
+                    ? "把当前可见的所有文件夹收起来,下次打开面板也保持收起"
+                    : "把所有地址分组收起来。地址分组是按请求地址算出来的,收起状态只在这一次会话里有效"
+                }
               >
                 全部收起
               </button>
               <button
                 className="prov-mini"
-                onClick={() => void setAllFolders(true)}
-                disabled={folderBusy}
-                title="展开所有文件夹"
+                onClick={() => void setAllGroups(true)}
+                disabled={groupBusy}
+                title="展开所有分组"
               >
                 全部展开
               </button>
@@ -544,8 +605,8 @@ export function Providers({
 
       {mode === "flat" && (
         <ul className="prov-list">
-          {visible.map(renderRow)}
-          {visible.length === 0 && (
+          {visibleSorted.map(renderRow)}
+          {visibleSorted.length === 0 && (
             <li className="prov-empty">没有匹配「{query}」的供应商</li>
           )}
         </ul>
@@ -557,16 +618,22 @@ export function Providers({
             /* 只有一家在用的地址不值得一张卡：摊平成普通行，
                "一个组的标题里只有一行内容"省不下任何空间 */
             .filter((group) => group.providers.length >= 2)
-            .map((group) => (
-              <GroupCard
-                key={group.key}
-                group={group}
-                expanded={!collapsed.has(group.key)}
-                onToggle={() => void saveExpanded(group.key, collapsed.has(group.key))}
-              >
-                <ul className="prov-list">{group.providers.map(renderRow)}</ul>
-              </GroupCard>
-            ))}
+            .map((group) => {
+              // 目标状态从"此刻渲染出来的"expanded 反推，不从 collapsed.has() 现算：
+              // 后者读的是闭包里的旧值，批量收起之后紧接着点单个分组头时
+              // collapsed 还没提交，会把"展开"当成"收起"传出去
+              const expanded = !collapsed.has(group.key);
+              return (
+                <GroupCard
+                  key={group.key}
+                  group={group}
+                  expanded={expanded}
+                  onToggle={() => void saveExpanded(group.key, !expanded)}
+                >
+                  <ul className="prov-list">{group.providers.map(renderRow)}</ul>
+                </GroupCard>
+              );
+            })}
 
           {/* 单例地址合成一张平表放在最后：分组在前、长尾在后，
               阅读顺序才是"先看哪些真是同一个上游" */}
@@ -631,7 +698,7 @@ export function Providers({
           total={visible.length}
           allPicked={picked.size === visible.length}
           folders={folderNames(folders)}
-          busy={folderBusy}
+          busy={groupBusy}
           onMove={(target) => void movePicked(target)}
           onToggleAll={() =>
             setPicked(
@@ -674,7 +741,7 @@ export function Providers({
           mode={dialog.kind}
           oldName={dialog.kind === "rename" ? dialog.name : undefined}
           initial={dialog.kind === "rename" ? dialog.name : ""}
-          busy={folderBusy}
+          busy={groupBusy}
           onClose={() => setDialog(null)}
           onSubmit={(name) => {
             if (dialog.kind === "create") void createFolder(name);

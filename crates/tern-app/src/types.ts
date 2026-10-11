@@ -28,6 +28,13 @@ export interface FailureGroup {
   sample: string | null;
 }
 
+/** 一个供应商的近 30 天加权请求数，供应商页据此把常用地址排前面。
+ *  见 commands.rs 的 provider_usage：近 7 天按三倍计。 */
+export interface ProviderUsage {
+  provider_id: string;
+  requests: number;
+}
+
 export interface RecentRequest {
   started_at_ms: number;
   client: string;

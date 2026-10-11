@@ -27,6 +27,16 @@ pub struct SummaryDto {
     pub unpriced: u64,
 }
 
+/// 一个供应商的近 30 天加权请求数。供应商页据此把常用的地址排到前面。
+///
+/// 注意它记的是 `provider_id` 而不是 base_url：账本来就按供应商记。
+/// 同一个地址下挂两个供应商会被算成两条，由前端按 group_key 聚合成组。
+#[derive(Debug, Serialize)]
+pub struct ProviderUsageDto {
+    pub provider_id: String,
+    pub requests: u64,
+}
+
 /// 面板首屏需要的全部数字。按 cc-switch 使用统计页的密度做：
 /// 一个 hero（Token 总量）+ 一组小卡 + 两条醒目提示。
 #[derive(Debug, Serialize)]
@@ -501,12 +511,67 @@ pub async fn panel_summary(app: tauri::AppHandle) -> Result<PanelDto> {
     .map_err(|e| crate::error::AppError::Config(format!("任务失败: {e}")))?
 }
 
+/// 供应商页的「常用地址」排序依据。
+///
+/// # 为什么单独一个命令，不搭 panel_summary 的车
+///
+/// 面板可能正处在 `first_run`（库刚建、还没有任何数据），那时 `build_panel`
+/// 直接返回引导页，里面根本没有用量字段。而首次引导那一刻恰恰是用户最需要
+/// 在供应商列表里看到"哪些常用"的时候——他正准备挑一个填进去。
+///
+/// # 口径
+///
+/// 只算**近 30 天**，且近 7 天加权三倍。"最近一直在用"和"三十天前用过一回"
+/// 不是一回事：累计的话一个早就不用的老供应商会一直霸着顶位。
+#[tauri::command]
+pub async fn provider_usage(app: tauri::AppHandle) -> Result<Vec<ProviderUsageDto>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        state.with_db(|db| db.with_conn(build_provider_usage))
+    })
+    .await
+    .map_err(|e| crate::error::AppError::Config(format!("任务失败: {e}")))?
+}
+
+/// 近 30 天每个供应商的加权请求数。抽成普通函数以便测试。
+pub fn build_provider_usage(conn: &rusqlite::Connection) -> Result<Vec<ProviderUsageDto>> {
+    // 近 7 天的权重。3 倍是"最近一周"和"前三周"之间的一个中间值：
+    // 1 倍等于没区分，10 倍会让一周的偶发用量盖过一个月的稳定使用。
+    const RECENT_WEIGHT: i64 = 3;
+    let recent_from = local_days_ago(7);
+    let window_from = local_days_ago(30);
+    let sql = format!(
+        "SELECT provider_id,
+                SUM(CASE WHEN day >= ?2 THEN {RECENT_WEIGHT} ELSE 1 END * requests)
+         FROM daily
+         WHERE day BETWEEN ?1 AND ?3
+           AND provider_id IS NOT NULL
+           AND provider_id != ''
+         GROUP BY provider_id
+         ORDER BY 2 DESC, provider_id ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![window_from, recent_from, local_days_ago(0)],
+            |row| {
+                Ok(ProviderUsageDto {
+                    provider_id: row.get(0)?,
+                    // SQLite 的 SUM 可能返回 NULL（空组），也可能超出 i64；
+                    // 两种情况都不该让整页崩掉
+                    requests: u64::try_from(row.get::<_, i64>(1)?).unwrap_or(u64::MAX),
+                })
+            },
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 /// 面板首屏的全部数据。抽成不依赖 tauri 的普通函数，测试可以直接调用。
 pub fn build_panel(conn: &rusqlite::Connection, db_path: &str) -> Result<PanelDto> {
     {
         let today = local_days_ago(0);
         let yesterday = local_days_ago(1);
-
         let summary = |day: &str| -> rusqlite::Result<SummaryDto> {
             conn.query_row(
                 &format!("SELECT {SUMMARY_COLUMNS} FROM daily WHERE day = ?1"),

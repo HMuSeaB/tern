@@ -42,6 +42,8 @@ fn main() {
             // 面板
             tern_app_lib::commands::open_db,
             tern_app_lib::commands::panel_summary,
+            // 供应商页的"常用地址"排序依据
+            tern_app_lib::commands::provider_usage,
             // 面板二级视图：趋势 / 占比 / 会话 / 模型流向
             tern_app_lib::commands::panel_trend,
             tern_app_lib::commands::panel_breakdown,

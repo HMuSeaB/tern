@@ -4,7 +4,11 @@
 <script>
   // 轮询等按钮出现再点：固定 timeout 会抢在数据回来之前，
   // 那时候列表还没渲染，点了等于没点
-  const acts = (location.hash.slice(1) || "").split(",").filter(Boolean);
+  // decodeURIComponent 是必须的：从命令行传过来的 hash 里中文是 %XX，
+  // 不解码的话跟按钮文本永远对不上，症状是"iframe 里有 67 个按钮却一个没点中"
+  const acts = decodeURIComponent(location.hash.slice(1) || "")
+    .split(",")
+    .filter(Boolean);
   const f = document.getElementById("f");
   f.style.width = innerWidth + "px";
   f.style.height = innerHeight + "px";
@@ -17,16 +21,36 @@
     let d;
     try { d = f.contentDocument; } catch (e) { bar0.textContent = "跨域: " + e; return; }
     if (!d) { bar0.textContent = "contentDocument 是 null"; return; }
-    for (const act of acts) {
-      if (done.has(act)) continue;
-      const [kind, text] = act.split(":");
-      const el = [...d.querySelectorAll("button")].find((b) => (b.textContent || "").trim().includes(text));
-      if (!el) continue;
-      el.click();
-      done.add(act);
+    // 一轮只做一个动作。全塞在一轮里的话，后一个动作会读到前一个动作
+    // 还没提交的 state（闭包里的旧值），表现出来的假象是"按钮点了没反应"
+    const act = acts.find((a) => !done.has(a));
+    if (!act) {
+      clearInterval(timer);
+      return;
     }
-    if (done.size === acts.length) clearInterval(timer);
-  }, 200);
+    // 按第一个冒号切：选择器里本身就带冒号（.x:nth-of-type(1)），
+    // 用 split(":") 会把选择器切碎，选中的元素就错了
+    const at = act.indexOf(":");
+    const kind = at < 0 ? act : act.slice(0, at);
+    const rest = at < 0 ? "" : act.slice(at + 1);
+    // 两种点法：click:<按钮文本> 挑第一个含这段文本的按钮；
+    // sel:<CSS 选择器> 直接选元素。后者是给"文本匹配会抓错"的情况兜底的——
+    // 比如分组头的文本和别处按钮有重叠时
+    const el =
+      kind === "sel"
+        ? d.querySelector(rest)
+        : [...d.querySelectorAll("button")].find((b) =>
+            (b.textContent || "").trim().includes(rest),
+          );
+    if (!el) return;
+    // 派发完整鼠标事件而不是 el.click()：el.click() 在个别 WebView 下
+    // 不会走 React 的合成事件委托，症状是"按钮明明点中了却什么都没发生"
+    const opts = { bubbles: true, cancelable: true, view: d.defaultView, button: 0 };
+    el.dispatchEvent(new d.defaultView.MouseEvent("mousedown", opts));
+    el.dispatchEvent(new d.defaultView.MouseEvent("mouseup", opts));
+    el.dispatchEvent(new d.defaultView.MouseEvent("click", opts));
+    done.add(act);
+  }, 250);
   // 状态条：截图里能直接看见点没点中，省得猜
   const bar0 = document.createElement("div");
   bar0.style.cssText = "font:12px monospace;padding:2px 8px;background:#300;color:#f88";

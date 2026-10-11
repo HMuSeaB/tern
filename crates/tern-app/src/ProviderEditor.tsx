@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { URL_PRESETS } from "./presets";
 import type { ConfigSummary } from "./types";
 
 /**
@@ -355,6 +356,43 @@ export function ProviderEditor({
               onChange={(e) => setForm({ ...form, name: e.target.value })}
             />
           </label>
+
+          {/* 常用地址预设。只在新建时给：编辑一个已经配好的供应商时，
+              它的地址就是事实，再摆一排预设只会诱导人误改 */}
+          {mode === "create" && !managed && (
+            <div className="prov-field">
+              <span className="prov-label">
+                常用地址
+                <span className="prov-label-dim">点一下填好下面三栏</span>
+              </span>
+              <div className="prov-presets">
+                {URL_PRESETS.map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    className="prov-preset"
+                    title={`${preset.hint}\n${preset.base_url}`}
+                    // 三栏一起填。协议跟着预设走是最要紧的：
+                    // 填错地址顶多连不上，填错协议会得到一堆看不懂的 404
+                    onClick={() =>
+                      setForm((f) => ({
+                        ...f,
+                        id: f.id || preset.id,
+                        name: f.name || preset.name,
+                        base_url: preset.base_url,
+                        api_format: preset.api_format,
+                      }))
+                    }
+                  >
+                    {preset.name}
+                  </button>
+                ))}
+              </div>
+              <span className="prov-hint">
+                只列官方直连。中转站地址变得快，直接用你自己的。
+              </span>
+            </div>
+          )}
 
           {!managed && (
             <label className="prov-field">

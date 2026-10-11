@@ -34,6 +34,13 @@ function provider(id, name, url, extra = {}) {
   };
 }
 
+/** 文件夹注册表的假数据。单独提出来是为了让 folders_set_expanded 能就地改 */
+const FOLDERS = [
+  { id: "f1", name: "官方直连", isExpanded: true },
+  { id: "f2", name: "国内中转", isExpanded: true },
+  { id: "f3", name: "按量计费小站", isExpanded: false },
+];
+
 const PROVIDERS = [
   provider("stepfun", "StepFun", "https://api.stepfun.com/step_plan", { active: true }),
   provider("deepseek", "DeepSeek", "https://api.deepseek.com/anthropic"),
@@ -47,6 +54,28 @@ const PROVIDERS = [
   provider("baichuan", "百川", "https://api.baichuan-ai.com/anthropic"),
   provider("zeroone", "零一万物", "https://api.lingyiwanwu.com/anthropic"),
   provider("silicon", "硅基流动", "https://api.siliconflow.cn/anthropic"),
+  // 真实数据里中转站爱在同一个域名下挂多个路径（/v1、/v2 常是两个上游）。
+  // 全部单例域名测不出分组卡和批量收起，所以这里补两组同域名的
+  provider("mcgrox", "gpt0.8", "https://www.mcgrox.top/v1"),
+  provider("mcgrox2", "gpt copy copy copy", "https://www.mcgrox.top/v1"),
+  provider("jisuanyun", "claude-opus-5", "https://www.jisuanyun01.com/anthropic"),
+  provider("jisuanyun2", "claude-opus-5=", "https://www.jisuanyun01.com/anthropic"),
+];
+
+/** provider_id → 近 30 天加权请求数。
+ *
+ *  故意和 PROVIDERS 里的顺序不一致：doubao / silicon 在配置里排第 7 和第 12，
+ *  这里给它们最高用量。排序要是没生效，平铺视图第一屏就不会是它们。
+ *  mcgrox 和 mcgrox2 是同一个地址（同 group_key）——地址视图下这两份要
+ *  累加成一组，那正是"按地址聚合再排序"的验证点。 */
+const PROVIDER_USAGE = [
+  { provider_id: "doubao", requests: 900 },
+  { provider_id: "silicon", requests: 500 },
+  { provider_id: "mcgrox", requests: 40 },
+  { provider_id: "mcgrox2", requests: 35 },
+  { provider_id: "jisuanyun", requests: 20 },
+  { provider_id: "jisuanyun2", requests: 10 },
+  { provider_id: "kimi", requests: 5 },
 ];
 
 const PANEL = {
@@ -115,11 +144,14 @@ const RESPONSES = {
     agent_up: true,
   }),
   panel_summary: () => PANEL,
-  folders_list: () => [
-    { id: "f1", name: "官方直连", isExpanded: true },
-    { id: "f2", name: "国内中转", isExpanded: true },
-    { id: "f3", name: "按量计费小站", isExpanded: false },
-  ],
+  provider_usage: () => PROVIDER_USAGE,
+  folders_list: () => FOLDERS,
+  // 地址分组没有注册表项，Rust 侧对未知名字静默无事。这里照样返回注册表，
+  // 好让"批量收起"的前端路径走通而不是被 catch 吞掉
+  folders_set_expanded: (args) =>
+    FOLDERS.map((f) =>
+      f.name === args?.name ? { ...f, isExpanded: args?.expanded } : f,
+    ),
   wire_status: () => ({
     wired: true,
     base_url: "http://127.0.0.1:15800",
@@ -134,8 +166,8 @@ const RESPONSES = {
     { rule: "mcp__git", source: "settings_local", enabled: false },
   ],
   claude_model: () => "claude-opus-4-6",
-  provider_detail: (id) => ({
-    id,
+  provider_detail: (args) => ({
+    id: args?.id,
     name: id,
     base_url: "https://api.stepfun.com/step_plan",
     api_format: "anthropic",
@@ -166,11 +198,12 @@ const RESPONSES = {
   }),
 };
 
-export async function invoke(cmd, _args) {
+export async function invoke(cmd, args) {
   await new Promise((r) => setTimeout(r, 30));
   const make = RESPONSES[cmd];
   if (!make) throw new Error(`探针没有为 ${cmd} 准备假数据`);
-  return make(_args?.id);
+  // 传整个 args：大多数 mock 只取 id，但 set_expanded 这类要 name/expanded
+  return make(args);
 }
 
 export async function transformCallback() {
