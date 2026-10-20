@@ -68,7 +68,9 @@ pub struct RecentRow {
 }
 
 impl Snapshot {
-    pub fn load(config_path: Option<&Path>) -> Self {
+    /// `db_path` 为 None 时按 `TERN_DB` → 配置同目录推。CLI 显式给了 `--db`
+    /// 就一路传到底，不该在这儿再猜一遍——猜出来的库不是用户指定的那个
+    pub fn load(config_path: Option<&Path>, db_path: Option<&Path>) -> Self {
         let (config_path, config) = match resolve_config(config_path) {
             Ok(pair) => pair,
             Err(error) => {
@@ -76,7 +78,10 @@ impl Snapshot {
             }
         };
 
-        let db_path = db_path_for(&config_path);
+        let db_path = match db_path {
+            Some(path) => path.to_path_buf(),
+            None => db_path_for(&config_path),
+        };
         let providers = config
             .providers
             .iter()
@@ -345,7 +350,7 @@ mod tests {
 
     #[test]
     fn snapshot_survives_missing_config() {
-        let snapshot = Snapshot::load(Some(Path::new("definitely-not-here.json")));
+        let snapshot = Snapshot::load(Some(Path::new("definitely-not-here.json")), None);
         assert!(snapshot.config_error.is_some());
         assert!(snapshot.empty);
         assert!(

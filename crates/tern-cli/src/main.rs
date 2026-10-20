@@ -50,16 +50,18 @@ fn run(command: Command) -> Result<()> {
         Command::Init { paths, force } => init(&resolve_config(&paths)?, force),
         Command::Check { paths } => check(&resolve_config(&paths)?),
         // 在当前进程内跑：TUI 要接管这个终端的 raw mode 和 alternate screen，
-        // 在当前进程内跑：TUI 要接管这个终端的 raw mode 和 alternate screen，
-        // spawn 子进程会另开窗口或在管道里失败
+        // spawn 子进程会另开窗口或在管道里失败。
+        // `--db` 一路传到底：不传的话 TUI 会自己按 TERN_DB / 配置同目录推一次，
+        // 用户显式给了就不该再猜
         Command::Tui { paths } => {
             let config = resolve_config(&paths)?;
+            let db = resolve_db(&paths, &config);
             // TUI 用 io::Error（终端操作失败），转成 anyhow 统一往上抛
-            tern_tui::run(Some(config)).map_err(anyhow::Error::from)
+            tern_tui::run(Some(config), Some(db)).map_err(anyhow::Error::from)
         }
-        Command::Panel => launch_panel(),
-        Command::Agent => launch_agent(),
-        Command::Import { sql } => import_from_cc_switch(&sql),
+        Command::Panel { paths } => launch_panel(&paths),
+        Command::Agent { paths } => launch_agent(&paths),
+        Command::Import { sql, paths } => import_from_cc_switch(&sql, &paths),
         Command::Usage {
             paths,
             window,
@@ -82,7 +84,12 @@ fn run(command: Command) -> Result<()> {
 }
 
 /// 起桌面面板。它与 `tern` 是两个二进制，这里负责找到并拉起它。
-fn launch_panel() -> Result<()> {
+fn launch_panel(paths: &Paths) -> Result<()> {
+    // 面板自己也会读配置，但读的是它自己推出来的那份。用户 `-c` 指了别的文件时，
+    // 把路径交代清楚：面板起来后显示的是它自己那份，不是用户指定的这份
+    if let Some(path) = &paths.config {
+        println!("注意：面板读自己的配置（{} 不一定生效）", path.display());
+    }
     let exe = std::env::current_exe().context("取不到当前程序路径")?;
     // 面板装在 tern 旁边：release 构建两者同在 target/release/ 下，
     // 用户在 PATH 里只有一个 tern 时也要能找到它
@@ -128,7 +135,7 @@ fn panel_binary_name() -> &'static str {
 /// 拉起后**立刻返回**：agent 是要长期活着的，`tern agent` 不该把终端
 /// 占住（那正是它存在的问题——占了终端还得开着窗口）。
 /// 想让它在前台跑可以直接执行 `tern-agent` 本身。
-fn launch_agent() -> Result<()> {
+fn launch_agent(paths: &Paths) -> Result<()> {
     // 已经在跑就不用再拉一个。静默退出而不报错：用户可能点了两次，
     // 第一个已经在服务了，那正是他想要的结果
     if tern_agent::single::already_running(tern_agent::control::CONTROL_PORT).is_none() {
@@ -136,6 +143,14 @@ fn launch_agent() -> Result<()> {
             "常驻进程已在运行（控制端口 {}）。网关若在跑，用量正在被记录。",
             tern_agent::control::CONTROL_PORT
         );
+        // 已经在跑的那个读的是它启动时那份配置。用户 `-c` 指了别的文件时要说清楚，
+        // 不然他会以为新配置生效了
+        if let Some(path) = &paths.config {
+            println!(
+                "注意：已在跑的常驻进程读它自己启动时那份配置，{} 要下次重启才生效",
+                path.display()
+            );
+        }
         return Ok(());
     }
 
@@ -156,6 +171,11 @@ fn launch_agent() -> Result<()> {
     };
 
     let mut command = std::process::Command::new(&agent);
+    // 常驻进程按 TERN_CONFIG 推配置路径（`tern_agent::config_path`），不认命令行参数。
+    // 所以 `-c` 只能翻译成它看得见的环境变量，否则"用这份配置起常驻"根本做不到
+    if let Some(path) = &paths.config {
+        command.env("TERN_CONFIG", path);
+    }
     command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -192,11 +212,14 @@ fn agent_binary_name() -> &'static str {
 
 /// 从 cc-switch 的 SQL 备份导入供应商。保留现有配置的 accessToken / listen，
 /// 只替换供应商列表；写盘前先备份。
-fn import_from_cc_switch(sql: &Path) -> Result<()> {
+fn import_from_cc_switch(sql: &Path, paths: &Paths) -> Result<()> {
     if !sql.exists() {
         bail!("{} 不存在", sql.display());
     }
-    let config_path = resolve_config(&Paths::default())?;
+    // 用调用方给的 paths，不是 Paths::default()。此前是后者，于是
+    // `tern import x.sql -c /my/tern.json` 会静默写进 %APPDATA%\tern\tern.json——
+    // 用户以为导进了 A，实际落在 B，而 A 还是空的
+    let config_path = resolve_config(paths)?;
     let mut config = if config_path.exists() {
         config::load(&config_path)?
     } else {

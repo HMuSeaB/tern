@@ -118,13 +118,24 @@ pub enum Command {
     },
     /// 打开桌面面板。单独一个子命令而不是默认动作：它要拉起 webview，
     /// 内存是 TUI 的几十倍，不该被顺手触发。
-    Panel,
+    ///
+    /// 带 `paths`：面板和网关都按 `--config` 找配置，不带着它的话
+    /// `tern panel -c 别的文件` 会静默去读默认那份——用户以为改的是 A，实际是 B
+    Panel {
+        paths: Paths,
+    },
     /// 起常驻进程：持有网关，没有窗口。面板和它说同一套 HTTP。
     /// 已经在跑就安静退出——那是正常情况，不是错误。
-    Agent,
-    /// 从 cc-switch 的 SQL 备份导入供应商
+    Agent {
+        paths: Paths,
+    },
+    /// 从 cc-switch 的 SQL 备份导入供应商。
+    ///
+    /// 带 `paths`：`-c` 指定的是"导到哪个配置文件"，不带的话会静默写进默认那份——
+    /// 用户以为导进了 A，实际落在 B，而 A 还是空的
     Import {
         sql: PathBuf,
+        paths: Paths,
     },
     Price {
         paths: Paths,
@@ -290,15 +301,16 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, String
         }
         "panel" => {
             no_positional(&positional)?;
-            Command::Panel
+            Command::Panel { paths }
         }
         "agent" => {
             no_positional(&positional)?;
-            Command::Agent
+            Command::Agent { paths }
         }
         "import" => match positional.as_slice() {
             [sql] => Command::Import {
                 sql: PathBuf::from(sql),
+                paths,
             },
             _ => return Err("用法: tern import <cc-switch 的 .sql 备份>".into()),
         },
@@ -676,6 +688,64 @@ mod tests {
             &["start"],
         ] {
             assert!(p(args).is_err(), "{args:?}");
+        }
+    }
+
+    /// `-c` / `--db` 是通用选项，每个子命令都该把它带下去。
+    ///
+    /// 这条测试存在的原因：`Panel` / `Agent` / `Import` 曾经没有 `paths` 字段，
+    /// flag 解析成功、退出码 0、然后被静默丢掉。那种失败在单元测试里看不见——
+    /// 只有断言"解析出来的 Command 里到底有没有那个路径"才能抓住。
+    #[test]
+    fn every_subcommand_carries_the_paths_it_was_given() {
+        // 写成 fn 而不是闭包：闭包的返回类型生命周期推不出来，fn 的省略规则
+        // 会把输入的生命期直接传给输出，正是要的
+        fn paths_of(command: &Command) -> Option<&Paths> {
+            Some(match command {
+                Command::Serve { paths, .. }
+                | Command::Init { paths, .. }
+                | Command::Check { paths }
+                | Command::Tui { paths }
+                | Command::Panel { paths }
+                | Command::Agent { paths }
+                | Command::Import { paths, .. }
+                | Command::Usage { paths, .. }
+                | Command::Price { paths, .. } => paths,
+                // 这两个本来就不读配置，不该有 paths
+                Command::Help | Command::Version => return None,
+            })
+        }
+
+        let subcommands: &[&[&str]] = &[
+            &["serve"],
+            &["init"],
+            &["check"],
+            &["tui"],
+            &["panel"],
+            &["agent"],
+            &["import", "x.sql"],
+            &["usage"],
+            &["price", "list"],
+        ];
+
+        for args in subcommands {
+            for flag in ["--config", "--db"] {
+                let mut argv = args.to_vec();
+                argv.extend_from_slice(&[flag, "given.json"]);
+                let command = p(&argv).unwrap_or_else(|e| panic!("{argv:?} 应当解析成功: {e}"));
+                let paths =
+                    paths_of(&command).unwrap_or_else(|| panic!("{argv:?} 解析结果里没有 paths"));
+                let got = if flag == "--config" {
+                    paths.config.as_deref()
+                } else {
+                    paths.db.as_deref()
+                };
+                assert_eq!(
+                    got,
+                    Some(std::path::Path::new("given.json")),
+                    "{argv:?} 把 {flag} 丢掉了"
+                );
+            }
         }
     }
 }

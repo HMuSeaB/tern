@@ -46,8 +46,9 @@ notepad $env:APPDATA\tern\tern.json # 把 sk-REPLACE_ME 换成真实 key
 **不想手录供应商**：本机装着 cc-switch 的话，用桌面应用的一键导入，
 或在命令行读它的库做一次性转换（只读，不写 cc-switch）。
 
-`--config <文件>` 或环境变量 `TERN_CONFIG` 指定其他配置文件；`serve --listen 127.0.0.1:15801`
-临时换端口；`RUST_LOG=debug` 看详细日志。订阅类认证（Copilot / ChatGPT / xAI）命令行版暂不支持。
+`--config <文件>` 或环境变量 `TERN_CONFIG` 指定其他配置文件；`serve --listen 127.0.0.1:15802`
+临时换端口（**别用 15801**，那是常驻进程的控制端口，占了它会让 `tern agent` 以为已有实例
+在跑而安静退出）；`RUST_LOG=debug` 看详细日志。订阅类认证（Copilot / ChatGPT / xAI）命令行版暂不支持。
 
 ## 联网工具（WebSearch / WebFetch）会失效
 

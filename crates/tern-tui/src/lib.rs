@@ -72,9 +72,11 @@ impl Page {
 }
 
 /// 跑起来，占用当前终端。返回时终端已还原。
-pub fn run(config_path: Option<PathBuf>) -> io::Result<()> {
+/// `db_path` 为 None 时按 `TERN_DB` → 配置同目录推。CLI 的 `--db` 经这里传进来，
+/// 免得 TUI 自己猜一个不是用户指定的库。
+pub fn run(config_path: Option<PathBuf>, db_path: Option<PathBuf>) -> io::Result<()> {
     let mut terminal = setup_terminal()?;
-    let result = event_loop(&mut terminal, config_path.as_deref());
+    let result = event_loop(&mut terminal, config_path.as_deref(), db_path.as_deref());
     restore_terminal(&mut terminal)?;
     result
 }
@@ -103,9 +105,10 @@ fn restore_quietly() -> io::Result<()> {
 fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     config_path: Option<&Path>,
+    db_path: Option<&Path>,
 ) -> io::Result<()> {
     let mut page = Page::Today;
-    let mut snapshot = Snap::load(config_path);
+    let mut snapshot = Snap::load(config_path, db_path);
     let mut last_refresh = Instant::now();
 
     loop {
@@ -128,7 +131,7 @@ fn event_loop(
                     KeyCode::Char('2') => page = Page::Providers,
                     KeyCode::Char('3') => page = Page::Gateway,
                     KeyCode::Char('r') => {
-                        snapshot = Snap::load(config_path);
+                        snapshot = Snap::load(config_path, db_path);
                         last_refresh = Instant::now();
                     }
                     _ => {}
@@ -136,7 +139,7 @@ fn event_loop(
             }
         }
         if last_refresh.elapsed() >= REFRESH {
-            snapshot = Snap::load(config_path);
+            snapshot = Snap::load(config_path, db_path);
             last_refresh = Instant::now();
         }
     }

@@ -22,6 +22,11 @@ use crate::{start_gateway, GatewayState, GatewayStatus};
 
 /// 控制端监听端口。写死而不是放进配置：这个端口只该被本机的面板/CLI
 /// 访问，配到 0.0.0.0 上没有任何好处，只会多一个暴露面。
+///
+/// **别拿它当网关端口用。** `single::already_running` 用"能不能绑定这个端口"当单实例
+/// 信号，所以网关一旦占了 15801，`tern agent` 和面板的 `ensure_agent` 都会以为常驻进程
+/// 已经在跑、安静退出——表现是"常驻进程明明没起，却说已在运行"，而且没有任何报错。
+/// README 曾经拿 15801 当 `serve --listen` 的示例端口，踩的就是这个。
 pub const CONTROL_PORT: u16 = 15801;
 
 /// 控制端配置。token 从 `tern.json` 现读，不缓存——
