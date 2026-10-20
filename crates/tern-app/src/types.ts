@@ -72,8 +72,12 @@ export interface Panel {
   today: Summary;
   yesterday: Summary;
   unpriced_models: UnpricedModel[];
+  /** 未定价请求今天一共多少 token。unpriced_models 最多 8 条，别把它的 token 加起来当总数 */
+  unpriced_tokens: number;
   failures: FailureGroup[];
   mapped_models: MappedModel[];
+  /** 被换模型的请求总数，不受 mapped_models 最多 5 条的限制 */
+  mapped_total: number;
   recent: RecentRequest[];
 }
 

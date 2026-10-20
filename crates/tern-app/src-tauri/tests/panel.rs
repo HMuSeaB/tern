@@ -443,6 +443,40 @@ fn mapped_models_surface_what_the_client_asked_vs_what_it_paid_for() {
             .any(|m| m.response_model == "step-5-preview"),
         "被换但未定价的请求也要报出来"
     );
+
+    // 总数走独立 COUNT，不受上面那个 LIMIT 5 限制。今天 3 条被换，列表也只列得下 3 条
+    assert_eq!(panel.mapped_total, 3);
+    // 未定价的 token 同样走独立 SUM：列表 LIMIT 8，加起来当总数会少算
+    assert_eq!(panel.unpriced_tokens, 600);
+}
+
+#[test]
+fn mapped_total_counts_past_the_limit_that_truncates_the_list() {
+    let (_dir, conn) = seeded();
+
+    // 再灌 4 组不同的映射，把列表顶到 LIMIT 5 之外。直接 INSERT 而不扩 seed()：
+    // 这条测的正是"列表被截断"和"总数没说少"是两件事
+    let today = local_days_ago(0);
+    let t = chrono::Utc::now().timestamp_millis();
+    for i in 0..4 {
+        let model = format!("mapped-{i}");
+        conn.execute(
+            "INSERT INTO requests (started_at, day, client, endpoint, provider_id, client_model,
+                 upstream_model, response_model, role, stream, status, outcome,
+                 fresh_input, output, cache_read, cache_write, has_usage, duration_ms)
+             VALUES (?1,?2,'claude','/v1/messages','relay','asked-x',?3,?3,'main',1,200,'success',
+                     10,10,0,0,1,300)",
+            rusqlite::params![t + 100 + i, today, model],
+        )
+        .unwrap();
+    }
+
+    let panel = build_panel(&conn, "x").unwrap();
+    // 列表被 LIMIT 5 截断
+    assert_eq!(panel.mapped_models.len(), 5);
+    // 但总数得是 3（seed 里原有）+ 4（新灌）= 7。说成 5 就是"数字说少了还看不出
+    // 被截断"，而用户是拿这个判断钱花在哪儿——那比不显示更糟
+    assert_eq!(panel.mapped_total, 7);
 }
 
 #[test]
@@ -457,6 +491,8 @@ fn empty_database_is_first_run_and_not_an_error() {
     assert!(panel.unpriced_models.is_empty());
     assert!(panel.failures.is_empty());
     assert!(panel.mapped_models.is_empty());
+    assert_eq!(panel.mapped_total, 0);
+    assert_eq!(panel.unpriced_tokens, 0);
     assert!(panel.recent.is_empty());
 }
 

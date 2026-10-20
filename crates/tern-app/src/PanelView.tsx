@@ -9,7 +9,7 @@ import {
   formatTime,
   formatTokens,
 } from "./format";
-import type { Panel, RecentRequest } from "./types";
+import type { Panel } from "./types";
 
 /** 主面板。版式照 design/b-workbench.html 的皮，但信息密度对齐 cc-switch 使用统计页：
  *  hero 一个大数字 + 4 小卡 + 一条命中率 + 两条醒目提示。趋势/占比放二级视图。 */
@@ -92,20 +92,17 @@ export function PanelView({ panel, onRefresh }: { panel: Panel; onRefresh: () =>
     <div className="panel">
       {/* 告警区。顺序就是"有多该被看见"：
           模型被换排第一——请求全都成功、日志里一条错都没有，不说永远不知道；
-          失败排后面——客户端自己就会报错，用户已经知道出事了。 */}
+          失败排后面——客户端自己就会报错，用户已经知道出事了。
+          三条，不是四条：失败聚类那条同时兼了"最近失败横幅"的活（见 FailureNotice），
+          同一条信息不占两行。 */}
       {panel.mapped_models.length > 0 && (
-        <MappedModelNotice models={panel.mapped_models} onOpen={openRecent} />
+        <MappedModelNotice panel={panel} onOpen={openRecent} />
       )}
-      {panel.failures.length > 0 && <FailureNotice failures={panel.failures} />}
+      {panel.failures.length > 0 && (
+        <FailureNotice panel={panel} onOpen={openRecent} />
+      )}
       {panel.unpriced_models.length > 0 && (
-        <UnpricedNotice models={panel.unpriced_models} />
-      )}
-
-      {panel.recent.some((r) => r.outcome === "failed") && (
-        <LatestFailure
-          request={panel.recent.find((r) => r.outcome === "failed")!}
-          onOpen={openRecent}
-        />
+        <UnpricedNotice panel={panel} />
       )}
 
       {/* hero 是花费不是 token：打开面板想问的是"今天花了多少"，
@@ -255,29 +252,25 @@ function Stat({
  *  供应商这么换掉的，在原界面上完全看不出来。
  *
  *  用 warn 不用 err：没有东西坏了，是计费口径和用户以为的不一样。
- *  做成红色会跟旁边的真失败抢注意力，而这两件事该有的紧迫程度不同。 */
+ *  做成红色会跟旁边的真失败抢注意力，而这两件事该有的紧迫程度不同。
+ *
+ *  次数用 `panel.mapped_total`（SQL 数的真总数），不是把列出来的这几条加起来——
+ *  `mapped_models` 最多 5 条，加起来当总数会在映射组合多的时候说少了。 */
 function MappedModelNotice({
-  models,
+  panel,
   onOpen,
 }: {
-  models: Panel["mapped_models"];
+  panel: Panel;
   onOpen: () => void;
 }) {
-  const total = models.reduce((sum, m) => sum + m.requests, 0);
-  const top = models[0];
-  const others = models.length - 1;
+  const top = panel.mapped_models[0];
   return (
     <div className="notice warn">
       <span className="notice-ic">⇄</span>
       <span className="notice-body">
-        <b>
-          今天 {total} 次请求的模型被供应商换掉了
-        </b>
-        。客户端要 <code>{top.client_model}</code>，实际按{" "}
-        <code>{top.response_model}</code> 计费
-        {others > 0 && `，另外还有 ${others} 组`}
-        。请求全都成功，日志里一条错都没有——不在这儿说，看不出来钱花在了
-        不是你要的模型上。
+        <b>今天 {panel.mapped_total} 次请求的模型被供应商换掉了</b>：客户端要{" "}
+        <code>{top.client_model}</code>，实际按 <code>{top.response_model}</code>{" "}
+        计费。请求全都成功，日志里一条错都没有。
       </span>
       <button className="btn ghost" onClick={onOpen}>
         看请求流
@@ -286,60 +279,67 @@ function MappedModelNotice({
   );
 }
 
-function UnpricedNotice({ models }: { models: Panel["unpriced_models"] }) {
-  const tokens = models.reduce((sum, m) => sum + m.tokens, 0);
-  const requests = models.reduce((sum, m) => sum + m.requests, 0);
-  const plural = models.length > 1;
+/** 未定价：成本图会因此偏低，必须显眼。
+ *
+ *  token 总量用 `panel.unpriced_tokens`（SQL 数的），模型个数用
+ *  `today.unpriced`（daily 表现在就有）——列表本身 `LIMIT 8`，把列出来的几条
+ *  加起来当总数会在未定价模型多的时候少算。 */
+function UnpricedNotice({ panel }: { panel: Panel }) {
+  const models = panel.unpriced_models;
+  const requests = panel.today.unpriced;
+  const plural = requests > 1;
   return (
     <div className="notice warn">
       <span className="notice-ic">$</span>
       <span className="notice-body">
         <b>
           {models[0].model}
-          {plural ? ` 等 ${models.length} 个模型` : ""}
+          {plural ? ` 等模型` : ""}
         </b>
-        {plural ? " 都没定价 —— " : " 没定价 —— "}
-        {requests} 次请求 {formatTokens(tokens)} token 未计费，成本偏低
+        {plural ? " 没定价 —— " : " 没定价 —— "}
+        {requests} 次请求 {formatTokens(panel.unpriced_tokens)} token 未计费，
+        成本偏低
       </span>
       <code className="notice-cmd">tern price set</code>
     </div>
   );
 }
 
-function FailureNotice({ failures }: { failures: Panel["failures"] }) {
-  const total = failures.reduce((sum, f) => sum + f.count, 0);
+/** 失败聚类。同时兼了"最近失败横幅"的活——点它展开请求流并滚过去。
+ *
+ *  原来首屏有两条失败提示：这条（今日失败 N 次，按原因聚类）和一条
+ *  `LatestFailure` 横幅（最近那次的时间）。同一条信息占两行，而首屏最缺的
+ *  就是地方。合成一条：聚类给全貌，最近时间给"刚才那下"，都能点到同一张表。
+ *
+ *  次数用 `today.failures`（daily 表现在就有），不是把聚类结果加起来——
+ *  聚类 `LIMIT 6` 组，加起来会在失败原因多的时候说少了。 */
+function FailureNotice({ panel, onOpen }: { panel: Panel; onOpen: () => void }) {
+  const failures = panel.failures;
+  const total = panel.today.failures;
   const top = failures[0];
   const kind = errorLabel(top.error_kind);
   const who = top.provider_id ?? "未路由";
   // 多个供应商时"等"才成立
   const providers = new Set(failures.map((f) => f.provider_id));
   const whoText = providers.size > 1 ? `${who} 等 ${providers.size} 个供应商` : who;
+  const latest = panel.recent.find((r) => r.outcome === "failed");
   return (
-    <div className="notice err">
+    <button
+      className="notice err clickable"
+      onClick={onOpen}
+      title="展开最近请求，看每条失败的原因"
+    >
       <span className="notice-ic">!</span>
       <span className="notice-body">
         <b>{whoText}</b> 今日失败 {total} 次（最多：{kind} {top.count} 次）。
         失败不混入模型统计
+        {latest && (
+          <span className="notice-tail tnum">
+            最近 {formatTime(latest.started_at_ms)}
+          </span>
+        )}
       </span>
-    </div>
-  );
-}
-
-function LatestFailure({
-  request,
-  onOpen,
-}: {
-  request: RecentRequest;
-  onOpen: () => void;
-}) {
-  const who = request.provider_id ?? "未路由";
-  return (
-    <button className="latest-fail" onClick={onOpen} title="展开最近请求查看全部">
-      <span className="latest-fail-tag">最近失败</span>
-      <span className="latest-fail-kind">{errorLabel(request.error_kind ?? "unknown")}</span>
-      <span className="latest-fail-who">{who}</span>
-      <span className="latest-fail-time tnum">{formatTime(request.started_at_ms)}</span>
-      <span className="latest-fail-more">查看 →</span>
+      <span className="notice-more">查看 →</span>
     </button>
   );
 }

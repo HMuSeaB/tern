@@ -50,11 +50,19 @@ pub struct PanelDto {
     pub yesterday: SummaryDto,
     /// 未定价模型：有 token 却没查到价，成本图因此偏低
     pub unpriced_models: Vec<UnpricedDto>,
-    /// 失败按（原因, 供应商, 状态码）聚类，不混进模型统计
+    /// 失败按（原因, 供应商, 状态码）聚类，不混进模型统计。**最多 6 组**，
+    /// 所以"今天失败几次"要看 `today.failures`，不能把这个 Vec 的元素个数当总数
     pub failures: Vec<FailureDto>,
     /// 今天"客户端要的模型"和"实际计费的模型"不一样的组合，按花费降序。
     /// 空数组 = 今天没有被换模型。见 `MappedModelDto`
     pub mapped_models: Vec<MappedModelDto>,
+    /// 今天被换模型的请求**总**数，不受 `mapped_models` 那个 `LIMIT 5` 限制。
+    /// 没有它的话，告警会把"最贵那几条"的次数说成"今天全部"——说少了比不说更糟，
+    /// 因为用户是拿这个数字判断钱花在哪儿
+    pub mapped_total: u64,
+    /// 未定价请求今天一共多少 token。`unpriced_models` 是 `LIMIT 8`，
+    /// 把它的 token 加起来当总数会少算
+    pub unpriced_tokens: u64,
     /// 最近若干条，给"请求流"折叠区用
     pub recent: Vec<RecentDto>,
 }
@@ -127,6 +135,18 @@ const SUMMARY_COLUMNS: &str = "COALESCE(SUM(requests), 0), COALESCE(SUM(failures
     COALESCE(SUM(aborted), 0), COALESCE(SUM(fresh_input), 0), COALESCE(SUM(output), 0),
     COALESCE(SUM(cache_read), 0), COALESCE(SUM(cache_write), 0), COALESCE(SUM(cost_nano), 0),
     COALESCE(SUM(savings_nano), 0), COALESCE(SUM(unpriced), 0)";
+
+/// 今天满足某个额外条件的请求数。给"列表被 LIMIT 截断了但文案要说总数"用。
+///
+/// 单独一个函数而不是在每处写 `query_row`：这个坑会反复出现（mapped_models
+/// LIMIT 5、unpriced_models LIMIT 8、failures LIMIT 6），而每次漏掉的表现都是
+/// **数字说少了却看不出被截断**——比不显示更糟。
+fn count(conn: &rusqlite::Connection, day: &str, extra_where: &str) -> rusqlite::Result<u64> {
+    // extra_where 是本文件里的常量字符串，不是外部输入，拼进 SQL 没有注入面
+    let sql = format!("SELECT COUNT(*) FROM requests WHERE day = ?1 AND {extra_where}");
+    let n = conn.query_row(&sql, [day], |row| row.get::<_, i64>(0))?;
+    Ok(u64::try_from(n.max(0)).unwrap_or(u64::MAX))
+}
 
 /// 纳美元 → 十进制字符串。与 `tern_store::query::nano_to_usd` 保持同样精度。
 fn nano_to_usd_string(nano: i64) -> String {
@@ -688,6 +708,27 @@ pub fn build_panel(conn: &rusqlite::Connection, db_path: &str) -> Result<PanelDt
             rows.collect::<rusqlite::Result<_>>()?
         };
 
+        // 被换请求的总数。和上面那条同一个 WHERE，只是不分组不截断——
+        // 上面 LIMIT 5 只影响"列哪几条"，不影响"一共几条"
+        let mapped_total = count(
+            conn,
+            &today,
+            "outcome != 'failed' AND has_usage = 1
+             AND client_model != COALESCE(response_model, upstream_model)",
+        )?;
+
+        // 未定价的 token 总量。unpriced_models 那个列表 LIMIT 8，把它的 token
+        // 加起来当总数会少算；而未定价模型的个数 daily.unpriced 已经有了
+        let unpriced_tokens = conn
+            .query_row(
+                "SELECT COALESCE(SUM(fresh_input + output + cache_read + cache_write), 0)
+             FROM requests WHERE day = ?1 AND has_usage = 1 AND cost_nano IS NULL",
+                [&today],
+                |row| row.get::<_, i64>(0),
+            )?
+            .max(0);
+        let unpriced_tokens = u64::try_from(unpriced_tokens).unwrap_or(u64::MAX);
+
         let recent = {
             let mut stmt = conn.prepare(
                 "SELECT started_at, client, provider_id, client_model, response_model,
@@ -729,6 +770,8 @@ pub fn build_panel(conn: &rusqlite::Connection, db_path: &str) -> Result<PanelDt
             unpriced_models,
             failures,
             mapped_models,
+            mapped_total,
+            unpriced_tokens,
             recent,
         })
     }
