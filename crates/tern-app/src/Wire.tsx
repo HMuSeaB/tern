@@ -108,6 +108,25 @@ export function Wire({
         <span className="wire-cost">会消耗约 1 次调用的费用</span>
       </div>
 
+      {/* 接线只解决"流量进不进得来"，走哪一家是另一件事——而用户正是在这一刻
+          决定 model 怎么写。不说清楚的话，接完线模型名还是从 cc-switch 带来的
+          裸名，请求全部落到默认供应商，显式路由等于没做。
+          不写成"必须"：默认供应商那条路是用户自己选的，图省事一直用它没问题 */}
+      <div className="wire-route">
+        <div className="wire-route-head">
+          想指定走哪家，把 model 写成 <code>供应商/模型名</code>
+        </div>
+        <p>
+          比如 <code>deepseek/deepseek-v4-pro</code> 就固定走 deepseek 那家，
+          和当前默认供应商是谁无关。不写前缀则落到默认供应商——切换供应商时
+          自动配好的那几档模型名就是这种写法，图省事可以一直用它。
+        </p>
+        <p>
+          模型名去「供应商」页点「获取模型列表」，每行还有个「复制前缀」按钮；
+          面板的「最近请求」里会标出每条走了显式还是兜底。
+        </p>
+      </div>
+
       {status.wired && !running && (
         <div className="notice warn" style={{ marginTop: 14 }}>
           <span className="notice-ic">!</span>

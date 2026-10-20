@@ -304,6 +304,28 @@ export function Providers({
     });
   }, []);
 
+  /** 复制 `id/` 前缀，让用户填进 Claude Code 的 model 就显式走这家。
+   *
+   *  为什么值得一个按钮：显式路由是 tern 和 cc-switch 真正的分界——cc-switch 是
+   *  "选一家、把裸模型名写进配置"，tern 是"模型名自己说去哪"。但用户此前只能从
+   *  README 里看到 `provider/model` 这个写法，供应商列表里没有任何地方提示它。
+   *  摆一个按钮在这里，"显式"才从文档变成一次点击。
+   *
+   *  只给前缀不给完整模型名：网关不去上游拉模型目录（那是用户点「模型列表」才知道
+   *  的事），猜一个名字填进去只会 404。拼起来的活让用户干，前缀由我们给对。
+   *
+   *  剪贴板 API 在非安全上下文里没有（http:// 的页面），那种情况下把前缀直接
+   *  显示在提示里，用户至少能看见并手抄——静默失败比给条后路糟。 */
+  const copyModelPrefix = useCallback(async (id: string, name: string) => {
+    const prefix = `${id}/`;
+    try {
+      await navigator.clipboard.writeText(prefix);
+      setNotice(`已复制「${prefix}」。把它贴在模型名前面，就是显式走 ${name}。`);
+    } catch {
+      setNotice(`复制失败，请手抄这个前缀：${prefix}`);
+    }
+  }, []);
+
   /** 提示自动消退。常驻不放的话，五分钟前那句"已建文件夹"会一直挂在最显眼处，
    *  看起来像还没做完。 */
   useEffect(() => {
@@ -460,6 +482,16 @@ export function Providers({
           )}
           {p.key_state === "placeholder" && <span className="prov-bad">占位符</span>}
           {p.key_state === "empty" && <span className="prov-bad">key 为空</span>}
+          {/* 复制模型名前缀：填进 Claude Code 的 model 就显式走这家。
+              只给 `id/` 不给具体模型名——网关不知道上游有哪些模型，
+              猜出来的名字只会 404。真实模型名从下面的「模型列表」拿 */}
+          <button
+            className="prov-edit-link"
+            onClick={() => void copyModelPrefix(p.id, p.name)}
+            title={`复制「${p.id}/」前缀：填进 Claude Code 的 model，请求就显式走 ${p.name}，不依赖默认供应商`}
+          >
+            复制前缀
+          </button>
           {/* 编辑：换名字、修地址、改 key、测连通性都在这儿 */}
           <button
             className="prov-edit-link"
@@ -808,12 +840,23 @@ function ModelList({ providerId, running }: { providerId: string; running: boole
     <div className="prov-models">
       <div className="prov-models-head">
         <span>{models.length} 个模型</span>
-        <span className="dim">复制名字填进 Claude Code 的 model 里即可</span>
+        <span className="dim">
+          复制带前缀的完整名字填进 Claude Code 的 model，即显式走这家
+        </span>
       </div>
       <ul className="prov-models-grid">
         {models.map((m) => (
           <li key={m}>
-            <code>{m}</code>
+            {/* 完整形式而不是裸模型名：用户要填进 settings.json 的就是这一整串。
+                裸名填进去会落到默认供应商——那正是"换了模型却还走老路"的成因 */}
+            <code title={`${providerId}/${m}（点一下复制）`}>
+              <button
+                className="model-copy"
+                onClick={() => void copyModelName(`${providerId}/${m}`)}
+              >
+                {providerId}/{m}
+              </button>
+            </code>
           </li>
         ))}
       </ul>
@@ -824,4 +867,15 @@ function ModelList({ providerId, running }: { providerId: string; running: boole
       )}
     </div>
   );
+}
+
+/** 复制一条完整模型名（`provider/model`）。和「复制前缀」分开：那个给的是
+ *  半截，用户还得自己拼模型名；这个是拼好的，直接能填进 settings.json。 */
+async function copyModelName(full: string) {
+  try {
+    await navigator.clipboard.writeText(full);
+  } catch {
+    // 非安全上下文（http:// 页面）没有剪贴板 API。这里不弹提示：列表里
+    // 显示的完整名字用户本来就能选中手抄，为它再报一次错反而吵
+  }
 }

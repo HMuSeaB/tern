@@ -15,8 +15,9 @@ tern：面向编码 agent 的本地协议翻译网关
   tern panel                                 打开桌面面板看详细图表（需要更多内存）
   tern agent                                 起常驻进程：无窗口，持有网关（约几 MB）
   tern import <cc-switch.sql>                从 cc-switch 的 SQL 备份导入供应商
-  tern usage [--days <N>] [--by <维度>] [--recent <N>]
+  tern usage [--days <N>] [--from <日期>] [--to <日期>] [--by <维度>] [--recent <N>]
                                              查看用量；维度: provider model role client day
+                                             --from/--to 钉死账期（YYYY-MM-DD），与 --days 互斥
   tern price list [<模型名>]                 列出价格（给模型名时显示实际匹配到的那条）
   tern price set <模型名> <输入> <输出> [<缓存读> [<缓存写>]]
                                              手填价格，美元 / 百万 token
@@ -38,6 +39,60 @@ pub struct Paths {
     pub db: Option<PathBuf>,
 }
 
+/// `tern usage` 看哪个时间范围。
+///
+/// 两种互斥的写法：`--days` 是滚动窗口（"最近 7 天"，每天都在漂），
+/// `--from` / `--to` 是钉死的账期。后者存在的理由是上游发票按账期开——
+/// 拿一个滚动窗口去对一张固定日期的票，永远差几天，而差的那几天恰好是
+/// 用户最想弄清的。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UsageWindow {
+    /// 截至今天的最近 N 天
+    LastDays(u32),
+    /// 钉死的闭区间，两端都是规范化的 `YYYY-MM-DD`。`to` 为空表示到今天为止
+    Between { from: String, to: Option<String> },
+}
+
+impl UsageWindow {
+    /// 解析成区间 + 给人看的那行标题。
+    ///
+    /// 今天几号在这里算而不是在解析参数时算：参数解析不该依赖时钟，
+    /// 而 `--to` 缺省时的"今天"只有在真要查的那一刻才有意义。
+    pub fn resolve(&self) -> Result<(tern_store::DayRange, String), String> {
+        match self {
+            Self::LastDays(days) => {
+                let range = tern_store::DayRange::last_days(*days);
+                // 用区间自比而不是 days == 1：两者目前等价，但前者不会因为
+                // last_days 的口径微调而说错话
+                let label = if range.from == range.to {
+                    "今天".to_string()
+                } else {
+                    format!("最近 {days} 天（{} ~ {}）", range.from, range.to)
+                };
+                Ok((range, label))
+            }
+            Self::Between { from, to } => {
+                let to = to.clone().unwrap_or_else(|| {
+                    chrono::Local::now()
+                        .date_naive()
+                        .format("%Y-%m-%d")
+                        .to_string()
+                });
+                // 字符串比大小在这里是安全的：parse_day 保证两端都是零填充的
+                // 规范形式。倒挂的区间在 SQLite 里查不出错，只是静默返回空——
+                // 而"这个账期没有用量"会被用户当成结论，所以必须挡在门口
+                if from > &to {
+                    return Err(format!("--from {from} 晚于 --to {to}，区间是空的"));
+                }
+                Ok((
+                    tern_store::DayRange::between(from.clone(), to.clone()),
+                    format!("{from} ~ {to}"),
+                ))
+            }
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Serve {
@@ -53,7 +108,7 @@ pub enum Command {
     },
     Usage {
         paths: Paths,
-        days: u32,
+        window: UsageWindow,
         by: Option<String>,
         recent: usize,
     },
@@ -128,6 +183,9 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, String
     let mut listen = None;
     let mut force = false;
     let mut days = 7u32;
+    let mut days_given = false;
+    let mut from: Option<String> = None;
+    let mut to: Option<String> = None;
     let mut by = None;
     let mut recent = 10usize;
     let mut file = None;
@@ -172,8 +230,11 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, String
             }
             ("init", "--force") if inline.is_none() => force = true,
             ("usage", "--days") => {
+                days_given = true;
                 days = u32::try_from(number(value("天数")?, "--days")?).unwrap_or(u32::MAX)
             }
+            ("usage", "--from") => from = Some(parse_day(&value("日期")?, "--from")?),
+            ("usage", "--to") => to = Some(parse_day(&value("日期")?, "--to")?),
             ("usage", "--recent") => {
                 // 0 表示不显示最近请求
                 let raw = value("条数")?;
@@ -218,7 +279,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, String
             no_positional(&positional)?;
             Command::Usage {
                 paths,
-                days,
+                window: usage_window(days, days_given, from, to)?,
                 by,
                 recent,
             }
@@ -278,6 +339,63 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, String
             Command::Price { paths, action }
         }
     })
+}
+
+/// `--days` 和 `--from` / `--to` 是互斥的两条路。
+///
+/// 同时给就报错，而不是"忽略其中一个"：这是对账用的命令，静默采用一个不是
+/// 用户写下的区间，比报错糟得多——用户会拿一份没对上的账单当结论。
+fn usage_window(
+    days: u32,
+    days_given: bool,
+    from: Option<String>,
+    to: Option<String>,
+) -> Result<UsageWindow, String> {
+    if days_given && (from.is_some() || to.is_some()) {
+        return Err("--days 和 --from / --to 只能选一种：前者是滚动窗口，后者是钉死的账期".into());
+    }
+    match (from, to) {
+        (None, None) => Ok(UsageWindow::LastDays(days)),
+        (Some(from), to) => Ok(UsageWindow::Between { from, to }),
+        // 只给结尾定不了起点。不猜"那就最近 7 天"——猜错的区间比报错难发现
+        (None, Some(to)) => Err(format!("--to {to} 需要同时给 --from：只给结尾定不了起点")),
+    }
+}
+
+/// 解析 `YYYY-MM-DD`，返回零填充的规范形式。
+///
+/// 手写而不引 chrono-parser：这台机器 crates.io 常超时，依赖只用本地缓存
+/// （和参数解析不用 clap 是同一个理由）。
+///
+/// 严格校验不是洁癖。日期写错时如果只是"查不到数据"，用户会读成"那个账期
+/// 我没有用量"——对账工具最怕的就是这种静默给空。所以 `2026-13-01`、
+/// `2026-02-30`、`2026-1-5x` 全都得在门口挡住。
+fn parse_day(raw: &OsString, flag: &str) -> Result<String, String> {
+    let raw = raw.to_string_lossy();
+    let raw = raw.trim();
+    let mut parts = raw.split('-');
+    let (Some(year), Some(month), Some(day), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(format!("{flag} 要 YYYY-MM-DD 形式: {raw}"));
+    };
+    // 年份必须四位：少了就没法区分 501 = 0501 还是 501 年，而后面要按字符串比大小
+    if year.len() != 4 || !year.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(format!("{flag} 的年份要四位数字: {raw}"));
+    }
+    let number = |part: &str| part.parse::<u32>().ok();
+    // 年份走 i32::try_from 而不是 cast_signed：后者 1.87 才稳定，workspace 的
+    // MSRV 是 1.85。四位年份不可能溢出，但没必要为一行代码抬高最低支持版本
+    let (Some(y), Some(m), Some(d)) = (
+        number(year).and_then(|y| i32::try_from(y).ok()),
+        number(month),
+        number(day),
+    ) else {
+        return Err(format!("{flag} 要 YYYY-MM-DD 形式: {raw}"));
+    };
+    chrono::NaiveDate::from_ymd_opt(y, m, d)
+        .map(|date| date.format("%Y-%m-%d").to_string())
+        .ok_or_else(|| format!("{flag} 的日期不存在: {raw}"))
 }
 
 /// `price set m -1 ...` 里的负数要当成位置参数，交给价格校验报错
@@ -356,7 +474,7 @@ mod tests {
             p(&["usage"]),
             Ok(Command::Usage {
                 paths: Paths::default(),
-                days: 7,
+                window: UsageWindow::LastDays(7),
                 by: None,
                 recent: 10,
             })
@@ -365,7 +483,7 @@ mod tests {
             p(&["usage", "--days", "30", "--by=model", "--recent", "3"]),
             Ok(Command::Usage {
                 paths: Paths::default(),
-                days: 30,
+                window: UsageWindow::LastDays(30),
                 by: Some("model".into()),
                 recent: 3,
             })
@@ -374,9 +492,107 @@ mod tests {
             p(&["usage", "--recent", "0"]),
             Ok(Command::Usage {
                 paths: Paths::default(),
-                days: 7,
+                window: UsageWindow::LastDays(7),
                 by: None,
                 recent: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn usage_from_to_pin_a_billing_period() {
+        assert_eq!(
+            p(&["usage", "--from", "2026-10-01", "--to", "2026-10-31"]),
+            Ok(Command::Usage {
+                paths: Paths::default(),
+                window: UsageWindow::Between {
+                    from: "2026-10-01".into(),
+                    to: Some("2026-10-31".into()),
+                },
+                by: None,
+                recent: 10,
+            })
+        );
+        // 只给起点：终点留空，resolve() 时填今天
+        assert_eq!(
+            p(&["usage", "--from=2026-10-01"]),
+            Ok(Command::Usage {
+                paths: Paths::default(),
+                window: UsageWindow::Between {
+                    from: "2026-10-01".into(),
+                    to: None,
+                },
+                by: None,
+                recent: 10,
+            })
+        );
+    }
+
+    #[test]
+    fn usage_rejects_mixing_rolling_window_with_a_pinned_period() {
+        // 静默忽略其中一个比报错糟：用户会拿一份没对上的账单当结论
+        for args in [
+            vec!["usage", "--days", "7", "--from", "2026-10-01"],
+            vec!["usage", "--days", "7", "--to", "2026-10-31"],
+            vec![
+                "usage",
+                "--from",
+                "2026-10-01",
+                "--days",
+                "7",
+                "--to",
+                "2026-10-31",
+            ],
+        ] {
+            assert!(
+                p(&args).is_err(),
+                "混用 --days 和 --from/--to 应当报错: {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn usage_to_without_from_has_no_start() {
+        assert!(p(&["usage", "--to", "2026-10-31"]).is_err());
+    }
+
+    #[test]
+    fn usage_rejects_an_inverted_period() {
+        let window = UsageWindow::Between {
+            from: "2026-10-31".into(),
+            to: Some("2026-10-01".into()),
+        };
+        // 倒挂区间在 SQLite 里不报错，只是静默返回空——那正好是最坏的结果
+        assert!(window.resolve().is_err());
+    }
+
+    #[test]
+    fn usage_dates_must_be_real_and_zero_padded() {
+        // 不存在的日期：挡在门口，别让"查不到数据"被读成"这个账期没有用量"
+        for bad in ["2026-13-01", "2026-02-30", "2026-00-10", "2026-10-00"] {
+            assert!(
+                p(&["usage", "--from", bad]).is_err(),
+                "{bad} 不是真实存在的日期"
+            );
+        }
+        // 形状不对
+        for bad in ["2026-10", "26-10-01", "2026/10/01", "2026-10-01x", ""] {
+            assert!(
+                p(&["usage", "--from", bad]).is_err(),
+                "{bad} 不是 YYYY-MM-DD"
+            );
+        }
+        // 没零填充的也收，但存成规范形式——后面要按字符串比大小
+        assert_eq!(
+            p(&["usage", "--from", "2026-1-5"]),
+            Ok(Command::Usage {
+                paths: Paths::default(),
+                window: UsageWindow::Between {
+                    from: "2026-01-05".into(),
+                    to: None,
+                },
+                by: None,
+                recent: 10,
             })
         );
     }

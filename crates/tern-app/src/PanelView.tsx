@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   cacheHitRate,
   deltaPercent,
   formatDelta,
   formatMoney2,
+  formatMoneyHero,
   formatPercent,
   formatTime,
   formatTokens,
@@ -55,13 +56,33 @@ export function PanelView({ panel, onRefresh }: { panel: Panel; onRefresh: () =>
       today.fresh_input + today.output + today.cache_read + today.cache_write,
     [today],
   );
+  const yesterdayTokens = useMemo(
+    () =>
+      yesterday.fresh_input +
+      yesterday.output +
+      yesterday.cache_read +
+      yesterday.cache_write,
+    [yesterday],
+  );
   const hit = cacheHitRate(today);
 
   const costDelta = deltaPercent(Number(today.cost), Number(yesterday.cost));
   const reqDelta = deltaPercent(today.requests, yesterday.requests);
   const outDelta = deltaPercent(today.output, yesterday.output);
+  const tokDelta = deltaPercent(totalTokens, yesterdayTokens);
   const yHit = cacheHitRate(yesterday);
   const hitDelta = hit !== null && yHit !== null ? hit - yHit : null;
+
+  /** 展开请求流并滚过去。三条告警都跳这儿，抽出来免得写三遍；
+   *  不滚的话用户点了什么都没看见——表在页面下方。 */
+  const openRecent = useCallback(() => {
+    setShowRecent(true);
+    requestAnimationFrame(() =>
+      document
+        .getElementById("recent-requests")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    );
+  }, []);
 
   if (panel.first_run) {
     return <FirstRun dbPath={panel.db_path} onRefresh={onRefresh} />;
@@ -69,35 +90,47 @@ export function PanelView({ panel, onRefresh }: { panel: Panel; onRefresh: () =>
 
   return (
     <div className="panel">
-      {/* 未定价：成本图会因此偏低，必须显眼 */}
+      {/* 告警区。顺序就是"有多该被看见"：
+          模型被换排第一——请求全都成功、日志里一条错都没有，不说永远不知道；
+          失败排后面——客户端自己就会报错，用户已经知道出事了。 */}
+      {panel.mapped_models.length > 0 && (
+        <MappedModelNotice models={panel.mapped_models} onOpen={openRecent} />
+      )}
+      {panel.failures.length > 0 && <FailureNotice failures={panel.failures} />}
       {panel.unpriced_models.length > 0 && (
         <UnpricedNotice models={panel.unpriced_models} />
       )}
-      {panel.failures.length > 0 && <FailureNotice failures={panel.failures} />}
 
-      {/* 失败是最常见的"我刚才怎么了"。它不在首屏就得展开「最近请求」才能找到,
-          所以最近一次失败直接挂在 hero 上面,点它展开请求流并滚到那一块 */}
       {panel.recent.some((r) => r.outcome === "failed") && (
         <LatestFailure
           request={panel.recent.find((r) => r.outcome === "failed")!}
-          onOpen={() => {
-            setShowRecent(true);
-            // 展开后表在页面下方,不滚过去的话用户点了什么都没看见
-            requestAnimationFrame(() =>
-              document.getElementById("recent-requests")?.scrollIntoView({ behavior: "smooth", block: "start" }),
-            );
-          }}
+          onOpen={openRecent}
         />
       )}
 
+      {/* hero 是花费不是 token：打开面板想问的是"今天花了多少"，
+          而且它和下面的「缓存省下」同一币单位，摆一起才读得出关系 */}
       <section className="card hero">
-        <div className="hero-label">真实消耗 Tokens</div>
+        <div className="hero-label">今日花费</div>
         <div className="hero-figure">
-          <span className="hero-value tnum">{formatTokens(totalTokens)}</span>
+          <span className="hero-value tnum">{formatMoneyHero(today.cost)}</span>
+          {/* 较昨日。配色沿用 .side-delta 的 up=暖 / down=绿：花得更多是暖色
+              而不是绿色——这是用量面板，不是股价 */}
+          <span
+            className={`side-delta hero-delta ${
+              costDelta !== null && costDelta >= 0 ? "up" : "down"
+            }`}
+          >
+            {costDelta === null ? "昨日 0" : `昨日 ${formatDelta(costDelta)}`}
+          </span>
         </div>
         <div className="hero-side">
           <SideStat label="总请求数" value={String(today.requests)} delta={reqDelta} />
-          <SideStat label="总成本" value={formatMoney2(today.cost)} delta={costDelta} />
+          <SideStat
+            label="消耗 Tokens"
+            value={formatTokens(totalTokens)}
+            delta={tokDelta}
+          />
         </div>
       </section>
 
@@ -147,11 +180,15 @@ export function PanelView({ panel, onRefresh }: { panel: Panel; onRefresh: () =>
         )}
       </section>
 
-      {/* 省下的钱是 Claude Code 用户最关心、cc-switch 又没直接给的数字 */}
+      {/* 省下的钱是 Claude Code 用户最关心、cc-switch 又没直接给的数字。
+          和 hero 的今日花费同一个格式化函数：两者同一币单位，摆在一起
+          才读得出"花了多少 / 其中多少是靠缓存省下的" */}
       {Number(today.cache_savings) > 0 && (
         <section className="card saved">
           <span className="saved-label">缓存省下</span>
-          <span className="saved-value tnum">{formatMoney2(today.cache_savings)}</span>
+          <span className="saved-value tnum">
+            {formatMoneyHero(today.cache_savings)}
+          </span>
         </section>
       )}
 
@@ -206,6 +243,45 @@ function Stat({
         {formatDelta(delta)}
       </div>
       {hint && <div className="stat-hint">{hint}</div>}
+    </div>
+  );
+}
+
+/** 模型被换告警——护城河上首屏的那一条，也是唯一一条"没错但钱花错了"的提示。
+ *
+ *  为什么排第一：失败用户自己知道（客户端会报错）；模型被换不会。请求全部
+ *  成功、日志里一条错都没有，而 token 和钱都按换后的模型算。cc-switch 的
+ *  真实数据里 212 条 `claude-sonnet-4-6 → claude-opus-5.5` 全是子代理被
+ *  供应商这么换掉的，在原界面上完全看不出来。
+ *
+ *  用 warn 不用 err：没有东西坏了，是计费口径和用户以为的不一样。
+ *  做成红色会跟旁边的真失败抢注意力，而这两件事该有的紧迫程度不同。 */
+function MappedModelNotice({
+  models,
+  onOpen,
+}: {
+  models: Panel["mapped_models"];
+  onOpen: () => void;
+}) {
+  const total = models.reduce((sum, m) => sum + m.requests, 0);
+  const top = models[0];
+  const others = models.length - 1;
+  return (
+    <div className="notice warn">
+      <span className="notice-ic">⇄</span>
+      <span className="notice-body">
+        <b>
+          今天 {total} 次请求的模型被供应商换掉了
+        </b>
+        。客户端要 <code>{top.client_model}</code>，实际按{" "}
+        <code>{top.response_model}</code> 计费
+        {others > 0 && `，另外还有 ${others} 组`}
+        。请求全都成功，日志里一条错都没有——不在这儿说，看不出来钱花在了
+        不是你要的模型上。
+      </span>
+      <button className="btn ghost" onClick={onOpen}>
+        看请求流
+      </button>
     </div>
   );
 }
@@ -303,6 +379,21 @@ function RecentTable({ panel }: { panel: Panel }) {
                     r.response_model ?? r.client_model
                   )}
                 </div>
+                {/* 走了哪条路。显式 = 写明了 provider/model，兜底 = 裸名落到默认供应商。
+                    没有这个标记的话，"推前缀"到底有没有生效只能靠猜 */}
+                {r.route_kind === "explicit" && (
+                  <span className="route-tag" title="请求写明了供应商前缀，按前缀路由">
+                    显式
+                  </span>
+                )}
+                {r.route_kind === "fallback" && (
+                  <span
+                    className="route-tag fallback"
+                    title="没写前缀，落到了默认供应商。在模型名前加 供应商/ 可指定走哪家"
+                  >
+                    兜底
+                  </span>
+                )}
               </td>
               <td>
                 {r.client}

@@ -52,8 +52,33 @@ pub struct PanelDto {
     pub unpriced_models: Vec<UnpricedDto>,
     /// 失败按（原因, 供应商, 状态码）聚类，不混进模型统计
     pub failures: Vec<FailureDto>,
+    /// 今天"客户端要的模型"和"实际计费的模型"不一样的组合，按花费降序。
+    /// 空数组 = 今天没有被换模型。见 `MappedModelDto`
+    pub mapped_models: Vec<MappedModelDto>,
     /// 最近若干条，给"请求流"折叠区用
     pub recent: Vec<RecentDto>,
+}
+
+/// 今天"客户端要的模型"和"实际花钱的模型"不一样的那些组合。
+///
+/// 这是 tern 有、cc-switch 没有的那类信号里最硬的一条：供应商静默把 sonnet
+/// 换成 opus，token 和钱都按 opus 算，而客户端一路都以为自己在用 sonnet。
+/// cc-switch 的真实数据里 212 条 `claude-sonnet-4-6 → claude-opus-5.5`
+/// 全是子代理被这么换掉的，在原界面上完全看不出来。
+///
+/// 判据与 `PanelInsights` 的模型流向图逐字一致（`client_model !=
+/// COALESCE(response_model, upstream_model)`，排除失败行）——首屏告警和二级
+/// 视图那张图必须报同一个数，不然用户会以为其中一个是错的。
+#[derive(Debug, Serialize)]
+pub struct MappedModelDto {
+    /// 客户端请求里写的模型名
+    pub client_model: String,
+    /// 实际计费的那个模型名
+    pub response_model: String,
+    pub requests: u64,
+    /// 这条映射今天一共花了多少，美元字符串
+    pub cost: String,
+    pub tokens: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -81,6 +106,10 @@ pub struct RecentDto {
     pub client_model: String,
     /// 上游回显的模型名，被供应商换过模型时和 client_model 不同
     pub response_model: Option<String>,
+    /// `explicit` = 请求写明了 `provider/model`；`fallback` = 没写前缀，落到默认供应商。
+    /// schema 里一直有这列，此前没查出来——没有它用户看不出"我到底走没走到显式路由"，
+    /// 而那是验证"推前缀"有没有生效的唯一反馈
+    pub route_kind: Option<String>,
     pub role: String,
     pub status: u16,
     pub outcome: String,
@@ -632,10 +661,37 @@ pub fn build_panel(conn: &rusqlite::Connection, db_path: &str) -> Result<PanelDt
             rows.collect::<rusqlite::Result<_>>()?
         };
 
+        // 模型被换：今天有没有"客户端要 A、实际按 B 计费"的组合。
+        // 放在 build_panel 里而不是另开一条命令：首屏已经在轮询 panel_summary
+        // 一条了，再开一条等于每次刷新多一次 IPC 往返；而这里本来就是单连接
+        // 连查多表，加一个子查询符合现有形状
+        let mapped_models = {
+            let mut stmt = conn.prepare(
+                "SELECT client_model, COALESCE(response_model, upstream_model) AS billed,
+                        COUNT(*), COALESCE(SUM(cost_nano), 0),
+                        SUM(fresh_input + output + cache_read + cache_write)
+                 FROM requests
+                 WHERE day = ?1 AND outcome != 'failed' AND has_usage = 1
+                 GROUP BY 1, 2
+                 HAVING client_model != COALESCE(response_model, upstream_model)
+                 ORDER BY 4 DESC, 5 DESC LIMIT 5",
+            )?;
+            let rows = stmt.query_map([&today], |row| {
+                Ok(MappedModelDto {
+                    client_model: row.get(0)?,
+                    response_model: row.get(1)?,
+                    requests: u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
+                    cost: nano_to_usd_string(row.get(3)?),
+                    tokens: u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
+                })
+            })?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+
         let recent = {
             let mut stmt = conn.prepare(
                 "SELECT started_at, client, provider_id, client_model, response_model,
-                        role, status, outcome, error_kind,
+                        route_kind, role, status, outcome, error_kind,
                         fresh_input, output, cache_read, cache_write, cost_nano, duration_ms
                  FROM requests ORDER BY started_at DESC, id DESC LIMIT 12",
             )?;
@@ -649,16 +705,17 @@ pub fn build_panel(conn: &rusqlite::Connection, db_path: &str) -> Result<PanelDt
                     provider_id: row.get(2)?,
                     client_model: row.get(3)?,
                     response_model: row.get(4)?,
-                    role: row.get(5)?,
-                    status: u16::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
-                    outcome: row.get(7)?,
-                    error_kind: row.get(8)?,
-                    fresh_input: u(row, 9)?,
-                    output: u(row, 10)?,
-                    cache_read: u(row, 11)?,
-                    cache_write: u(row, 12)?,
-                    cost: row.get::<_, Option<i64>>(13)?.map(nano_to_usd_string),
-                    duration_ms: u(row, 14)?,
+                    route_kind: row.get(5)?,
+                    role: row.get(6)?,
+                    status: u16::try_from(row.get::<_, i64>(7)?).unwrap_or(0),
+                    outcome: row.get(8)?,
+                    error_kind: row.get(9)?,
+                    fresh_input: u(row, 10)?,
+                    output: u(row, 11)?,
+                    cache_read: u(row, 12)?,
+                    cache_write: u(row, 13)?,
+                    cost: row.get::<_, Option<i64>>(14)?.map(nano_to_usd_string),
+                    duration_ms: u(row, 15)?,
                 })
             })?;
             rows.collect::<rusqlite::Result<_>>()?
@@ -671,6 +728,7 @@ pub fn build_panel(conn: &rusqlite::Connection, db_path: &str) -> Result<PanelDt
             yesterday: yesterday_summary,
             unpriced_models,
             failures,
+            mapped_models,
             recent,
         })
     }

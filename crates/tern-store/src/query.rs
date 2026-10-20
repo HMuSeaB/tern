@@ -27,6 +27,18 @@ impl DayRange {
     pub fn today() -> Self {
         Self::last_days(1)
     }
+
+    /// 钉死的闭区间。
+    ///
+    /// 和 `last_days` 分开而不是加个参数：上游发票是账期制的，"最近 7 天"
+    /// 这个滚动窗口每天都在漂，永远对不上任何一张票。对账要的是能把两端写死。
+    ///
+    /// 两端都必须是规范化的 `YYYY-MM-DD`（零填充）。SQLite 直接按字符串比，
+    /// 所以 `2026-1-5` 这种没填充的会和 `2026-10-01` 比出错误顺序——
+    /// 规范化由调用方保证，见 `tern_cli::args::parse_day`。
+    pub fn between(from: String, to: String) -> Self {
+        Self { from, to }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]

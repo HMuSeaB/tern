@@ -41,6 +41,8 @@ export interface RecentRequest {
   provider_id: string | null;
   client_model: string;
   response_model: string | null;
+  /** explicit = 写明了 provider/model；fallback = 裸模型名落到默认供应商 */
+  route_kind: string | null;
   role: string;
   status: number;
   outcome: string;
@@ -53,6 +55,17 @@ export interface RecentRequest {
   duration_ms: number;
 }
 
+/** 今天"客户端要的模型"和"实际计费的模型"不一样的一个组合。
+ *  供应商静默换模型时，钱按换后的算，客户端却一路以为用的是原来那个。 */
+export interface MappedModel {
+  client_model: string;
+  response_model: string;
+  requests: number;
+  /** 美元字符串，避免 JS float 丢精度 */
+  cost: string;
+  tokens: number;
+}
+
 export interface Panel {
   db_path: string;
   first_run: boolean;
@@ -60,6 +73,7 @@ export interface Panel {
   yesterday: Summary;
   unpriced_models: UnpricedModel[];
   failures: FailureGroup[];
+  mapped_models: MappedModel[];
   recent: RecentRequest[];
 }
 

@@ -3,20 +3,22 @@
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use tern_store::{
-    Breakdown, BreakdownRow, DayRange, FailureGroup, ModelPrice, RecentRequest, Store, Summary,
-    UnpricedModel,
+    Breakdown, BreakdownRow, FailureGroup, ModelPrice, RecentRequest, Store, Summary, UnpricedModel,
 };
 
+use crate::args::UsageWindow;
 use crate::table::Table;
 
-pub fn usage(store: &Store, days: u32, by: Option<&str>, recent: usize) -> anyhow::Result<()> {
-    let range = DayRange::last_days(days);
+pub fn usage(
+    store: &Store,
+    window: &UsageWindow,
+    by: Option<&str>,
+    recent: usize,
+) -> anyhow::Result<()> {
+    // 区间倒挂在 args 里已经挡过一道；这里再挡一次是因为 resolve() 也填"今天"，
+    // 而时钟是它自己看的。anyhow::Error 不接受 String，得显式包一层
+    let (range, label) = window.resolve().map_err(anyhow::Error::msg)?;
     let summary = store.summary(&range)?;
-    let label = if days == 1 {
-        "今天".to_string()
-    } else {
-        format!("最近 {days} 天（{} ~ {}）", range.from, range.to)
-    };
 
     if summary.requests == 0 {
         println!("{label}没有请求记录。");

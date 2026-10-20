@@ -62,12 +62,12 @@ fn run(command: Command) -> Result<()> {
         Command::Import { sql } => import_from_cc_switch(&sql),
         Command::Usage {
             paths,
-            days,
+            window,
             by,
             recent,
         } => {
             let store = open_existing_store(&paths)?;
-            report::usage(&store, days, by.as_deref(), recent)
+            report::usage(&store, &window, by.as_deref(), recent)
         }
         Command::Price { paths, action } => price(&paths, action),
         Command::Help => {

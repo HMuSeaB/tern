@@ -380,6 +380,72 @@ fn recent_shows_mapping_and_is_newest_first() {
 }
 
 #[test]
+fn recent_marks_whether_the_request_went_explicit_or_fallback() {
+    let (_dir, conn) = seeded();
+
+    // 另灌两条，把两种路由都摆出来。直接 INSERT 而不扩 seed()：这一列对
+    // 老库是可空的（升级前记的请求没有它），测的正是"有值和没值"两条路
+    let today = local_days_ago(0);
+    let t = chrono::Utc::now().timestamp_millis();
+    for (offset, route_kind) in [(7i64, Some("explicit")), (8, Some("fallback"))] {
+        conn.execute(
+            "INSERT INTO requests (started_at, day, client, endpoint, provider_id, route_kind,
+                 client_model, upstream_model, response_model, role, stream, status, outcome,
+                 fresh_input, output, cache_read, cache_write, has_usage, duration_ms)
+             VALUES (?1,?2,'claude','/v1/messages','relay',?3,'deepseek/deepseek-v4-pro',
+                     'deepseek-v4-pro','deepseek-v4-pro','main',1,200,'success',
+                     100,50,0,0,1,300)",
+            rusqlite::params![t + offset, today, route_kind],
+        )
+        .unwrap();
+    }
+
+    let panel = build_panel(&conn, "x").unwrap();
+    // 新灌的两条在最前（started_at 最大）
+    assert_eq!(panel.recent[0].route_kind.as_deref(), Some("fallback"));
+    assert_eq!(panel.recent[1].route_kind.as_deref(), Some("explicit"));
+    // 老库里这条没记 route_kind：前端必须能显示，不能崩也不能默认成"显式"
+    assert_eq!(panel.recent[2].route_kind, None);
+}
+
+#[test]
+fn mapped_models_surface_what_the_client_asked_vs_what_it_paid_for() {
+    let (_dir, conn) = seeded();
+    let panel = build_panel(&conn, "x").unwrap();
+
+    // 今天 5 条里 3 条被换、1 条没换（gpt-5-codex → 自己）、1 条失败。
+    // 失败行没有响应模型，不算被换；昨天那条也不进"今天"
+    assert_eq!(panel.mapped_models.len(), 3);
+
+    // 最贵的那条排第一：sonnet 被换成 opus-5.5，花了 123456 纳美元
+    let top = &panel.mapped_models[0];
+    assert_eq!(top.client_model, "cl<SECRET_bea1c54f>-sonnet-4-6");
+    assert_eq!(top.response_model, "cl<SECRET_bea1c54f>-opus-5.5");
+    assert_eq!(top.requests, 1);
+    assert_eq!(top.cost, "0.000123456");
+    assert_eq!(top.tokens, 1_000 + 800 + 40_000 + 5_000);
+
+    // 模型名一致的请求不该出现在被换列表里
+    assert!(
+        panel
+            .mapped_models
+            .iter()
+            .all(|m| m.response_model != "gpt-5-codex"),
+        "客户端要的和实际计费的是同一个，就不叫被换"
+    );
+
+    // 未定价的那条也要在：它花了 0 美元，但确实被换走了——
+    // 按花费排序会让它垫底，不该因此把它过滤掉
+    assert!(
+        panel
+            .mapped_models
+            .iter()
+            .any(|m| m.response_model == "step-5-preview"),
+        "被换但未定价的请求也要报出来"
+    );
+}
+
+#[test]
 fn empty_database_is_first_run_and_not_an_error() {
     let dir = tempfile::tempdir().unwrap();
     let conn = Connection::open(dir.path().join("usage.db")).unwrap();
@@ -390,6 +456,7 @@ fn empty_database_is_first_run_and_not_an_error() {
     assert_eq!(panel.today.requests, 0);
     assert!(panel.unpriced_models.is_empty());
     assert!(panel.failures.is_empty());
+    assert!(panel.mapped_models.is_empty());
     assert!(panel.recent.is_empty());
 }
 

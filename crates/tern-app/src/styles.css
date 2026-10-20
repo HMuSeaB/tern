@@ -255,6 +255,14 @@ body {
   line-height: 1;
 }
 
+/* hero 大数字旁边的"较昨日"。配色沿用 .side-delta 的 up=暖 / down=绿，
+   只放大字号并去掉它为自己准备的 margin-top（这里靠 baseline 对齐） */
+.hero-delta {
+  font-size: 13.5px;
+  font-weight: 600;
+  margin-top: 0;
+}
+
 .hero-side {
   display: flex;
   gap: 22px;
@@ -663,6 +671,26 @@ body {
   color: var(--dim);
   margin-left: 7px;
   white-space: nowrap;
+}
+
+/* 走了哪条路：显式 = 写明了 provider/model，兜底 = 裸名落到默认供应商。
+   刻意做得比 .role 更淡——它是"这条请求怎么来的"的注脚，不是状态。
+   做成大红大黄会让整张表像在报警，而兜底本身不是问题（用户可能就是想要默认）。 */
+.route-tag {
+  font-size: 10.5px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--track);
+  color: var(--dim-2);
+  margin-left: 6px;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.route-tag.fallback {
+  /* 兜底才标出来：显式是"按你说的做了"，没什么可说的 */
+  color: var(--dim);
+  border: 1px solid var(--line);
 }
 
 .badge {
@@ -1316,6 +1344,35 @@ body {
   text-overflow: ellipsis;
 }
 
+/* 整格可点：负 margin 把 code 的 padding 抵掉，hover 底色才铺满整块而不是
+   只剩文字那一小条。不然用户看到的是"一块灰底 + 上面一个按钮"，不知道点哪儿 */
+.prov-models-grid .model-copy {
+  display: block;
+  width: 100%;
+  margin: -5px -8px;
+  padding: 5px 8px;
+  font: inherit;
+  color: var(--fg);
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: copy;
+}
+
+.prov-models-grid .model-copy:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.prov-models-grid .model-copy:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .prov-empty {
   padding: 20px;
   text-align: center;
@@ -1760,6 +1817,36 @@ select.prov-modal-input {
 .wire-cost {
   color: var(--dim-2);
   font-size: 11.5px;
+}
+
+/* 接入页的"怎么指定走哪家"。不用 .notice：那不是警告，是这页上唯一一条
+   "接下来你还能干什么"的正经指引，做成警告色会跟旁边真出问题的提示抢注意力。
+   贴在按钮正下方——接完线的下一步就是决定 model 怎么写 */
+.wire-route {
+  margin-top: 14px;
+  padding: 11px 13px;
+  border: 1px solid var(--accent);
+  border-radius: 9px;
+  background: var(--accent-soft);
+  font-size: 12.5px;
+  color: var(--dim);
+}
+
+.wire-route p {
+  margin: 6px 0 0;
+}
+
+.wire-route code {
+  font: 12px var(--mono);
+  padding: 0 3px;
+  word-break: break-all;
+}
+
+.wire-route-head {
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 2px;
 }
 
 .notice.ok {

@@ -103,6 +103,13 @@ export function ModelEnvBackfillCard({ onDone }: { onDone: () => void }) {
           cc-switch 里给每家逐个挑的模型档位（Opus 档 / Sonnet 档…），此前导入的
           供应商没有带上。装过 cc-switch 的话可以补过来。
         </p>
+        {/* 说清楚补的是什么、不是什么。不说的话用户容易以为"补了档位就必须
+            用裸模型名"——那是把兜底路径当成了唯一路径 */}
+        <p className="perm-hint">
+          补的是<b>切换供应商时自动配的那几档</b>，让"切到哪家就用哪家的档位"
+          继续成立。想钉死走某一家是另一条路：把 model 写成{" "}
+          <code>供应商/模型名</code>，跟默认供应商是谁无关。
+        </p>
         <div className="wire-row">
           <button className="btn primary" onClick={() => void check()} disabled={busy}>
             {busy ? "检查中…" : "检查有没有可补的"}
@@ -198,7 +205,8 @@ export function ModelEnvBackfillCard({ onDone }: { onDone: () => void }) {
           <span className="notice-body">
             <b>补了 {result.patched} 个供应商的档位映射。</b>
             现在切到其中任意一家，编辑框里「模型档位映射」一栏就能看到
-            Opus 档 / Sonnet 档分别是什么，也能改。
+            Opus 档 / Sonnet 档分别是什么，也能改。要钉死走某一家，
+            把 model 写成 <code>供应商/模型名</code> 更直接。
           </span>
           <button className="btn ghost" onClick={() => setHidden(true)}>
             知道了

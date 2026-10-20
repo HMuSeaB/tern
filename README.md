@@ -71,20 +71,37 @@ tern check     # 末尾的「联网工具」段落列出需注意的供应商
 ```powershell
 tern usage                      # 最近 7 天：花费、缓存命中率、缓存省下的钱，按供应商 / 模型 / 角色拆分
 tern usage --days 1 --by model  # 今天，按实际计费的模型
+tern usage --from 2026-10-01 --to 2026-10-31   # 钉死账期，对上游发票用这个
 tern price list relay/claude-opus-5   # 看某个模型名实际匹配到哪条价格
 tern price set step-5-preview 0.2 0.8 0.04   # 手填：输入 输出 [缓存读 [缓存写]]，美元 / 百万 token
 tern price sync                 # 从 models.dev 同步；网络不通时 --file api.json
 ```
+
+`--days` 是滚动窗口，每天都在漂；`--from` / `--to` 把两端写死。上游发票按账期开，
+所以对账用后者——拿"最近 7 天"去对一张固定日期的票，永远差几天，而差的那几天
+恰好是最想弄清的。两者互斥，`--from` 单独给就是"从那天到今天"。
+
+逐项对账时哪些项必然有差异、为什么，见
+`docs/guides/reconciling-with-upstream-billing-zh.md`（另有 `-en` / `-ja` 版）。
 
 中转站按折扣计费时，在供应商上加 `"costMultiplier": "0.3"`。没有定价的模型照样记 token，
 `tern usage` 会列出来；补上价格后历史记录自动补价。
 
 ## 路由规则
 
+模型名里带不带供应商前缀，走的是两条不同的路。
+
+**显式（推荐写法）**：`供应商/模型名` 固定发给那一家，跟当前默认供应商是谁无关。
+
 - `deepseek/deepseek-v4-pro` → 发给 id 为 `deepseek` 的供应商，上游模型名 `deepseek-v4-pro`
 - 只按第一个 `/` 切分：`openrouter/anthropic/claude-sonnet-5` 的上游模型名是 `anthropic/claude-sonnet-5`
 - 末尾的 `[1m]` 会被剥掉，Anthropic 上游自动补 `context-1m` beta 头
-- 前缀不是已知供应商时交给 `defaultProvider`；没配就返回 400 并列出可用供应商
+- 前缀打错字**不会**报错，而是整串交给默认供应商——所以写错前缀的表现是
+  "悄悄走了默认那家"。面板「最近请求」里每条都标了显式还是兜底，对不上时先看这儿
+
+**兜底**：不写前缀（如 `claude-sonnet-5`），交给 `defaultProvider` 指定的那家。
+切换供应商时自动配好的那几档模型名走的就是这条路，图省事可以一直用它。
+`defaultProvider` 没配时不写前缀的请求会返回 400，并列出可用供应商。
 
 ## 供应商配置
 
@@ -127,6 +144,28 @@ $env:ANTHROPIC_AUTH_TOKEN = "<accessToken>"
 $env:ANTHROPIC_MODEL = "deepseek/deepseek-v4-pro"
 claude
 ```
+
+写进 `~/.claude/settings.json` 的 `env` 段就是长期生效；面板「接入」页也能一键改，
+只动 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN` 两个键，其余字段原样带回。
+
+档位可以分开指定。子代理、压缩、后台小活各自跑在哪个模型上，正是"谁在花钱"的来源：
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:15800",
+    "ANTHROPIC_AUTH_TOKEN": "<accessToken>",
+    "ANTHROPIC_MODEL": "deepseek/deepseek-v4-pro",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "kimi/kimi-k3-thinking",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek/deepseek-v4-pro",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek/deepseek-chat",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "kimi/kimi-k3-thinking"
+  }
+}
+```
+
+上面每一档都带了前缀，所以它们各自钉死在那一家。省掉前缀（写成 `claude-sonnet-5`）
+就走 `defaultProvider` 那家——切供应商时面板自动配好的就是这种写法。
 
 ## 接入 Codex
 
