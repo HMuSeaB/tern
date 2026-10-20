@@ -202,56 +202,30 @@ pub fn clear_model(claude_dir: &Path, model: &str) -> Result<Vec<String>> {
 /// Claude Code 的家目录。与 `permissions::claude_dir` 同一口径，
 /// 见那边的注释（`CLAUDE_CONFIG_DIR` 优先，其次 `~/.claude`）。
 pub fn claude_dir() -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|v| !v.is_empty()) {
-        return Ok(PathBuf::from(dir));
-    }
-    dirs::home_dir()
-        .map(|home| home.join(".claude"))
-        .ok_or_else(|| AppError::Config("找不到用户主目录".into()))
+    tern_gateway::claude_settings::claude_dir().map_err(|e| AppError::Config(e.to_string()))
 }
 
-// ---- 下面几个是 wire.rs 同一套做法的私有副本 ----
-// 刻意不挪成 pub：那边是接线的实现细节，这边借的是"同一套规矩"而不是"同一段代码"。
-// 真共用的那一天再把它们提到一个新模块里。
+// ---- settings.json 的读写 ----
+// 三处（这里、wire.rs、permissions.rs）共用 tern_gateway::claude_settings。
+// 备份语义是每种操作各自的：模型档位每次写都刷新成"改之前那份"，方便回退上一步。
 
 fn read_settings(path: &Path) -> Result<Value> {
-    if !path.exists() {
-        return Ok(Value::Object(Map::new()));
-    }
-    let text = std::fs::read_to_string(path).map_err(|e| AppError::Config(e.to_string()))?;
-    // BOM：PowerShell 5 的 Set-Content -Encoding utf8 会写，serde_json 不认
-    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
-    if text.trim().is_empty() {
-        return Ok(Value::Object(Map::new()));
-    }
-    serde_json::from_str(text)
-        .map_err(|e| AppError::Config(format!("{} 解析失败: {e}", path.display())))
-}
-
-/// 拿到底层 JSON 里 `env` 那个对象，没有就建一个。
-///
-/// `env` 已存在但不是对象时**报错**而不是覆盖：那说明有人把它写成了别的形状，
-/// 默默替换会丢东西。
-fn ensure_env(root: &mut Map<String, Value>) -> Result<&mut Map<String, Value>> {
-    let env = root
-        .entry("env".to_string())
-        .or_insert_with(|| Value::Object(Map::new()));
-    env.as_object_mut()
-        .ok_or_else(|| AppError::Config("settings.json 的 env 不是对象".into()))
+    tern_gateway::claude_settings::read_json(path).map_err(|e| AppError::Config(e.to_string()))
 }
 
 fn write_settings(path: &Path, root: &Value) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| AppError::Config(e.to_string()))?;
-    }
-    // 和接线共用一个备份文件名会很理想，但两处的备份语义不同（接线存的是
-    // "接线前的原值"，这里存的是"改模型前的整份"），分开更不容易混淆
-    let backup = path.with_extension("json.tern-model-bak");
-    if path.exists() {
-        let _ = std::fs::copy(path, &backup);
-    }
-    let text = serde_json::to_string_pretty(root).map_err(|e| AppError::Config(e.to_string()))?;
-    std::fs::write(path, text + "\n").map_err(|e| AppError::Config(e.to_string()))
+    tern_gateway::claude_settings::write_json(
+        path,
+        root,
+        tern_gateway::claude_settings::Backup::EachWrite(".tern-model-bak"),
+    )
+    .map_err(|e| AppError::Config(e.to_string()))
+}
+
+/// `env` 不是对象时报错而不是覆盖——那说明有人把它写成了别的形状，
+/// 默默替换会丢用户的东西。
+fn ensure_env(root: &mut Map<String, Value>) -> Result<&mut Map<String, Value>> {
+    tern_gateway::claude_settings::ensure_env(root).map_err(|e| AppError::Config(e.to_string()))
 }
 
 // ---------------------------------------------------------------------------

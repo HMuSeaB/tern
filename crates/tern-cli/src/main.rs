@@ -133,6 +133,7 @@ fn panel_binary_name() -> &'static str {
 /// 起常驻进程。它与 `tern` 是两个二进制，这里负责找到并拉起它。
 ///
 /// 拉起后**立刻返回**：agent 是要长期活着的，`tern agent` 不该把终端
+/// 拉起后**立刻返回**：agent 是要长期活着的，`tern agent` 不该把终端
 /// 占住（那正是它存在的问题——占了终端还得开着窗口）。
 /// 想让它在前台跑可以直接执行 `tern-agent` 本身。
 fn launch_agent(paths: &Paths) -> Result<()> {
@@ -147,67 +148,26 @@ fn launch_agent(paths: &Paths) -> Result<()> {
         // 不然他会以为新配置生效了
         if let Some(path) = &paths.config {
             println!(
-                "注意：已在跑的常驻进程读它自己启动时那份配置，{} 要下次重启才生效",
+                "注意：已在跑的常驻进程读它启动时那份配置，{} 要重启它才生效",
                 path.display()
             );
         }
         return Ok(());
     }
 
-    let exe = std::env::current_exe().context("取不到当前程序路径")?;
-    let agent = exe
-        .parent()
-        .map(|dir| dir.join(agent_binary_name()))
-        .filter(|path| path.exists());
+    let agent = tern_agent::client::agent_path()
+        .ok_or_else(|| anyhow::anyhow!(tern_agent::client::missing_agent_message()))?;
 
-    let Some(agent) = agent else {
-        bail!(
-            "找不到常驻进程 {}。它和 tern 应当装在同一个目录。\n\
-             手动启动：在安装目录执行\n  \
-             {agent}\n然后它会一直在后台持有网关",
-            agent_binary_name(),
-            agent = agent_binary_name()
-        );
-    };
-
-    let mut command = std::process::Command::new(&agent);
     // 常驻进程按 TERN_CONFIG 推配置路径（`tern_agent::config_path`），不认命令行参数。
     // 所以 `-c` 只能翻译成它看得见的环境变量，否则"用这份配置起常驻"根本做不到
     if let Some(path) = &paths.config {
-        command.env("TERN_CONFIG", path);
+        std::env::set_var("TERN_CONFIG", path);
     }
-    command
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    #[cfg(windows)]
-    {
-        // DETACHED_PROCESS | NEW_PROCESS_GROUP。前者让系统不为它分配控制台
-        // （否则从 GUI 启动时用户会看到一个 cmd 窗口闪一下），后者让它
-        // 独立于终端自己的进程组——终端关掉时 Ctrl+C 不会连带波及它，
-        // 而 agent 本来就该比终端活得久。
-        // 代价是 agent 没有控制台，看不到即时输出，出问题得手动跑它。
-        // MSDN 明确说 CREATE_NO_WINDOW 与 DETACHED_PROCESS 同用时前者被忽略。
-        use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
-    }
+    tern_agent::client::spawn_agent(&agent)?;
 
-    command
-        .spawn()
-        .with_context(|| format!("启动 {} 失败", agent.display()))?;
     println!("已启动常驻进程 {}", agent.display());
     println!("它没有窗口，关掉这个终端也照跑。查看用量用 `tern tui` 或 `tern panel`。");
     Ok(())
-}
-
-fn agent_binary_name() -> &'static str {
-    if cfg!(windows) {
-        "tern-agent.exe"
-    } else {
-        "tern-agent"
-    }
 }
 
 /// 从 cc-switch 的 SQL 备份导入供应商。保留现有配置的 accessToken / listen，

@@ -1,4 +1,4 @@
-//! 面板 ↔ agent 的客户端。
+//! 面板 ↔ agent：找到它、拉起它、问它。
 //!
 //! # 为什么面板不再自己持有网关
 //!
@@ -10,310 +10,80 @@
 //! 3. **状态和窗口绑死**。面板崩了网关跟着没，排查时两件事混在一起
 //!
 //! 所以网关归 `tern-agent`（一个没有窗口的小进程），面板只当它的遥控器。
-//! 代价是多一个进程要管理——`ensure_agent` 就是干这个的。
 //!
-//! # agent 找不到时怎么办
+//! # 这个模块现在只剩转发
 //!
-//! 面板自己 spawn 它。用户不该为了"看一眼用量"先开一个终端跑 agent，
-//! 那正是当初把网关塞进面板想避免的两步式体验。
-
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
-
-use serde::Deserialize;
+//! HTTP 客户端和 spawn 都搬进 `tern_agent::client` 了——`tern use` / `tern start`
+//! 要在命令行里打到同一组端点，而两端必须行为一致：token 怎么带、超时各给多少、
+//! 出错时转述上游原话还是自己总结，任何一处漂移都会表现成"面板点能成、命令行跑
+//! 不行"，而这种问题极难查。留在这儿的是 `AppError` 那层转换。
 
 use crate::error::{AppError, Result};
 
-/// 与 `tern_agent::control::CONTROL_PORT` 一致。两处各写一遍而不是让面板
-/// 依赖 agent 的 lib——那会把一个常驻进程的编译产物拖进面板的依赖图，
-/// 只为拿到一个常量。
-pub const CONTROL_PORT: u16 = 15801;
-
-/// agent 起来了但还没开始 accept 的时间窗。
-const AGENT_WARMUP: Duration = Duration::from_millis(600);
-/// spawn 之后等它开始监听的时长。
-const AGENT_SPAWN_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// 与服务端 `GatewayStatus` 逐字段对应。
-#[derive(Debug, Clone, Deserialize)]
-pub struct AgentStatus {
-    pub running: bool,
-    pub listen: Option<String>,
-    pub provider_count: usize,
-    pub last_error: Option<String>,
-    pub agent_version: String,
+pub use tern_agent::client::AgentStatus;
+
+/// 与 `tern_agent::control::CONTROL_PORT` 一致。
+///
+/// 前端有处提示文案要拼这个端口号，所以得有个能引用的常量。
+pub const CONTROL_PORT: u16 = tern_agent::client::CONTROL_PORT;
+
+/// anyhow → AppError。客户端的话原样带上：那是用户在这个状态下
+/// 唯一能看到的东西，包一层"操作失败"只会把它盖掉。
+fn app(error: anyhow::Error) -> AppError {
+    AppError::Config(error.to_string())
 }
 
-/// agent 可执行文件名。
-fn agent_binary_name() -> &'static str {
-    if cfg!(windows) {
-        "tern-agent.exe"
-    } else {
-        "tern-agent"
-    }
-}
-
-/// 找到 agent。它装在面板旁边：release 构建两者同在 target/release/，
-/// 打包后同在安装目录。
-pub fn agent_path() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    exe.parent()
-        .map(|dir| dir.join(agent_binary_name()))
-        .filter(|path| path.exists())
-}
-
-/// 问一次状态。agent 没起来时返回 Err，不自动拉起——
-/// 拉起是有副作用的动作，要么由 `ensure_agent` 显式做，要么用户点了启动。
+/// 问一次状态。agent 没起来时返回 Err，不自动拉起。
 pub fn status() -> Result<AgentStatus> {
-    request("GET", "/api/status", None, STATUS_TIMEOUT)
+    tern_agent::client::status().map_err(app)
 }
 
 /// 起网关。agent 不在时会先把它拉起来。
 pub fn start_gateway() -> Result<AgentStatus> {
-    ensure_agent()?;
-    request("POST", "/api/gateway/start", None, Duration::from_secs(15))
+    tern_agent::client::start_gateway().map_err(app)
 }
 
 /// 停网关。**不停 agent**：面板只是想知道"流量断了没"，
 /// 顺带把常驻进程也杀掉会让下次启动再付一次冷启动的钱。
 pub fn stop_gateway() -> Result<AgentStatus> {
-    // agent 本来就没起，那就是已经是停的状态，别硬拉起它再停
-    if agent_path().is_none() || !reachable() {
-        return Ok(AgentStatus {
-            running: false,
-            listen: None,
-            provider_count: 0,
-            last_error: None,
-            agent_version: String::new(),
-        });
-    }
-    request("POST", "/api/gateway/stop", None, Duration::from_secs(15))
+    tern_agent::client::stop_gateway().map_err(app)
 }
 
 /// 重起网关。导入过供应商之后必须调它，否则跑着的还是旧配置——
 /// 用户会以为导入失败了。
 pub fn restart_gateway() -> Result<AgentStatus> {
-    ensure_agent()?;
-    request(
-        "POST",
-        "/api/gateway/restart",
-        None,
-        Duration::from_secs(15),
-    )
+    tern_agent::client::restart_gateway().map_err(app)
 }
 
-/// 让 agent 进程退出。
-///
-/// # 什么时候用
-///
-/// 装新版本之前。Windows 上覆盖不了正在运行的 exe，而 agent 是常驻进程
-/// （关窗口不停它，那是设计）。不先让它退出，安装器会报
-/// `Can't write: ...\tern-agent.exe` 然后整个升级失败。
-///
-/// # 为什么不用 taskkill
-///
-/// `taskkill /F` 是硬杀，在途的请求补不了 aborted、写入队列没排空就没了。
-/// 走 HTTP 让 agent 自己收尾，用量不丢。
-///
-/// agent 本来没起时**不报错**：那正是想要的状态。但也别为它特意拉起一个
-/// 再杀——所以这里直接问，连不上就当已经退出。
+/// 让 agent 进程退出。装新版本之前用，见 `tern_agent::client::exit_agent` 的说明。
 pub fn exit_agent() -> Result<()> {
-    if !reachable() {
-        return Ok(());
-    }
-    match request("POST", "/api/agent/exit", None, EXIT_TIMEOUT) {
-        Ok(_) => {
-            log::info!("[tern-app] 常驻进程已退出");
-            Ok(())
-        }
-        // 响应回来之前进程就没了，连接被掐断是正常的。看结果不看错误
-        Err(error) => {
-            log::info!("[tern-app] 常驻进程退出（连接随进程结束）: {error}");
-            Ok(())
-        }
-    }
+    tern_agent::client::exit_agent().map_err(app)
 }
 
-fn reachable() -> bool {
-    matches!(status(), Ok(status) if !status.agent_version.is_empty())
+/// agent 在不在且能答话。
+pub fn reachable() -> bool {
+    tern_agent::client::reachable()
 }
 
 /// 确保 agent 在跑。已经在跑就直接返回，否则 spawn 并等它开始监听。
 pub fn ensure_agent() -> Result<()> {
-    if reachable() {
-        return Ok(());
-    }
-    let path = agent_path().ok_or_else(missing_agent_message)?;
-
-    spawn_agent(&path)?;
-
-    let deadline = Instant::now() + AGENT_SPAWN_TIMEOUT;
-    while Instant::now() < deadline {
-        if reachable() {
-            return Ok(());
-        }
-        std::thread::sleep(AGENT_WARMUP / 6);
-    }
-    Err(AppError::Config(format!(
-        "等 {} 开始监听超过 {} 秒。它可能起来了但控制端口被占，\n\
-         或被安全软件拦了。可以手动跑它看输出",
-        path.display(),
-        AGENT_SPAWN_TIMEOUT.as_secs()
-    )))
+    tern_agent::client::ensure_agent().map_err(app)
 }
 
-/// 找不到 agent 时的话。
-///
-/// 单独提出来是为了能单测：这句话是用户在这个状态下唯一能看到的东西，
-/// 值得守住——而 `ensure_agent` 本身的行为取决于"此刻有没有 agent 在跑"，
-/// 拿它测消息内容会让测试随环境时好时坏。
-fn missing_agent_message() -> AppError {
-    AppError::Config(format!(
-        "找不到 {}。它和面板应当装在同一个目录。\n\
-         手动启动：在安装目录执行\n  \
-         {agent}\n然后回到这里点「启动」",
-        agent_binary_name(),
-        agent = agent_binary_name()
-    ))
+/// agent 可执行文件的路径。它装在面板旁边。
+pub fn agent_path() -> Option<std::path::PathBuf> {
+    tern_agent::client::agent_path()
 }
 
-/// spawn agent。要点是**不弹任何窗口**。
-///
-/// 关键在于 `DETACHED_PROCESS`：它告诉系统这个子进程不需要控制台。
-/// 少了它，当面板是从资源管理器启动的（GUI 程序、自身没有控制台），
-/// 系统会为了这个子进程**临时分配一个控制台**——用户看到一个黑色 cmd
-/// 窗口闪一下。加上之后分配不发生，窗口也就不出现。
-///
-/// 顺带 `CREATE_NEW_PROCESS_GROUP`：不把 agent 拉进面板自己的进程组，
-/// 否则面板退出时 Ctrl+C 一类的事件会连带波及它——而 agent 本来就该
-/// 比面板活得久。
-///
-/// 代价：agent 没有控制台，stdout/stderr 无处可去。用不到，日志走
-/// RUST_LOG 重定向；但要知道这意味着**看不到它的即时输出了**，
-/// 出问题时得手动跑 `tern-agent` 看。
-///
-/// MSDN 明确说 CREATE_NO_WINDOW 与 DETACHED_PROCESS 同用时前者被忽略，
-/// 所以这里只写后两个。
-fn spawn_agent(path: &std::path::Path) -> Result<()> {
-    let mut command = Command::new(path);
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
-    }
-
-    command
-        .spawn()
-        .map_err(|e| AppError::Config(format!("启动 {} 失败: {e}", path.display())))?;
-    log::info!("[tern-app] 已拉起常驻进程 {}", path.display());
-    Ok(())
-}
-
-/// 从 `tern.json` 取 accessToken，和 agent 用同一把钥匙。
-fn control_token() -> Option<String> {
-    crate::config::config_path()
-        .ok()
-        .and_then(|path| crate::config::load(&path).ok())
-        .and_then(|config| config.access_token)
-        .map(|token| token.trim().to_string())
-        .filter(|token| !token.is_empty())
-}
-
-/// 共用一个阻塞客户端。
-///
-/// 每次 `Client::builder().build()` 都会新建一套 tokio 运行时和连接池，而
-/// `status()` 是托盘高频调用的那个——那点开销每问一次都要付一遍。reqwest 的
-/// 阻塞 Client 是 `Send + Sync`，放静态量里安全。
-static CONTROL_CLIENT: std::sync::LazyLock<reqwest::blocking::Client> =
-    std::sync::LazyLock::new(|| {
-        reqwest::blocking::Client::builder()
-            // 兜底超时。真正生效的是按请求覆盖的那个，见 request()
-            .timeout(Duration::from_secs(15))
-            .build()
-            .unwrap_or_else(|_| reqwest::blocking::Client::new())
-    });
-
-/// 只问状态的超时。
-///
-/// 问的是本机回环接口，健康时几毫秒就回。等 15 秒没有任何意义——而托盘刷新
-/// 会调它，等满 15 秒意味着界面冻 15 秒。
-const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// 让 agent 退出的超时。同样不等：它僵住的话安装器会用 taskkill 收尾，
-/// 那边本来就硬杀，不差这一点。
-const EXIT_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// 发一次请求。用阻塞式 reqwest：这是个几十毫秒的本地调用，
-/// 为它引入异步是把简单事情搞复杂。
-///
-/// `timeout` 按请求覆盖：调用方自己知道能等多久（问状态的和起网关的完全不是
-/// 一回事），而超时正是冻住界面的唯一来源，必须逐个收窄。
-fn request(method: &str, path: &str, body: Option<&str>, timeout: Duration) -> Result<AgentStatus> {
-    let url = format!("http://127.0.0.1:{CONTROL_PORT}{path}");
-    let mut request = CONTROL_CLIENT
-        .request(method.parse().unwrap_or(reqwest::Method::GET), &url)
-        .timeout(timeout);
-
-    if let Some(token) = control_token() {
-        request = request.header("x-tern-token", token);
-    }
-    if let Some(body) = body {
-        request = request
-            .header("content-type", "application/json")
-            .body(body.to_string());
-    }
-
-    let response = request
-        .send()
-        .map_err(|e| AppError::Config(format!("连不上常驻进程（{url}）: {e}")))?;
-    let status = response.status().as_u16();
-    let text = response
-        .text()
-        .map_err(|e| AppError::Config(format!("读常驻进程响应失败: {e}")))?;
-
-    if !(200..300).contains(&status) {
-        // agent 的原话比我们自己总结的有用：端口占用、token 不对、
-        // 配置无效，各自的修法完全不同
-        let message = serde_json::from_str::<serde_json::Value>(&text)
-            .ok()
-            .and_then(|json| {
-                json.get("error")
-                    .and_then(|e| e.as_str())
-                    .map(str::to_string)
-            })
-            .unwrap_or_else(|| text.trim().to_string());
-        return Err(AppError::Config(format!("HTTP {status}: {message}")));
-    }
-
-    serde_json::from_str(&text).map_err(|e| AppError::Config(format!("响应解析失败: {e}")))
-}
-
-/// 供测试：临时换个端口，避免和真在跑的 agent 抢。
-#[cfg(test)]
-pub fn control_url_for(port: u16, path: &str) -> String {
-    format!("http://127.0.0.1:{port}{path}")
+/// 找不到 agent 时的那句话。单独暴露是为了能单测。
+pub fn missing_agent_message() -> String {
+    tern_agent::client::missing_agent_message()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn agent_binary_name_matches_the_platform() {
-        let name = agent_binary_name();
-        if cfg!(windows) {
-            assert!(name.ends_with(".exe"), "Windows 上要带 .exe");
-        } else {
-            assert!(!name.contains('.'), "别的地方不该带扩展名");
-        }
-    }
 
     /// 找不到 agent 时那句话要能让人知道去哪修，而不是一句
     /// "No such file or directory"。
@@ -322,36 +92,15 @@ mod tests {
     /// 拿它测内容会让测试随开发机的状态时好时坏。
     #[test]
     fn a_missing_agent_reports_how_to_fix_it() {
-        let error = missing_agent_message().to_string();
-        assert!(error.contains("找不到"), "{error}");
-        assert!(error.contains(agent_binary_name()), "{error}");
-        // 要给出手动启动的办法，不能只报错
-        assert!(error.contains("安装目录"), "{error}");
+        let message = missing_agent_message();
+        assert!(message.contains("找不到"), "{message}");
+        assert!(message.contains("tern-agent"), "{message}");
     }
 
-    /// 没有 agent 时点「停止」不能报错：那会让用户以为出了什么问题，
-    /// 而实际状态正是他想要的——网关没在跑
+    /// 端口号两处必须一致：前端提示文案拼的是面板这个常量，
+    /// 而 agent 监听的是 control.rs 那个。漂了的表现是"照着提示做也连不上"。
     #[test]
-    fn stopping_with_no_agent_is_a_no_op_not_an_error() {
-        // 两种情形下都不该报错，且结果都该是"没在跑"：
-        // 1. agent 没起 → 直接返回占位状态（这条是重点，别硬拉起 agent 再停）
-        // 2. agent 起着 → 真的去停，结果同样是 running: false
-        let status = stop_gateway().unwrap();
-        assert!(!status.running, "停完就该是没在跑，不管 agent 起没起");
-    }
-
-    #[test]
-    fn control_url_is_always_loopback() {
-        // 控制端口只听回环。这条守的是"别哪天把它写成了 0.0.0.0"
-        let url = control_url_for(CONTROL_PORT, "/api/status");
-        assert!(url.contains("127.0.0.1"), "{url}");
-        assert!(!url.contains("0.0.0.0"), "{url}");
-    }
-
-    #[test]
-    fn listening_port_is_the_same_the_agent_uses() {
-        // 面板和 agent 必须用同一个端口。改一处忘了另一处，
-        // 症状是"点了启动没反应"，极难查
-        assert_eq!(CONTROL_PORT, 15801);
+    fn control_port_matches_the_agent() {
+        assert_eq!(CONTROL_PORT, tern_agent::control::CONTROL_PORT);
     }
 }

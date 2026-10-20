@@ -35,6 +35,7 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 use tokio::sync::Notify;
 
+pub mod client;
 pub mod control;
 pub mod single;
 

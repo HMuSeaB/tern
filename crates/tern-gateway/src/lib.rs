@@ -5,6 +5,9 @@
 
 pub mod adapter;
 pub mod ccswitch_import;
+/// `~/.claude/settings.json` 的读改写。CLI 的 `tern use` / `tern wire` 和面板
+/// 的接线、模型档位、权限放行共用它——那份逻辑此前在 tern-app 里抄了三遍。
+pub mod claude_settings;
 pub mod gateway;
 pub mod models;
 pub mod provider;

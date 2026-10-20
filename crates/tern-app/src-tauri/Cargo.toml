@@ -22,6 +22,10 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tern-gateway = { path = "../../tern-gateway" }
 tern-store = { path = "../../tern-store" }
+# 控制端客户端：找 agent、拉起它、起停网关。曾经面板自己写了一份，还刻意不依赖
+# agent 的 lib。现在 CLI 也要打同一组端点，而两端必须行为一致（token 怎么带、
+# 超时各给多少、出错转述谁的原话）——漂一处的表现是"面板点能成、命令行跑不行"。
+tern-agent = { path = "../../tern-agent" }
 tauri.workspace = true
 tauri-plugin-opener.workspace = true
 serde.workspace = true

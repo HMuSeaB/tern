@@ -102,15 +102,13 @@ pub fn permission_presets() -> Vec<(&'static str, &'static str, &'static str, &'
 
 /// Claude Code 配置目录：`~/.claude`。可被 `CLAUDE_CONFIG_DIR` 覆盖（多账户）。
 ///
-/// `wire` 也要用同一个目录：权限和接线动的是同一份 settings.json，
-/// 分成两个函数必然会有哪天改到一个不读另一个读的地方。
+/// `wire` 和 `model` 也要用同一个目录：权限、接线、模型档位动的是同一份 settings.json，
+/// 分成三个函数必然会有哪天改到一个不读另一个读的地方。实现共用一份。
 pub fn claude_dir() -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|v| !v.is_empty()) {
-        return Ok(PathBuf::from(dir));
-    }
-    dirs::home_dir()
-        .map(|home| home.join(".claude"))
-        .ok_or(AppError::NoConfigDir)
+    tern_gateway::claude_settings::claude_dir().map_err(|e| match e {
+        tern_gateway::claude_settings::ClaudeSettingsError::NoHomeDir => AppError::NoConfigDir,
+        other => AppError::Config(other.to_string()),
+    })
 }
 
 /// 只认 `settings.json`：用户级就读这一个文件（见模块顶部的实测记录）。
@@ -120,17 +118,7 @@ fn settings_path(claude_dir: &std::path::Path) -> std::path::PathBuf {
 
 /// 读一份 JSON 配置文件。不存在时返回空对象——调用方会往里头加东西。
 fn read_json(path: &std::path::Path) -> Result<Value> {
-    if !path.exists() {
-        return Ok(Value::Object(Map::new()));
-    }
-    let text = std::fs::read_to_string(path).map_err(|e| AppError::Config(e.to_string()))?;
-    // 容忍 BOM：PowerShell 5 的 Set-Content -Encoding utf8 会写，serde_json 不认
-    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
-    if text.trim().is_empty() {
-        return Ok(Value::Object(Map::new()));
-    }
-    serde_json::from_str(text)
-        .map_err(|e| AppError::Config(format!("{} 解析失败: {e}", path.display())))
+    tern_gateway::claude_settings::read_json(path).map_err(|e| AppError::Config(e.to_string()))
 }
 
 /// 列出所有预设及当前状态。文件不存在时全部视为未放行。
@@ -214,14 +202,14 @@ fn write_allow_at(
         array.retain(|v| v.as_str() != Some(rule));
     }
 
-    let text = serde_json::to_string_pretty(&root).map_err(|e| AppError::Config(e.to_string()))?;
-    // 配置目录理论上一定在（用户要跑 Claude Code 才有权限这回事），
-    // 但真不在也别报错就完事：建出来再写，比弹一个"路径不存在"有用
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| AppError::Config(e.to_string()))?;
-    }
-    backup_once(&path)?;
-    std::fs::write(&path, text + "\n").map_err(|e| AppError::Config(e.to_string()))?;
+    // 落盘交给共用模块：备份只留一份（"改动前"那份，不被后续改动覆盖），
+    // 语义就是 Backup::FirstOnly。目录不存在时它会建出来再写。
+    tern_gateway::claude_settings::write_json(
+        &path,
+        &root,
+        tern_gateway::claude_settings::Backup::FirstOnly(".tern-bak"),
+    )
+    .map_err(|e| AppError::Config(e.to_string()))?;
 
     list_at(claude_dir)
 }
@@ -241,25 +229,11 @@ fn string_array(value: Option<&Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// 改动前留一份滚动备份，已有就不覆盖。
-///
-/// 读-改-写本身是安全的（只在数组尾部加一项，其余值原样带走），这份备份是
-/// 防"我对代码的理解有误"。故意只留一份：多份备份只会让人分不清哪份是哪个，
-/// 而真正该回退的场景（ tern 写坏了）永远最近那一份才有用。
-/// 失败不阻断写操作——备份是保险，不是前置条件。
-fn backup_once(path: &std::path::Path) -> Result<()> {
-    if !path.exists() {
-        return Ok(());
-    }
-    let mut backup = path.as_os_str().to_os_string();
-    backup.push(".tern-bak");
-    let backup = PathBuf::from(backup);
-    if backup.exists() {
-        return Ok(());
-    }
-    std::fs::copy(path, &backup).map_err(|e| AppError::Config(e.to_string()))?;
-    Ok(())
-}
+// 改动前的备份由共用模块做（`Backup::FirstOnly`）。
+//
+// 读-改-写本身是安全的（只在数组尾部加一项，其余值原样带走），那份备份是防
+// "我对代码的理解有误"。只留一份：多份只会让人分不清哪份是哪个，而真正该回退的
+// 场景（tern 写坏了）永远"改动前"那一份才有用。
 
 #[cfg(test)]
 mod tests {

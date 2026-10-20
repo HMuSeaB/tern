@@ -27,6 +27,9 @@ env_logger = { version = "0.11", default-features = false, features = ["auto-col
 tokio = { version = "1", features = ["rt-multi-thread", "signal", "macros", "sync", "net", "time"] }
 serde.workspace = true
 serde_json.workspace = true
+# 控制端客户端（src/client.rs）用。reqwest 早就经由 tern-gateway 在这条依赖树里，
+# 所以常驻进程不会因此变大——这里只是把 blocking 那一面打开给自己用
+reqwest = { version = "0.12", features = ["blocking"] }
 
 [dev-dependencies]
 tempfile = "3"

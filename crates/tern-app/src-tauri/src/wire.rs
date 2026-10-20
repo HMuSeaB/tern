@@ -34,6 +34,7 @@
 //! settings.json 里 cc-switch 的模型别名、用户自己的 `includeCoAuthoredBy`
 //! 之类一律原样带回。测试守住这一条。
 
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -104,7 +105,7 @@ impl GatewayEndpoint {
                 let listen = status
                     .listen
                     .as_deref()
-                    .and_then(|text| text.parse().ok())
+                    .and_then(|text| text.parse::<SocketAddr>().ok())
                     .or_else(|| configured_listen().ok());
                 Ok(Self {
                     listen: listen.ok_or_else(|| {
@@ -402,16 +403,7 @@ fn write_backup(claude_dir: &Path, backup: &Backup) -> Result<()> {
 
 /// 读 settings.json。容忍 BOM 与空文件，不存在就是空对象。
 fn read_settings(path: &Path) -> Result<Value> {
-    if !path.exists() {
-        return Ok(Value::Object(Map::new()));
-    }
-    let text = std::fs::read_to_string(path).map_err(|e| AppError::Config(e.to_string()))?;
-    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
-    if text.trim().is_empty() {
-        return Ok(Value::Object(Map::new()));
-    }
-    serde_json::from_str(text)
-        .map_err(|e| AppError::Config(format!("{} 解析失败: {e}", path.display())))
+    tern_gateway::claude_settings::read_json(path).map_err(|e| AppError::Config(e.to_string()))
 }
 
 /// 拿到底层 JSON 里 `env` 那个对象，没有就建一个。
@@ -419,40 +411,18 @@ fn read_settings(path: &Path) -> Result<Value> {
 /// `env` 已存在但不是对象时**报错**而不是覆盖：那说明有人（用户或别的工具）
 /// 把它写成了别的形状，默默替换会丢东西。
 fn ensure_env(root: &mut Map<String, Value>) -> Result<&mut Map<String, Value>> {
-    let env = root
-        .entry("env")
-        .or_insert_with(|| Value::Object(Map::new()));
-    if !env.is_object() {
-        return Err(AppError::Config(
-            "settings.json 的 env 已存在且不是对象".into(),
-        ));
-    }
-    env.as_object_mut()
-        .ok_or_else(|| AppError::Config("settings.json 的 env 已存在且不是对象".into()))
+    tern_gateway::claude_settings::ensure_env(root).map_err(|e| AppError::Config(e.to_string()))
 }
 
-/// 落盘前留一份备份，只留第一次的。
-fn backup_once(path: &Path) -> Result<()> {
-    if !path.exists() {
-        return Ok(());
-    }
-    let mut backup = path.as_os_str().to_os_string();
-    backup.push(".tern-bak");
-    let backup = PathBuf::from(backup);
-    if backup.exists() {
-        return Ok(());
-    }
-    std::fs::copy(path, &backup).map_err(|e| AppError::Config(e.to_string()))?;
-    Ok(())
-}
-
+/// 落盘前留一份备份，只留第一次的——要的是"用户接线之前"那份，
+/// 不能被后续改动覆盖。共用模块里的 `FirstOnly` 就是这个语义。
 fn write_settings(path: &Path, root: &Value) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| AppError::Config(e.to_string()))?;
-    }
-    backup_once(path)?;
-    let text = serde_json::to_string_pretty(root).map_err(|e| AppError::Config(e.to_string()))?;
-    std::fs::write(path, text + "\n").map_err(|e| AppError::Config(e.to_string()))
+    tern_gateway::claude_settings::write_json(
+        path,
+        root,
+        tern_gateway::claude_settings::Backup::FirstOnly(".tern-bak"),
+    )
+    .map_err(|e| AppError::Config(e.to_string()))
 }
 
 #[cfg(test)]
