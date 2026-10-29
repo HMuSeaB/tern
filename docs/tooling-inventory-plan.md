@@ -89,29 +89,42 @@ cc-switch 那份 5795 字节、没有中文触发词、`"not just X — it's Y"`
 为什么用 Python 而不是 Rust：这是运维脚本不是产品功能，不该进 tern 的代码质量约束
 （`--offline` 构建、依赖白名单）。放 `tools/` 下，跟 `tools/*.html` 同一层级。
 
-### 3.2 消除分叉（第二步）
+### 3.2 消除分叉（已完成 2026-10-29）
 
-只有一个案例：**`kill-ai-slop`**。
+**只有一例：`kill-ai-slop`。**
 
-已查明是 `.claude` 那份新、`.cc-switch` 那份旧（claude 版多了中文触发词和
-更具体的 35 条清单）。处置：
+查明是 `.claude` 那份新、`.cc-switch` 那份旧：
 
-1. `diff` 复核，确认没有 cc-switch 独有的内容会被覆盖掉
-2. 以 `.claude` 版为准，覆盖 `~/.cc-switch/skills/kill-ai-slop/`
-3. 重跑扫描器确认两处 hash 一致
+- claude 版 6287 字节，带「去除AI味」等中文触发词，多一个
+  `scripts/rules.zh.mjs`（中文 AI 文案规则），多了「以减法为先但不要剥夺美感」
+  「避免过度修正到乏味」等三条原则，以及 `--rules` 用法
+- cc-switch 版 5795 字节，是旧的
+
+**已处理**：备份旧的到 `SystemTools\_Archive\skills-before-sync-2026-10-29\`，
+然后以 claude 版覆盖 cc-switch 版。核对结果：**13 个同名 skill 整目录指纹全部一致。**
 
 **不做符号链接**。虽然 Codex 已经在用链接（`kill-ai-slop` / `slides`），但那是
 既有结构，不主动推广——Windows 下建 symlink 需要开发者模式或管理员，
-而且链断了以后报错很隐蔽。**内容同步到一致比链接可靠。**
+且链断了报错很隐蔽。内容同步到一致比链接可靠。
 
-### 3.3 收掉明确无用的（第三步，需逐条确认）
+### 3.2b 扫描器已能认出镜像对（已完成）
 
-| 对象 | 理由 | 动作 |
+`scan.py` 里的 `MIRROR_SETS` 写死了「源 → 镜像」关系，用**整目录指纹**
+（所有文件路径+内容的哈希）而不是只看 `SKILL.md`——因为 `kill-ai-slop` 那次
+分叉里 `rules.zh.mjs` 是新增文件，只比 `SKILL.md` 会漏判。
+
+现在跑一次就能知道有没有新分叉，不用手工比对。
+
+### 3.3 收掉明确无用的
+
+| 对象 | 理由 | 状态 |
 |---|---|---|
-| `gopls-lsp` 插件 | 没有 Go 项目 | 卸载 |
-| `obsidian` 插件 | 除非在真用 Obsidian | 确认后卸载 |
-| `~/.windsurf`、`~/.gemini` | 只有空目录/单个残留 | 确认后删 |
-| `clean` skill | 与 `kill-ai-slop` 定位交叉，名字无辨识度 | 看内容再定 |
+| `gopls-lsp` 插件 | 没有 Go 项目 | **已卸载**（注册表从 5 个降到 3 个） |
+| `obsidian` 插件 | 不在用 Obsidian | **已卸载** |
+| `~/.windsurf`、`~/.gemini` | 只有空目录/单个残留 | 待确认 |
+| `clean` skill | 与 `kill-ai-slop` 定位交叉，名字无辨识度 | 待看内容再定 |
+
+卸载后留下的缓存残骸（gopls 14 KB + obsidian 63 KB）不值得单独清。
 
 ### 3.4 一个反直觉的结论
 
@@ -134,11 +147,32 @@ cc-switch 那份 5795 字节、没有中文触发词、`"not just X — it's Y"`
 
 1. [x] 写 `tools/inventory/scan.py` + 产出 `tools/inventory/inventory.md`（只读，
        验证过：识别 90 目录 / 65 名字 / 13 处跨宿主 / 链接标注 / 分叉检测）
-2. [ ] 复核 `kill-ai-slop` 的 diff，以 `.claude` 版为准覆盖 `.cc-switch`，重跑确认一致
-3. [ ] 逐条确认 3.3 的四项，做了就更新索引
-4. [ ] 把 `inventory.md` 的路径登记到 `C:\Users\36230\SystemTools\索引.md` 第二节
+2. [x] 复核 `kill-ai-slop` 的 diff，以 `.claude` 版覆盖 `.cc-switch`（旧版已备份），
+       重跑确认 13 个整目录指纹一致
+3. [x] 卸载 `gopls-lsp`、`obsidian` 两个插件
+4. [x] 把扫描器路径登记到 `C:\Users\36230\SystemTools\索引.md` 第二节
+5. [ ] 扫描器加镜像对识别（已完成，见 3.2b）
+6. [ ] 剩下的 `.windsurf` / `.gemini` 空目录、`clean` skill——待定
 
-## 六、扫描器怎么改
+## 六、以后的计划：让 tern 接管 skill 管理
+
+这是"集成到项目里"的真正含义，属于**产品功能**，不该和这轮清理混做。
+
+现状的痛点是：cc-switch 同步一份镜像到 `.claude/skills`，codex 又链回 cc-switch，
+**没有任何标记告诉你哪个是源头**。改了镜像真身不变，改了真身要等同步，
+同步卡住就分叉——用户只能靠比时间戳猜。
+
+要做的是 tern 的 skill 库：
+
+- **一个源**：`%APPDATA%\tern\skills\`，这是唯一的真身
+- **多宿主扇出**：Claude Code / Codex / Cursor 各自要什么格式写什么，带来源标记
+- **改动一次全生效**：不再有"改哪份"的问题
+- **不抢 cc-switch 的文件**：和 `settings.json` 那个问题一样，得先定归属
+
+前置条件：先确认 cc-switch 还在不在用。如果它只负责同步 skills 而不再切供应商，
+tern 可以直接接管，比维护两套简单。
+
+## 七、扫描器怎么改
 
 - 加新宿主：往 `HOSTS` 里加一条 `{skills: [...], mcp: [...]}`，路径不存在会自动跳过。
 - 加新的 MCP 格式（比如某宿主用 TOML 但表名不同）：在 `scan_mcp` 里加分支。

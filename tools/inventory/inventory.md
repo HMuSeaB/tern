@@ -18,7 +18,13 @@
 
 ## 重复与分叉
 
-| skill | 出现在 | 内容 |
+### 源码 → 镜像
+
+**cc-switch → claude**：13 个同名，全部一致
+
+### 跨宿主同名
+
+| skill | 出现在 | SKILL.md |
 |---|---|---|
 | `acid-typography` | Claude Code + Codex | 相同 |
 | `algorithmic-art` | Claude Code + Codex | 相同 |
@@ -28,7 +34,7 @@
 | `gh-knowledge-base` | Claude Code + Codex | 相同 |
 | `github-to-skills` | Claude Code + Codex | 相同 |
 | `graphify` | Claude Code + Codex | 相同 |
-| `kill-ai-slop` | Claude Code + Codex | **不同（已分叉）** |
+| `kill-ai-slop` | Claude Code + Codex | 相同 |
 | `memory-manager` | Claude Code + Codex | 相同 |
 | `skill-evolution-manager` | Claude Code + Codex | 相同 |
 | `skill-manager` | Claude Code + Codex | 相同 |

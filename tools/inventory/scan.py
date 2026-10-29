@@ -80,6 +80,63 @@ def sha8(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()[:8]
 
 
+# 已知的"源 → 镜像"关系。
+# cc-switch 把自己的 skills 库同步到 ~/.claude/skills，两边文件名一样、内容
+# 通常逐字节相同。同步卡住时只有一边被改，就分叉了——而没有任何标记告诉用户
+# 哪个是源头。这里把它写死，是为了让扫描结果能直接回答"该改哪个"。
+# 值里第一个是源，其余是镜像。
+MIRROR_SETS: dict[str, list[Path]] = {
+    "cc-switch → claude": [HOME / ".cc-switch" / "skills", HOME / ".claude" / "skills"],
+}
+
+
+def dir_fingerprint(path: Path) -> str:
+    """整个目录的内容指纹：所有文件的 相对路径 + 内容 排序后哈希。
+
+    只看 SKILL.md 不够——`kill-ai-slop` 那次分叉里，`scripts/rules.zh.mjs`
+    是新增文件，SKILL.md 的差异只是它的引用。整目录指纹才能判准。
+    """
+    h = hashlib.sha256()
+    try:
+        for f in sorted(path.rglob("*")):
+            if f.is_file():
+                h.update(str(f.relative_to(path)).replace("\\", "/").encode())
+                h.update(b"\0")
+                h.update(f.read_bytes())
+    except OSError:
+        return "<读取失败>"
+    return h.hexdigest()[:10]
+
+
+def scan_mirror_sets() -> list[dict]:
+    """比对源与镜像，报告哪些 skill 分叉了。"""
+    rows = []
+    for label, paths in MIRROR_SETS.items():
+        src = paths[0]
+        if not src.is_dir():
+            continue
+        src_names = {d.name for d in src.iterdir() if d.is_dir()}
+        for mirror in paths[1:]:
+            if not mirror.is_dir():
+                continue
+            mirror_names = {d.name for d in mirror.iterdir() if d.is_dir()}
+            for name in sorted(src_names & mirror_names):
+                a = dir_fingerprint(src / name)
+                b = dir_fingerprint(mirror / name)
+                rows.append(
+                    {
+                        "set": label,
+                        "name": name,
+                        "same": a == b,
+                        "src": str(src / name),
+                        "mirror": str(mirror / name),
+                        "src_fp": a,
+                        "mirror_fp": b,
+                    }
+                )
+    return rows
+
+
 def scan_skill_dir(path: Path) -> list[dict]:
     """一个 skills 目录下的每个子目录算一个 skill。
 
@@ -224,15 +281,40 @@ def build_report() -> str:
 
     add("## 重复与分叉")
     add("")
+    mirror_rows = scan_mirror_sets()
+    forked = [r for r in mirror_rows if not r["same"]]
+    if mirror_rows:
+        add("### 源码 → 镜像")
+        add("")
+        for label in {r["set"] for r in mirror_rows}:
+            group = [r for r in mirror_rows if r["set"] == label]
+            bad = [r for r in group if not r["same"]]
+            if bad:
+                add(f"**{label}**：{len(group)} 个同名，**{len(bad)} 个已分叉**")
+            else:
+                add(f"**{label}**：{len(group)} 个同名，全部一致")
+            add("")
+            if bad:
+                add("| skill | 源指纹 | 镜像指纹 | 该改哪个 |")
+                add("|---|---|---|---|")
+                for r in bad:
+                    add(
+                        f"| `{r['name']}` | {r['src_fp']} | {r['mirror_fp']} "
+                        f"| 先 `diff` 再决定，别直接覆盖 |"
+                    )
+                add("")
+
+    add("### 跨宿主同名")
+    add("")
     if not dupes:
         add("没有跨宿主重复的 skill。")
     else:
-        add("| skill | 出现在 | 内容 |")
+        add("| skill | 出现在 | SKILL.md |")
         add("|---|---|---|")
         for name, rows in sorted(dupes.items()):
             hosts = " + ".join(r["host"] for r in rows)
             hashes = {r["hash"] for r in rows if r["hash"]}
-            verdict = "相同" if len(hashes) <= 1 else "**不同（已分叉）**"
+            verdict = "相同" if len(hashes) <= 1 else "**不同**"
             add(f"| `{name}` | {hosts} | {verdict} |")
     add("")
 
