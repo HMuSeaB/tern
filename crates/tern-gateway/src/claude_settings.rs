@@ -151,6 +151,87 @@ pub fn write_json(path: &Path, root: &Value, backup: Backup) -> Result<()> {
         .map_err(|source| ClaudeSettingsError::Write(path.display().to_string(), source))
 }
 
+/// Claude Code 读模型名的四个档位。顺序即面板下拉里的层级：
+/// 主对话 / Haiku / Sonnet / Opus。
+pub const MODEL_KEYS: [&str; 4] = [
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+];
+
+/// 四个档位键当前各自的值。没配过的键不在结果里。
+///
+/// `tern check` 的活值段要的是"磁盘上实际是什么"，所以四个都报，
+/// 而不是像 `current_model` 那样只给第一个非空的。
+pub fn model_tiers(claude_dir: &Path) -> Result<Vec<(String, String)>> {
+    let settings = read_json(&settings_path(claude_dir))?;
+    let Some(env) = settings.get("env").and_then(Value::as_object) else {
+        return Ok(Vec::new());
+    };
+    Ok(MODEL_KEYS
+        .iter()
+        .filter_map(|key| {
+            let value = env.get(*key).and_then(Value::as_str)?.trim();
+            (!value.is_empty()).then(|| ((*key).to_string(), value.to_string()))
+        })
+        .collect())
+}
+
+/// 把一组 env 键值写进 `settings.json`。返回实际改动过的键名。
+///
+/// # 覆盖规则：配了就覆盖，没配的保留现值
+///
+/// 这是**切换供应商时应用该家配套的档位组合**的语义。这些映射本来就是用户当初
+/// 为这家逐个挑的（cc-switch 里 39 家，每家的 Opus/Sonnet 档都不一样），切到
+/// StepFun 却还用着上一家的 Opus 档，等于"切了但没完全切"。而它没配的档位
+/// （多数第三方站只配 Opus/Sonnet，不配 Haiku）保留现值，免得把用户手工指定的
+/// 那个抹成空。
+///
+/// 和"用户主动选一个模型"是两件事——那条规则是"已有值不覆盖"，见各宿主自己的
+/// 模型选择实现。混用这两套规则是 `settings.json` 被写坏最常见的原因。
+pub fn apply_env(
+    claude_dir: &Path,
+    env: &std::collections::BTreeMap<String, String>,
+) -> Result<Vec<String>> {
+    let path = settings_path(claude_dir);
+    let mut root = read_json(&path)?;
+    let Value::Object(ref mut obj) = root else {
+        return Err(ClaudeSettingsError::Shape(
+            "settings.json 顶层不是对象".into(),
+        ));
+    };
+    let target = ensure_env(obj)?;
+
+    let mut changed = Vec::new();
+    for (key, value) in env {
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        let same = target
+            .get(key)
+            .and_then(Value::as_str)
+            .is_some_and(|old| old == value);
+        if same {
+            continue;
+        }
+        target.insert(key.clone(), Value::String(value.to_string()));
+        changed.push(key.clone());
+    }
+    if changed.is_empty() {
+        return Ok(changed);
+    }
+    write_json(&path, &root, Backup::EachWrite(".tern-model-bak"))?;
+    Ok(changed)
+}
+
+// ---- apply_env 的测试见下方 `mod tests` ----
+// 从 tern-app 的 model.rs 搬过来（实现也一起搬了）。那几条守着的是"切供应商时
+// 该家配了的档位一律覆盖、没配的保留"——这套规则微妙，值得单独看住。
+// 测试必须待在 `mod tests` 里：它们用 `tempfile`，那只是 dev-dependency，
+// 放在模块顶层会让 lib 构建解析不到这个 crate。
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,6 +239,101 @@ mod tests {
 
     fn temp_dir() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
+    }
+
+    /// 建一个临时 claude 目录，写一份 settings.json，读回来。
+    fn temp_claude_dir(settings: &serde_json::Value) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, serde_json::to_string(settings).unwrap()).unwrap();
+        (dir, path)
+    }
+
+    fn env_of(path: &Path) -> serde_json::Map<String, Value> {
+        read_json(path).unwrap()["env"]
+            .as_object()
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// 切供应商时，该家配了的档位一律以它为准。
+    /// 否则切到 StepFun 却留着上一家的 Opus 档，等于"切了但没完全切"。
+    #[test]
+    fn apply_env_overwrites_keys_the_provider_configured() {
+        let (_dir, path) = temp_claude_dir(&serde_json::json!({"env": {
+            "ANTHROPIC_MODEL": "上一家的模型",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "上一家的-opus",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "我手工指定的-haiku",
+        }}));
+        let mut env = std::collections::BTreeMap::new();
+        env.insert(
+            "ANTHROPIC_MODEL".to_string(),
+            "step-5-preview[1M]".to_string(),
+        );
+        env.insert(
+            "ANTHROPIC_DEFAULT_OPUS_MODEL".to_string(),
+            "step-5-preview[1M]".to_string(),
+        );
+        let dir = path.parent().unwrap().to_path_buf();
+        let changed = apply_env(&dir, &env).unwrap();
+
+        let out = env_of(&path);
+        assert_eq!(out["ANTHROPIC_MODEL"], "step-5-preview[1M]");
+        assert_eq!(out["ANTHROPIC_DEFAULT_OPUS_MODEL"], "step-5-preview[1M]");
+        // 该家没配的键保留现值：第三方站多数只配 Opus/Sonnet，不配 Haiku
+        assert_eq!(out["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "我手工指定的-haiku");
+        assert_eq!(changed.len(), 2, "只有两个键的值真的变了");
+    }
+
+    /// 值一样就不该算改动。切换来切换去会频繁回到同一家，
+    /// 每次都算 changed 会让调用方报"改了 6 个键"而实际什么都没动。
+    #[test]
+    fn apply_env_reports_no_change_when_values_match() {
+        let (_dir, path) =
+            temp_claude_dir(&serde_json::json!({"env": {"ANTHROPIC_MODEL": "already-set"}}));
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("ANTHROPIC_MODEL".to_string(), "already-set".to_string());
+        let dir = path.parent().unwrap().to_path_buf();
+        assert!(apply_env(&dir, &env).unwrap().is_empty());
+    }
+
+    /// 空值不写。cc-switch 里有些键是空串（用户清过），
+    /// 写进去等于把 settings.json 里已有的值抹成空。
+    #[test]
+    fn apply_env_skips_empty_values() {
+        let (_dir, path) =
+            temp_claude_dir(&serde_json::json!({"env": {"ANTHROPIC_MODEL": "keep-me"}}));
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("ANTHROPIC_MODEL".to_string(), "  ".to_string());
+        env.insert("ANTHROPIC_DEFAULT_OPUS_MODEL".to_string(), String::new());
+        let dir = path.parent().unwrap().to_path_buf();
+        assert!(apply_env(&dir, &env).unwrap().is_empty());
+        assert_eq!(env_of(&path)["ANTHROPIC_MODEL"], "keep-me");
+    }
+
+    /// `tern check` 的活值段要四个都报，所以缺的键不该让整段消失。
+    #[test]
+    fn model_tiers_reports_only_the_keys_actually_set() {
+        let (_dir, path) = temp_claude_dir(&serde_json::json!({"env": {
+            "ANTHROPIC_MODEL": "deepseek/deepseek-v4-pro",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "  ",
+        }}));
+        let dir = path.parent().unwrap().to_path_buf();
+        let tiers = model_tiers(&dir).unwrap();
+        assert_eq!(
+            tiers,
+            vec![(
+                "ANTHROPIC_MODEL".to_string(),
+                "deepseek/deepseek-v4-pro".to_string()
+            )],
+            "空白的 Haiku 档不算配过"
+        );
+    }
+
+    #[test]
+    fn model_tiers_is_empty_when_nothing_is_configured() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(model_tiers(dir.path()).unwrap().is_empty());
     }
 
     #[test]

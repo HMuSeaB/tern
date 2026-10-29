@@ -20,3 +20,7 @@ crates/tern-app/src-tauri/resources/
 
 # Antigravity 辅助文档工件目录
 .antigravity_docs/
+
+# 会话归档。单个会话 jsonl 动辄十几兆，且含完整对话与工具输出（可能有 key 片段）。
+# 归档目录本身保留（里面的 manifest.md 要进仓库做索引），只排掉会话本体。
+.claude-archive/sessions/
