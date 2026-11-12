@@ -358,6 +358,11 @@ fn toggle_gateway(app: &AppHandle) {
 /// 排空，用量不丢。硬杀能做到同样的事，但会丢最多一条 in-flight 的记账。
 ///
 /// 这一步失败不阻断退出——用户想走就走，agent 留着下次安装器会处理它。
+#[tauri::command]
+pub fn app_quit(app: AppHandle) {
+    quit(&app);
+}
+
 fn quit(app: &AppHandle) {
     crate::QUITTING.store(true, std::sync::atomic::Ordering::SeqCst);
     log::info!("[tray] 用户选择退出，正在收尾");

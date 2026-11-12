@@ -38,6 +38,7 @@ import type {
 /** 三种视图。做成单选而不是两个独立开关：两个开关会同时开，
  *  那时"到底听哪个"得靠代码里的优先级猜，用户看不出所以然。 */
 type ViewMode = "flat" | "url" | "folder";
+const COLLAPSED_KEY = "tern-collapsed-groups";
 
 const VIEW_MODES: ReadonlyArray<{ id: ViewMode; label: string; hint: string }> = [
   { id: "flat", label: "平铺", hint: "所有供应商排成一个列表" },
@@ -78,7 +79,16 @@ export function Providers({
   const [groupBusy, setGroupBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   /** 收起来的分组名（含地址视图的分组键）。空集 = 全展开 */
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    try {
+      const saved: unknown = JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]");
+      return Array.isArray(saved)
+        ? new Set(saved.filter((value): value is string => typeof value === "string"))
+        : new Set();
+    } catch {
+      return new Set();
+    }
+  });
   /** provider_id → 近 30 天加权请求数。"常用地址排前面"的依据。
    *  拿不到就空 Map，顺序退化成"按配置里的原序"——用量库不存在是正常情况
    *  （还没跑过网关），不该因此让整页报错。 */
@@ -115,6 +125,10 @@ export function Providers({
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  useEffect(() => {
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...collapsed]));
+  }, [collapsed]);
 
   const select = useCallback(
     async (id: string) => {

@@ -49,6 +49,8 @@ fn main() {
             tern_app_lib::commands::panel_breakdown,
             tern_app_lib::commands::panel_sessions,
             tern_app_lib::commands::panel_model_flow,
+            // 应用退出
+            tern_app_lib::tray::app_quit,
             // 网关启停
             tern_app_lib::server::server_start,
             tern_app_lib::server::server_stop,

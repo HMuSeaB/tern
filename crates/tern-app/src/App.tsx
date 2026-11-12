@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { CcSwitchUsageCard } from "./CcSwitchUsageCard";
 import { ModelEnvBackfillCard } from "./ModelEnvBackfillCard";
 import { PanelView } from "./PanelView";
@@ -10,6 +11,7 @@ import { usePanel } from "./usePanel";
 import { useTern, type CcSwitchPreview } from "./useTern";
 import { Welcome } from "./Welcome";
 import { Wire } from "./Wire";
+import { Workbench } from "./Workbench";
 import type { ConfigSummary, ServerStatus } from "./types";
 
 /** 二级视图按需加载。
@@ -24,10 +26,10 @@ const PanelInsights = lazy(() =>
 type Theme = "light" | "dark";
 const THEME_KEY = "tern-theme";
 /** tab 的选择只在本次进程里有效：退出重开回到默认页比记住第 3 页更符合预期 */
-const TAB_KEY = "tern-tab";
+const TAB_KEY = "tern-tab-v2";
 
 /** 各 tab 的 id。固定字符串，TabShell 只按它找当前页 */
-const TABS = ["providers", "usage", "wire", "permissions"] as const;
+const TABS = ["workbench", "providers", "usage", "wire", "permissions"] as const;
 type TabId = (typeof TABS)[number];
 
 export default function App() {
@@ -77,7 +79,7 @@ export default function App() {
   }
 
   return (
-    <Shell theme={theme} setTheme={setTheme} server={boot.server} onStart={start} onStop={stop} busy={busy}>
+    <Shell theme={theme} setTheme={setTheme}>
       {(boot.firstRun && !imported) ? (
         <Welcome
           preview={preview}
@@ -96,6 +98,9 @@ export default function App() {
           providerCount={boot.config?.providers.length ?? 0}
           config={boot.config}
           server={boot.server}
+          onStart={start}
+          onStop={stop}
+          busy={busy}
           onRefresh={refresh}
         />
       )}
@@ -104,14 +109,7 @@ export default function App() {
 }
 
 /**
- * 四块内容套一层 tab。
- *
- * 页序就是频率序：供应商（切它是最高频的操作）→ 用量（顺便看看）→ 接入（一次性设置）
- * → 权限（一次性设置）。所以供应商是默认页，两个设置页收了进去。
- *
- * 四块还是原封不动的组件，`running` / `onRefresh` 照旧透传——tab 只管切换，
- * 不掺合业务。原来上下堆叠时"网关没跑就显示 IdleState"的逻辑搬到了「用量」页里：
- * 那一页本来就是网关的下游，别的地方不该因为网关停着就变灰。
+ * 工作台负责日常运行与切换；供应商、用量、接入、权限作为深入管理的独立页面保留。
  */
 function Tabs({
   running,
@@ -122,6 +120,9 @@ function Tabs({
   providerCount,
   config,
   server,
+  onStart,
+  onStop,
+  busy,
   onRefresh,
 }: {
   running: boolean;
@@ -132,12 +133,14 @@ function Tabs({
   providerCount: number;
   config: ConfigSummary | null;
   server: ServerStatus | null;
+  onStart: () => void;
+  onStop: () => void;
+  busy: boolean;
   onRefresh: () => void;
 }) {
   const [active, setActive] = useState<TabId>(() => {
-    // 记住上次停在哪一页。窗口多半是被切到别处找东西，重开却回到第一页要多点一下
     const saved = localStorage.getItem(TAB_KEY);
-    return TABS.includes(saved as TabId) ? (saved as TabId) : "providers";
+    return TABS.includes(saved as TabId) ? (saved as TabId) : "workbench";
   });
 
   /** 「用量」页里"趋势与占比"的展开状态。
@@ -162,7 +165,8 @@ function Tabs({
     panelReady !== null && (panelReady.today.unpriced > 0 || panelReady.failures.length > 0);
 
   const tabs: TabDef[] = [
-    { id: "providers", label: "供应商", alert: activeKeyBroken || error !== null },
+    { id: "workbench", label: "工作台", alert: activeKeyBroken || error !== null },
+    { id: "providers", label: "供应商", alert: activeKeyBroken },
     { id: "usage", label: "用量", alert: usageAlerts },
     { id: "wire", label: "接入" },
     { id: "permissions", label: "权限" },
@@ -174,6 +178,22 @@ function Tabs({
           全局动作，塞进「供应商」页的话，在别的页点启动然后看不到原因 */}
       {error && <ErrorBar message={error} onRetry={onRetry} />}
       <TabShell tabs={tabs} active={active} onSelect={(id) => setActive(id as TabId)}>
+        <TabPage id="workbench" active={active === "workbench"}>
+          <Workbench
+            running={running}
+            busy={busy}
+            server={server}
+            config={config}
+            panel={panelReady}
+            onStart={onStart}
+            onStop={onStop}
+            onRefresh={() => {
+              onRefresh();
+              panel.refresh();
+            }}
+          />
+        </TabPage>
+
         <TabPage id="providers" active={active === "providers"}>
           <Providers running={running} onRefresh={onRefresh} />
         </TabPage>
@@ -251,18 +271,10 @@ function Shell({
   children,
   theme,
   setTheme,
-  server,
-  onStart,
-  onStop,
-  busy,
 }: {
   children: React.ReactNode;
   theme: Theme;
   setTheme: (t: Theme) => void;
-  server?: { running: boolean; listen: string | null } | null;
-  onStart?: () => void;
-  onStop?: () => void;
-  busy?: boolean;
 }) {
   return (
     <div className="app">
@@ -271,20 +283,6 @@ function Shell({
           <span className="brand-mark">t</span>
           <span className="brand-name">tern</span>
         </div>
-        {server && onStart && onStop && (
-          <div className="server-toggle">
-            <span className={`live-dot ${server.running ? "on" : "off"}`} />
-            <span className="server-state">{server.running ? "网关运行中" : "网关已停止"}</span>
-            {server.listen && <code className="server-addr">{server.listen}</code>}
-            <button
-              className={`btn ${server.running ? "" : "primary"}`}
-              onClick={server.running ? onStop : onStart}
-              disabled={busy}
-            >
-              {server.running ? "停止" : "启动"}
-            </button>
-          </div>
-        )}
         <div className="spacer" />
         <button
           className="btn icon"
@@ -293,6 +291,16 @@ function Shell({
         >
           {theme === "dark" ? "☀" : "☾"}
         </button>
+        <button
+          className="btn header-action"
+          onClick={() => void getCurrentWindow().hide()}
+          title="隐藏到系统托盘，网关继续运行"
+        >隐藏</button>
+        <button
+          className="btn header-action quit-action"
+          onClick={() => void invoke("app_quit")}
+          title="退出面板和后台网关"
+        >退出</button>
       </header>
       <main className="content">{children}</main>
     </div>
