@@ -118,7 +118,7 @@ fn windows_paths_from(local: &Path) -> (PathBuf, PathBuf) {
 
 #[tauri::command]
 pub fn claude_desktop_status() -> Result<DesktopStatus> {
-    status_at(&Paths::resolve()?)
+    status_at(&Paths::resolve()?, token_configured()?)
 }
 
 #[tauri::command]
@@ -199,14 +199,14 @@ pub fn claude_desktop_connect(provider_id: String, models: Vec<String>) -> Resul
 
     set_desktop_mode(&paths.normal_config)?;
     set_desktop_mode(&paths.threep_config)?;
-    status_at(&paths)
+    status_at(&paths, token_configured()?)
 }
 
 #[tauri::command]
 pub fn claude_desktop_disconnect() -> Result<DesktopStatus> {
     let paths = Paths::resolve()?;
     if !paths.profile.exists() && !paths.backup.exists() {
-        return status_at(&paths);
+        return status_at(&paths, token_configured()?);
     }
     let backup = if paths.backup.exists() {
         read_backup(&paths.backup)?
@@ -239,10 +239,16 @@ pub fn claude_desktop_disconnect() -> Result<DesktopStatus> {
     if paths.backup.exists() {
         std::fs::remove_file(&paths.backup).map_err(|error| io_error(&paths.backup, error))?;
     }
-    status_at(&paths)
+    status_at(&paths, token_configured()?)
 }
 
-fn status_at(paths: &Paths) -> Result<DesktopStatus> {
+fn token_configured() -> Result<bool> {
+    Ok(crate::config::load(&crate::config::config_path()?)?
+        .access_token
+        .is_some_and(|token| !token.trim().is_empty()))
+}
+
+fn status_at(paths: &Paths, token_configured: bool) -> Result<DesktopStatus> {
     let profile = read_json(&paths.profile)?;
     let meta = read_json(&paths.meta)?;
     let active = meta.get("appliedId").and_then(Value::as_str) == Some(PROFILE_ID);
@@ -263,10 +269,6 @@ fn status_at(paths: &Paths) -> Result<DesktopStatus> {
         })
         .collect();
     let connected = active && base_url.is_some();
-    let token_configured = crate::config::load(&crate::config::config_path()?)
-        .ok()
-        .and_then(|config| config.access_token)
-        .is_some_and(|token| !token.trim().is_empty());
     Ok(DesktopStatus {
         connected,
         active,
@@ -445,7 +447,7 @@ mod tests {
         )
         .unwrap();
         write_json(&paths.meta, &json!({"appliedId":PROFILE_ID})).unwrap();
-        let status = status_at(&paths).unwrap();
+        let status = status_at(&paths, true).unwrap();
         assert!(status.connected);
         assert!(status.token_configured);
         assert_eq!(status.base_url.as_deref(), Some("http://127.0.0.1:15800"));
