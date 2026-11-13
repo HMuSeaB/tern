@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { createPortal } from "react-dom";
 import { formatMoneyHero, formatTokens } from "./format";
 import type { ClaudeDesktopStatus, WireStatus } from "./Wire";
 import type { ConfigSummary, Panel, ServerStatus } from "./types";
@@ -66,7 +67,9 @@ export function Workbench({
   const [selectingProvider, setSelectingProvider] = useState(false);
   const [providerPickerOpen, setProviderPickerOpen] = useState(false);
   const [providerQuery, setProviderQuery] = useState("");
+  const [pickerPosition, setPickerPosition] = useState<{ top: number | null; bottom: number | null; left: number; width: number; maxHeight: number } | null>(null);
   const providerPickerRef = useRef<HTMLDivElement>(null);
+  const providerPickerPopoverRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   const providers = config?.providers ?? [];
   const active = providers.find((provider) => provider.active) ?? null;
@@ -98,14 +101,50 @@ export function Workbench({
   }, [refreshWire]);
 
   useEffect(() => {
-    if (!providerPickerOpen) return;
+    if (!providerPickerOpen) {
+      setPickerPosition(null);
+      return;
+    }
+    const updatePosition = () => {
+      const trigger = providerPickerRef.current?.querySelector(".provider-picker-trigger");
+      if (!trigger) return;
+      const rect = trigger.getBoundingClientRect();
+      const gap = 8;
+      const margin = 12;
+      const desiredHeight = 330;
+      const below = window.innerHeight - rect.bottom - gap - margin;
+      const above = rect.top - gap - margin;
+      const available = Math.max(below, above);
+      const useViewportFallback = available < 220;
+      const placeBelow = below >= Math.min(240, desiredHeight) || below >= above;
+      const maxHeight = useViewportFallback
+        ? Math.max(160, window.innerHeight - margin * 2)
+        : Math.min(desiredHeight, placeBelow ? below : above);
+      const width = Math.min(Math.max(rect.width, 420), window.innerWidth - margin * 2);
+      const left = Math.max(margin, Math.min(rect.left, window.innerWidth - width - margin));
+      setPickerPosition({
+        top: useViewportFallback ? margin : placeBelow ? rect.bottom + gap : null,
+        bottom: useViewportFallback ? null : placeBelow ? null : window.innerHeight - rect.top + gap,
+        left,
+        width,
+        maxHeight,
+      });
+    };
     const closeOnOutsideClick = (event: PointerEvent) => {
-      if (!providerPickerRef.current?.contains(event.target as Node)) {
+      const target = event.target as Node;
+      if (!providerPickerRef.current?.contains(target) && !providerPickerPopoverRef.current?.contains(target)) {
         setProviderPickerOpen(false);
       }
     };
+    updatePosition();
     document.addEventListener("pointerdown", closeOnOutsideClick);
-    return () => document.removeEventListener("pointerdown", closeOnOutsideClick);
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsideClick);
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
   }, [providerPickerOpen]);
 
   const selectProvider = async (id: string) => {
@@ -160,7 +199,7 @@ export function Workbench({
           </span>
         </div>
 
-        <div className="flowline" aria-label="Claude Code CLI 或 Claude Desktop 经过 tern 网关，按路由规则转发到上游">
+        <div className="flowline" aria-label="客户端请求进入 tern，根据模型名前缀选择上游供应商">
           <div className="flow-clients">
             <div className={`flow-client ${wire?.wired ? "is-connected" : ""}`}>
               <span className="flow-node-icon">⌘</span>
@@ -177,9 +216,14 @@ export function Workbench({
             <span><b>tern 网关</b><small>{server?.listen ?? "127.0.0.1:15800"}</small></span>
           </div>
           <span className={`flow-link ${running ? "is-active" : ""}`} aria-hidden />
-          <div className={`flow-node ${active ? "is-connected" : ""}`}>
+          <div className="flow-node flow-routing">
+            <span className="flow-node-icon">⇄</span>
+            <span><b>路由规则</b><small><code>供应商/模型</code> 优先</small></span>
+          </div>
+          <span className={`flow-link ${running ? "is-active" : ""}`} aria-hidden />
+          <div className={`flow-node flow-fallback ${active ? "is-connected" : ""}`}>
             <span className="flow-node-icon">↗</span>
-            <span><b>{active?.name ?? "选择供应商"}</b><small>{active ? `默认兜底 · ${apiFormatLabel(active.api_format)}` : "尚未设置兜底"}</small></span>
+            <span><b>{active?.name ?? "选择供应商"}</b><small>{active ? `仅作兜底 · ${apiFormatLabel(active.api_format)}` : "尚未设置兜底"}</small></span>
           </div>
         </div>
 
@@ -205,8 +249,12 @@ export function Workbench({
                 </span>
                 <span className="provider-picker-chevron" aria-hidden>⌄</span>
               </button>
-              {providerPickerOpen && (
-                <div className="provider-picker-popover">
+              {providerPickerOpen && pickerPosition && createPortal(
+                <div
+                  ref={providerPickerPopoverRef}
+                  className="provider-picker-popover"
+                  style={{ top: pickerPosition.top ?? "auto", bottom: pickerPosition.bottom ?? "auto", left: pickerPosition.left, width: pickerPosition.width, height: pickerPosition.maxHeight }}
+                >
                   <input
                     autoFocus
                     type="search"
@@ -246,7 +294,8 @@ export function Workbench({
                       <p className="provider-picker-empty">没有找到匹配的供应商</p>
                     )}
                   </div>
-                </div>
+                </div>,
+                document.body,
               )}
             </div>
             <div className="route-explainer">

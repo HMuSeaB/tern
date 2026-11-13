@@ -1939,7 +1939,7 @@ select.prov-modal-input {
 
 .flowline {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(30px, .42fr) minmax(0, 1.12fr) minmax(30px, .42fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.2fr) minmax(18px, .28fr) minmax(0, 1fr) minmax(18px, .28fr) minmax(0, .9fr) minmax(18px, .28fr) minmax(0, 1fr);
   align-items: center;
   gap: 9px;
   margin: 26px 0 21px;
@@ -1990,6 +1990,11 @@ select.prov-modal-input {
 .flow-gateway.is-connected {
   background: color-mix(in srgb, var(--accent) 9%, var(--panel));
 }
+
+.flow-routing { border-style: dashed; }
+.flow-routing code { color: var(--accent); font: 9px var(--mono); }
+.flow-fallback { border-color: color-mix(in srgb, var(--accent) 24%, var(--line)); }
+.flow-fallback.is-connected { background: color-mix(in srgb, var(--accent) 5%, var(--panel)); }
 
 .flow-node-icon {
   display: grid;
@@ -2054,7 +2059,8 @@ select.prov-modal-input {
 .provider-picker-current small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim-2); font: 10.5px var(--mono); }
 .provider-picker-chevron { color: var(--dim-2); font-size: 17px; }
 .provider-picker-popover {
-  position: absolute; z-index: 20; left: 0; bottom: calc(100% + 7px); width: min(440px, 72vw); padding: 9px;
+  position: fixed; z-index: 1000; left: 0; width: min(440px, 72vw); padding: 9px;
+  display: flex; flex-direction: column; overflow: hidden;
   border: 1px solid var(--line-2); border-radius: 11px; background: var(--panel);
   box-shadow: 0 14px 34px color-mix(in srgb, #000 34%, transparent);
 }
@@ -2063,7 +2069,7 @@ select.prov-modal-input {
   outline: none; background: var(--bg); color: var(--fg); font: 12px var(--sans);
 }
 .provider-picker-popover > input:focus { border-color: var(--accent); }
-.provider-picker-options { display: grid; gap: 3px; max-height: 280px; overflow-y: auto; margin-top: 7px; }
+.provider-picker-options { display: grid; flex: 1; min-height: 0; gap: 3px; overflow-y: auto; margin-top: 7px; }
 .provider-picker-option {
   display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-width: 0; padding: 8px 9px;
   border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--fg); text-align: left; cursor: pointer;
@@ -2103,14 +2109,16 @@ select.prov-modal-input {
 @media (max-width: 700px) {
   .workbench-hero { padding: 18px; }
   .workbench-heading { flex-direction: column-reverse; }
-  .flowline { grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr); gap: 6px; margin: 20px 0 16px; }
-  .flow-clients { grid-row: 1 / span 3; gap: 5px; }
-  .flowline > .flow-link:first-of-type { grid-column: 2; grid-row: 2; }
+  .flowline { grid-template-columns: minmax(0, 1fr) 14px minmax(0, 1fr); grid-template-rows: repeat(5, auto); gap: 5px; margin: 20px 0 16px; }
+  .flow-clients { grid-column: 1; grid-row: 1 / span 5; gap: 5px; }
+  .flowline > .flow-link:nth-of-type(1) { grid-column: 2; grid-row: 2; }
   .flow-gateway { grid-column: 3; grid-row: 1; }
-  .flowline > .flow-link:last-of-type { grid-column: 2; grid-row: 3; }
-  .flowline > .flow-node:last-child { grid-column: 3; grid-row: 3; }
-  .flow-link { width: auto; height: 1px; margin-left: 0; }
-  .flow-link::after { top: -3px; right: 0; bottom: auto; transform: rotate(45deg); }
+  .flowline > .flow-link:nth-of-type(2) { grid-column: 2; grid-row: 3; }
+  .flow-routing { grid-column: 3; grid-row: 3; }
+  .flowline > .flow-link:nth-of-type(3) { grid-column: 2; grid-row: 5; }
+  .flowline > .flow-node:last-child { grid-column: 3; grid-row: 5; }
+  .flow-link { width: 1px; height: 14px; justify-self: center; }
+  .flow-link::after { top: auto; right: -3px; bottom: 0; transform: rotate(135deg); }
   .flow-clients { gap: 5px; }
   .flow-client { gap: 7px; padding: 6px 7px; }
   .flow-client b { font-size: 10.5px; }
