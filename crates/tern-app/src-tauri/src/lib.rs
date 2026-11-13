@@ -18,6 +18,7 @@
 
 pub mod agent;
 pub mod ccswitch_usage;
+pub mod claude_desktop;
 pub mod commands;
 pub mod config;
 mod db;

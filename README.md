@@ -146,8 +146,23 @@ $env:ANTHROPIC_MODEL = "deepseek/deepseek-v4-pro"
 claude
 ```
 
-写进 `~/.claude/settings.json` 的 `env` 段就是长期生效；面板「接入」页也能一键改，
+写进 `~/.claude/settings.json` 的 `env` 段就是长期生效；面板「接入」页的「Claude Code CLI」卡片也能一键改，
 只动 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN` 两个键，其余字段原样带回。
+
+### 接入 Claude Desktop（第三方推理 / 3P）
+
+面板「接入」页另有独立的「Claude Desktop」卡片，不会改 Claude Code CLI 的设置。选一家供应商，
+填它的真实模型 ID（可填多个），点「接入 Claude Desktop」。Tern 会在 Desktop 的 3P profile
+里写入本地网关地址、访问令牌和 `供应商/模型` 路由名，并保留其他 Desktop profile；接入后需完全
+退出并重开 Claude Desktop。断开时会删除 tern 的 profile，并恢复接入前生效的 profile 与启动模式。
+
+Claude Desktop 需要支持第三方推理 / Gateway 的版本。接入后选中的模型名会按 `供应商/模型名` 发送，
+例如 `deepseek/deepseek-v4-pro`。如需查看 Desktop 是否支持此功能，可在其开发者菜单里查看
+「Configure Third-Party Inference」。
+
+**本地文件与凭据**：Windows 通常写入 `%LOCALAPPDATA%\Claude-3p\configLibrary`，macOS 写入
+`~/Library/Application Support/Claude-3p/configLibrary`，Linux 写入 `~/.config/Claude-3p/configLibrary`。
+网关 access token 会写进 Desktop 的本机 profile；请保护好当前 Windows/macOS/Linux 用户账户。
 
 档位可以分开指定。子代理、压缩、后台小活各自跑在哪个模型上，正是"谁在花钱"的来源：
 

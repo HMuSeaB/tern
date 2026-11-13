@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import type { ConfigSummary } from "./types";
 
 /**
  * 把 Claude Code 接到 tern 的流量上。
@@ -177,6 +178,161 @@ export function Wire({
       </p>
     </div>
   );
+}
+
+/** Claude Desktop 是独立客户端：使用 3P configLibrary，不触碰 Claude Code 的 settings.json。 */
+export function ClaudeDesktopWire({
+  config,
+  running,
+}: {
+  config: ConfigSummary | null;
+  running: boolean;
+}) {
+  const [status, setStatus] = useState<ClaudeDesktopStatus | null>(null);
+  const [providerId, setProviderId] = useState("");
+  const [modelsText, setModelsText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    try {
+      const next = await invoke<ClaudeDesktopStatus>("claude_desktop_status");
+      setStatus(next);
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  useEffect(() => {
+    if (!providerId && config?.providers.length) setProviderId(config.providers[0].id);
+  }, [config, providerId]);
+
+  useEffect(() => {
+    if (!status?.connected || status.models.length === 0) return;
+    const firstRoute = status.models[0].split("/", 1)[0];
+    if (config?.providers.some((provider) => provider.id === firstRoute)) setProviderId(firstRoute);
+    setModelsText(status.models.map((model) => {
+      const prefix = `${firstRoute}/`;
+      return model.startsWith(prefix) ? model.slice(prefix.length) : model;
+    }).join("\n"));
+  }, [status, config]);
+
+  const connect = async () => {
+    const models = modelsText.split(/[\n,，]+/).map((model) => model.trim()).filter(Boolean);
+    if (!providerId || !models.length) {
+      setError("请选择供应商，并填写至少一个上游模型名。");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      setStatus(await invoke<ClaudeDesktopStatus>("claude_desktop_connect", { providerId, models }));
+      setNotice("Claude Desktop 已接入。请完全退出并重新打开 Claude Desktop 后生效。");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disconnect = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      setStatus(await invoke<ClaudeDesktopStatus>("claude_desktop_disconnect"));
+      setNotice("已恢复接入前的 Claude Desktop 配置。完全退出并重开应用后生效。");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const providers = config?.providers ?? [];
+  const selectedProvider = providers.find((provider) => provider.id === providerId);
+
+  return (
+    <section className="card desktop-wire">
+      <div className="head">
+        <span className="title">Claude Desktop · Chat / Cowork / Code</span>
+        <span className="act">{status?.connected ? "已接入 tern" : status?.active ? "有活动配置" : "未接入"}</span>
+      </div>
+      <p className="perm-hint">
+        Claude Desktop 的 Chat、Cowork 和 Code 共用这条网关配置。它和 Claude Code CLI 是两套设置：此处写入 Desktop 的 3P profile，不会改动 <code>~/.claude/settings.json</code>。
+      </p>
+
+      {status?.connected && (
+        <div className="wire-now">
+          <span className="side-label">当前 Desktop 网关</span>
+          <code className="wire-url">{status.baseUrl}</code>
+          <span className="wire-vs">模型：{status.models.join("、")}</span>
+        </div>
+      )}
+
+      <div className="desktop-wire-form">
+        <label className="desktop-wire-field">
+          <span>供应商</span>
+          <select value={providerId} onChange={(event) => setProviderId(event.target.value)} disabled={!providers.length}>
+            {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name} · {provider.id}</option>)}
+          </select>
+        </label>
+        <label className="desktop-wire-field">
+          <span>模型名 <small>填写该上游的真实模型 ID，可多行或逗号分隔</small></span>
+          <textarea
+            value={modelsText}
+            onChange={(event) => setModelsText(event.target.value)}
+            placeholder={selectedProvider ? "例如：\nclaude-sonnet-4-6" : "先选择供应商"}
+            rows={3}
+          />
+        </label>
+      </div>
+
+      <div className="wire-row">
+        <button className="btn primary" onClick={() => void connect()} disabled={busy || !running || !providers.length}>
+          {busy ? "处理中…" : status?.connected ? "更新 Desktop 接入" : "接入 Claude Desktop"}
+        </button>
+        {status?.connected && (
+          <button className="btn" onClick={() => void disconnect()} disabled={busy}>
+            断开并恢复原配置
+          </button>
+        )}
+        <button className="btn ghost" onClick={() => void reload()} disabled={busy}>刷新状态</button>
+      </div>
+
+      {!running && <p className="workbench-warning">先启动 tern 网关，再接入 Claude Desktop。</p>}
+      {status && !status.tokenConfigured && (
+        <div className="notice warn" style={{ marginTop: 12 }}>
+          <span className="notice-ic">!</span>
+          <span className="notice-body">
+            tern 尚未设置 accessToken。Desktop 仍可接入，但本机其他进程也能访问网关并使用已配置的供应商凭据。
+            建议先在 tern.json 中设置 accessToken。
+          </span>
+        </div>
+      )}
+      {notice && <div className="notice ok" style={{ marginTop: 12 }}><span className="notice-ic">✓</span><span className="notice-body">{notice}</span></div>}
+      {error && <div className="notice err" style={{ marginTop: 12 }}><span className="notice-ic">!</span><span className="notice-body">{error}</span></div>}
+      <p className="perm-foot">
+        写入 <code>{status?.profilePath ?? "%LOCALAPPDATA%/Claude-3p/configLibrary"}</code> 中 tern 专属的 3P profile，并保留其它 profile。
+        Claude Desktop 的模型列表不负责自动发现 Tern 的路由名，因此这里按 <code>供应商/模型</code> 配置。
+        接入后完全退出并重开 Claude Desktop；断开会恢复原活动 profile 和原启动模式。
+      </p>
+    </section>
+  );
+}
+
+export interface ClaudeDesktopStatus {
+  connected: boolean;
+  active: boolean;
+  tokenConfigured: boolean;
+  baseUrl: string | null;
+  models: string[];
+  profilePath: string;
 }
 
 export interface WireStatus {

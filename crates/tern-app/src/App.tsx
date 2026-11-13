@@ -10,7 +10,7 @@ import { TabPage, TabShell, type TabDef } from "./Tabs";
 import { usePanel } from "./usePanel";
 import { useTern, type CcSwitchPreview } from "./useTern";
 import { Welcome } from "./Welcome";
-import { Wire } from "./Wire";
+import { ClaudeDesktopWire, Wire } from "./Wire";
 import { Workbench } from "./Workbench";
 import type { ConfigSummary, ServerStatus } from "./types";
 
@@ -255,7 +255,10 @@ function Tabs({
 
         {/* 接线是网关的下游：得知道在不在跑、监听哪个口 */}
         <TabPage id="wire" active={active === "wire"}>
-          <Wire running={running} onChanged={panel.refresh} />
+          <div className="client-connections">
+            <Wire running={running} onChanged={panel.refresh} />
+            <ClaudeDesktopWire config={config} running={running} />
+          </div>
         </TabPage>
 
         {/* 权限与网关无关，任何时候都该能点——包括网关还没启动时 */}

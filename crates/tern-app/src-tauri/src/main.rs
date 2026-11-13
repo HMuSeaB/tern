@@ -51,6 +51,10 @@ fn main() {
             tern_app_lib::commands::panel_model_flow,
             // 应用退出
             tern_app_lib::tray::app_quit,
+            // Claude Desktop 独立 3P 接线
+            tern_app_lib::claude_desktop::claude_desktop_status,
+            tern_app_lib::claude_desktop::claude_desktop_connect,
+            tern_app_lib::claude_desktop::claude_desktop_disconnect,
             // 网关启停
             tern_app_lib::server::server_start,
             tern_app_lib::server::server_stop,
