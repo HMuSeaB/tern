@@ -180,6 +180,7 @@ function Tabs({
       <TabShell tabs={tabs} active={active} onSelect={(id) => setActive(id as TabId)}>
         <TabPage id="workbench" active={active === "workbench"}>
           <Workbench
+            key={`${running}:${config?.default_provider ?? "none"}:${config?.providers.length ?? 0}`}
             running={running}
             busy={busy}
             server={server}
@@ -191,6 +192,8 @@ function Tabs({
               onRefresh();
               panel.refresh();
             }}
+            onOpenConnections={() => setActive("wire")}
+            onOpenProviders={() => setActive("providers")}
           />
         </TabPage>
 

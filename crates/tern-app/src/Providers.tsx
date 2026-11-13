@@ -16,19 +16,17 @@ import type {
 } from "./types";
 
 /**
- * 供应商列表：选一个当默认、看它的地址和状态、顺手拉一份模型列表，
- * 再加上**分组**。
+ * 上游供应商目录：管理服务商、请求地址和凭据，并查看其公开的模型 ID。
+ * 默认兜底是路由规则，不等于选择了一个模型。
  *
  * 功能分三层，越往后越省事：
  *
  * 1. **看有哪些**：38 个全列出，搜索框按名称/地址/id 都匹配——
  *    用户记得住 deepseek，记不住那串 uuid
- * 2. **换**：点一下切默认，即时生效（路由表换 default_provider，
- *    不用重启网关）。正在用的那个 key 坏了要直接说，否则用户
- *    只会看到"请求失败"，不知道是选错了供应商
- * 3. **拉模型列表**：中转站的模型名千奇百怪（step-3.5-flash-2603、
- *    kimi-k2.5），猜错只得到一句 404。上游有个 OpenAI 兼容的
- *    GET /v1/models，问它就行
+ * 2. **选兜底**：点一行把该供应商设为默认兜底，即时生效（路由表换 default_provider，
+ *    不用重启网关）。它只处理没有供应商前缀的请求。
+ * 3. **找上游模型 ID**：中转站的模型名各不相同。点「模型列表」查询上游接受的 ID；
+ *    将它与供应商 ID 组合成 `供应商/模型名`，才是固定路由到该上游的完整模型名。
  * 4. **分组**：38 个平铺就是个长名单，看不出"哪几个其实是同一个上游"。
  *    按请求地址归组是自动的（完整规范化 URL 相同即同组，
  *    见 Rust 侧 `folders::group_key`）；按文件夹归组是用户自己排的，
@@ -40,10 +38,20 @@ import type {
 type ViewMode = "flat" | "url" | "folder";
 const COLLAPSED_KEY = "tern-collapsed-groups";
 
+function apiFormatLabel(format: string): string {
+  const labels: Record<string, string> = {
+    anthropic: "Anthropic API",
+    openai_chat: "OpenAI Chat",
+    openai_responses: "OpenAI Responses",
+    gemini_native: "Gemini API",
+  };
+  return labels[format] ?? format;
+}
+
 const VIEW_MODES: ReadonlyArray<{ id: ViewMode; label: string; hint: string }> = [
-  { id: "flat", label: "平铺", hint: "所有供应商排成一个列表" },
-  { id: "url", label: "按地址", hint: "按请求地址自动归组" },
-  { id: "folder", label: "文件夹", hint: "按你自己排的文件夹分组" },
+  { id: "flat", label: "全部", hint: "所有上游供应商排成一个列表" },
+  { id: "url", label: "按上游地址", hint: "按上游请求地址自动归组" },
+  { id: "folder", label: "按文件夹", hint: "按你自己排的供应商文件夹分组" },
 ];
 
 export function Providers({
@@ -439,14 +447,14 @@ export function Providers({
   if (!config) {
     return (
       <div className="card">
-        <div className="head"><span className="title">供应商</span></div>
+        <div className="head"><span className="title">上游供应商</span></div>
         <p className="empty-text">正在读取…</p>
       </div>
     );
   }
 
   const active = config.providers.find((p) => p.active);
-  // 正在用的那个 key 是坏的：这是最该说的一句话，比用量数字更要紧
+  // 默认兜底供应商的凭据无效时，所有未指定前缀的请求都会失败
   const activeKeyBroken =
     active && active.key_state !== "real" && active.key_state !== "subscription";
 
@@ -476,33 +484,34 @@ export function Providers({
           className="prov-pick"
           onClick={() => void select(p.id)}
           disabled={pending !== null}
-          title={`切换到 ${p.name}`}
+          title={`设「${p.name}」为默认兜底供应商`}
         >
           <span className={`prov-radio ${p.active ? "on" : ""}`} aria-hidden />
           <span className="prov-main">
             <span className="prov-name">
-              {p.name}
-              {p.active && <span className="prov-tag">使用中</span>}
+              <span className="prov-name-label">{p.name}</span>
+              <code className="prov-id" title={`路由前缀：${p.id}/`}>{p.id}</code>
+              {p.active && <span className="prov-tag">默认兜底</span>}
             </span>
             <span className="prov-url" title={p.base_url}>{p.base_url}</span>
           </span>
         </button>
         <span className="prov-side">
-          <code className="prov-fmt">{p.api_format}</code>
+          <code className="prov-fmt">{apiFormatLabel(p.api_format)}</code>
           {p.web_tools_at_risk && (
             <span className="prov-risk" title="第三方网关：Claude Code 的联网搜索会失效">
               联网受限
             </span>
           )}
-          {p.key_state === "placeholder" && <span className="prov-bad">占位符</span>}
-          {p.key_state === "empty" && <span className="prov-bad">key 为空</span>}
+          {p.key_state === "placeholder" && <span className="prov-bad">凭据待填写</span>}
+          {p.key_state === "empty" && <span className="prov-bad">凭据为空</span>}
           {/* 复制模型名前缀：填进 Claude Code 的 model 就显式走这家。
               只给 `id/` 不给具体模型名——网关不知道上游有哪些模型，
               猜出来的名字只会 404。真实模型名从下面的「模型列表」拿 */}
           <button
             className="prov-edit-link"
             onClick={() => void copyModelPrefix(p.id, p.name)}
-            title={`复制「${p.id}/」前缀：填进 Claude Code 的 model，请求就显式走 ${p.name}，不依赖默认供应商`}
+            title={`复制「${p.id}/」路由前缀：放在模型名前，请求就显式走 ${p.name}，不依赖默认兜底供应商`}
           >
             复制前缀
           </button>
@@ -519,7 +528,7 @@ export function Providers({
             <button
               className="prov-models-btn"
               onClick={() => setExpanded(expanded === p.id ? null : p.id)}
-              title="获取这个供应商的模型列表"
+              title="查看并复制上游模型 ID"
             >
               {expanded === p.id ? "收起" : "模型列表"}
             </button>
@@ -533,16 +542,21 @@ export function Providers({
   return (
     <div className="card">
       <div className="head">
-        <span className="title">供应商</span>
+        <span className="title">上游供应商</span>
         <span className="act">
-          {config.providers.length} 个
-          {active ? ` · 当前 ${active.name}` : " · 未设置默认"}
+          {config.providers.length} 家
+          {active ? ` · 默认兜底：${active.name}` : " · 尚未设置兜底"}
         </span>
+      </div>
+
+      <div className="prov-concept">
+        <b>这里选择请求发给哪家服务，不是在选择模型。</b>
+        <span>供应商提供地址、协议和凭据；客户端请求中的模型名决定上游模型。只有没写 <code>供应商/模型名</code> 前缀时，才会使用默认兜底。</span>
       </div>
 
       {config.default_provider === null && (
         <p className="perm-hint">
-          还没有默认供应商。点下面任意一个，之后不带前缀的模型名都会走它。
+          还没有默认兜底供应商。点下面一行设定兜底去向；也可以先点「新增供应商」。
         </p>
       )}
 
@@ -550,8 +564,8 @@ export function Providers({
         <div className="notice err" style={{ marginBottom: 14 }}>
           <span className="notice-ic">!</span>
           <span className="notice-body">
-            <b>正在用的「{active.name}」key 不能用了。</b>
-            请求会全部失败。请在下面换一个——key 正常的旁边没有红字。
+            <b>默认兜底「{active.name}」的凭据不可用。</b>
+            未指定供应商前缀的请求会失败。请修复这家或切换兜底供应商。
           </span>
         </div>
       )}
@@ -832,7 +846,7 @@ function ModelList({ providerId, running }: { providerId: string; running: boole
   }, [load]);
 
   if (busy && !models) {
-    return <p className="prov-models">正在向上游询问…</p>;
+    return <p className="prov-models">正在向上游询问模型 ID…</p>;
   }
 
   if (error) {
@@ -853,22 +867,25 @@ function ModelList({ providerId, running }: { providerId: string; running: boole
   return (
     <div className="prov-models">
       <div className="prov-models-head">
-        <span>{models.length} 个模型</span>
+        <span>{models.length} 个上游模型 ID</span>
         <span className="dim">
-          复制带前缀的完整名字填进 Claude Code 的 model，即显式走这家
+          这些是上游接受的模型名。复制 <code>供应商/模型名</code> 填进客户端，即显式走这家
         </span>
       </div>
       <ul className="prov-models-grid">
         {models.map((m) => (
           <li key={m}>
-            {/* 完整形式而不是裸模型名：用户要填进 settings.json 的就是这一整串。
-                裸名填进去会落到默认供应商——那正是"换了模型却还走老路"的成因 */}
-            <code title={`${providerId}/${m}（点一下复制）`}>
+            {/* 模型 ID 是上游名称；providerId 是 Tern 路由前缀。
+                点击复制组合后的完整路由名，避免把裸模型名误当成固定供应商路由。 */}
+            <code title={`${providerId}/${m}（点击复制完整路由名）`}>
               <button
                 className="model-copy"
+                aria-label={`复制完整路由名 ${providerId}/${m}`}
                 onClick={() => void copyModelName(`${providerId}/${m}`)}
               >
-                {providerId}/{m}
+                <span className="model-route-provider">{providerId}</span>
+                <span className="model-route-separator">/</span>
+                <span className="model-route-id">{m}</span>
               </button>
             </code>
           </li>

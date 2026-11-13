@@ -38,7 +38,7 @@ export function GroupCard({
           <span className="prov-group-name" title={group.title}>
             {group.title}
           </span>
-          {group.containsActive && <span className="prov-group-live">使用中</span>}
+          {group.containsActive && <span className="prov-group-live">含默认兜底</span>}
           <span className="prov-group-count">{group.providers.length} 个</span>
         </button>
         {actions && <div className="prov-group-actions">{actions}</div>}

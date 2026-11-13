@@ -1067,9 +1067,8 @@ body {
   white-space: nowrap;
 }
 
-/* ---- 供应商列表 ---- */
-/* 这是面板的核心交互：一眼看到在用一个、点一下换一个。
-   所以行要高、可点区域大、状态词直接写在行内——不藏进 tooltip */
+/* ---- 上游供应商列表 ---- */
+/* 每一行代表一家上游服务；点击可设为默认兜底。路由 ID 和模型 ID 分开显示。 */
 .prov-search {
   width: 100%;
   font: 13px var(--sans);
@@ -1124,6 +1123,7 @@ body {
 
 .prov-row.is-active {
   background: var(--accent-soft);
+  box-shadow: inset 2px 0 var(--accent);
 }
 
 .prov-radio {
@@ -1139,11 +1139,11 @@ body {
   border-width: 5px;
 }
 
-/* 行拆成两块：左边整块都是"选它"的热区，右边放状态和模型按钮。
+/* 行拆成两块：左边整块都是"设为默认兜底"的热区，右边放状态和模型按钮。
    做成一个 <button> 的话，里面的模型列表按钮就成了嵌套 button —— HTML 不允许 */
 .prov-pick {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 12px;
   align-items: center;
   flex: 1;
@@ -1166,16 +1166,29 @@ body {
 .prov-name {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 5px 8px;
+  min-width: 0;
   font-size: 13.5px;
   font-weight: 560;
 }
 
+.prov-name-label { min-width: 0; overflow-wrap: anywhere; }
+.prov-id {
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--dim-2);
+  font: 10px var(--mono);
+  font-weight: 400;
+}
+
 .prov-tag {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 500;
   padding: 1px 6px;
   border-radius: 6px;
+  white-space: nowrap;
   background: var(--accent);
   color: var(--accent-fg);
 }
@@ -1220,8 +1233,8 @@ body {
    一行小字就够，做成大红条会让整页像在报错 */
 .prov-risk,
 .prov-bad {
-  font-size: 11px;
-  padding: 2px 6px;
+  font-size: 10px;
+  padding: 2px 5px;
   border-radius: 5px;
   white-space: nowrap;
   /* 窄窗口下让它们先让路：URL 是主信息，砍它不如砍徽章 */
@@ -1327,7 +1340,8 @@ body {
 /* 整格可点：负 margin 把 code 的 padding 抵掉，hover 底色才铺满整块而不是
    只剩文字那一小条。不然用户看到的是"一块灰底 + 上面一个按钮"，不知道点哪儿 */
 .prov-models-grid .model-copy {
-  display: block;
+  display: flex;
+  align-items: center;
   width: 100%;
   margin: -5px -8px;
   padding: 5px 8px;
@@ -1342,6 +1356,10 @@ body {
   text-overflow: ellipsis;
   cursor: copy;
 }
+
+.model-route-provider { color: var(--accent); font-weight: 600; flex: none; }
+.model-route-separator { color: var(--dim-2); padding: 0 1px; flex: none; }
+.model-route-id { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 .prov-models-grid .model-copy:hover {
   color: var(--accent);
@@ -1491,7 +1509,7 @@ body {
   background: var(--bg);
 }
 
-/* 当前在用的供应商在这一组里：给一圈强调色，省得满页扫 */
+/* 默认兜底供应商在这一组里：给一圈强调色，省得满页扫 */
 .prov-group.is-active {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent-soft);
@@ -1545,11 +1563,12 @@ body {
 }
 
 .prov-group-live {
-  font-size: 11px;
+  font-size: 10px;
   padding: 1px 6px;
   border-radius: 6px;
   background: var(--accent);
   color: var(--accent-fg);
+  white-space: nowrap;
   flex: none;
 }
 
@@ -1926,6 +1945,32 @@ select.prov-modal-input {
   margin: 26px 0 21px;
 }
 
+.flow-clients {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.flow-client {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--bg) 76%, var(--panel));
+}
+
+.flow-client.is-connected {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+}
+
+.flow-client > span:last-child { min-width: 0; }
+.flow-client b, .flow-client small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow-client b { font-size: 11px; font-weight: 620; }
+.flow-client small { margin-top: 1px; color: var(--dim); font-size: 9.5px; }
+
 .flow-node {
   display: flex;
   align-items: center;
@@ -1995,17 +2040,50 @@ select.prov-modal-input {
   border-top: 1px solid var(--line);
 }
 
-.workbench-provider { display: grid; gap: 5px; min-width: 180px; color: var(--dim); font-size: 11px; }
-.workbench-provider select {
-  min-width: 200px;
-  max-width: 320px;
-  padding: 8px 32px 8px 10px;
-  border: 1px solid var(--line-2);
-  border-radius: 8px;
-  background: var(--bg);
-  color: var(--fg);
-  font: 13px var(--sans);
+.workbench-provider { display: grid; gap: 7px; min-width: min(360px, 100%); color: var(--dim); font-size: 11px; }
+.workbench-provider-label { color: var(--fg); font-size: 12px; font-weight: 620; }
+.provider-picker { position: relative; }
+.provider-picker-trigger {
+  display: flex; align-items: center; gap: 10px; width: min(360px, 100%); min-height: 48px; padding: 7px 11px;
+  border: 1px solid var(--line-2); border-radius: 9px; background: var(--bg); color: var(--fg); text-align: left; cursor: pointer;
 }
+.provider-picker-trigger:hover, .provider-picker-trigger[aria-expanded="true"] { border-color: var(--accent); }
+.provider-picker-trigger:disabled { opacity: .55; cursor: not-allowed; }
+.provider-picker-current { display: grid; gap: 2px; min-width: 0; flex: 1; }
+.provider-picker-current b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 620; }
+.provider-picker-current small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim-2); font: 10.5px var(--mono); }
+.provider-picker-chevron { color: var(--dim-2); font-size: 17px; }
+.provider-picker-popover {
+  position: absolute; z-index: 20; left: 0; bottom: calc(100% + 7px); width: min(440px, 72vw); padding: 9px;
+  border: 1px solid var(--line-2); border-radius: 11px; background: var(--panel);
+  box-shadow: 0 14px 34px color-mix(in srgb, #000 34%, transparent);
+}
+.provider-picker-popover > input {
+  width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 7px;
+  outline: none; background: var(--bg); color: var(--fg); font: 12px var(--sans);
+}
+.provider-picker-popover > input:focus { border-color: var(--accent); }
+.provider-picker-options { display: grid; gap: 3px; max-height: 280px; overflow-y: auto; margin-top: 7px; }
+.provider-picker-option {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-width: 0; padding: 8px 9px;
+  border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--fg); text-align: left; cursor: pointer;
+}
+.provider-picker-option:hover { background: var(--track); }
+.provider-picker-option.is-selected { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
+.provider-picker-option:disabled { opacity: .6; cursor: wait; }
+.provider-option-main { display: grid; gap: 3px; min-width: 0; }
+.provider-option-main b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 620; }
+.provider-option-main small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim-2); font: 10px var(--mono); }
+.provider-option-meta { display: grid; justify-items: end; gap: 3px; flex: none; }
+.provider-api-format { color: var(--dim); font-size: 10px; }
+.provider-key-state { font-size: 10px; }
+.provider-key-state.key-real, .provider-key-state.key-subscription { color: var(--ok); }
+.provider-key-state.key-placeholder, .provider-key-state.key-empty { color: var(--warm); }
+.provider-picker-empty { padding: 14px 8px; color: var(--dim-2); text-align: center; font-size: 12px; }
+.route-explainer { display: grid; gap: 2px; max-width: 500px; color: var(--dim-2); font-size: 10.5px; line-height: 1.45; }
+.route-explainer code { padding: 1px 4px; border-radius: 4px; background: var(--track); color: var(--accent); font: 10.5px var(--mono); }
+.route-inline-link { margin-left: 7px; padding: 0; border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; }
+.route-inline-link:hover { text-decoration: underline; }
 .workbench-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .workbench-warning, .workbench-error { margin-top: 12px; color: var(--warm); font-size: 12px; }
 .workbench-error { display: flex; justify-content: space-between; align-items: center; gap: 10px; color: var(--bad); }
@@ -2025,15 +2103,26 @@ select.prov-modal-input {
 @media (max-width: 700px) {
   .workbench-hero { padding: 18px; }
   .workbench-heading { flex-direction: column-reverse; }
-  .flowline { display: flex; flex-direction: column; align-items: stretch; gap: 6px; margin: 20px 0 16px; }
-  .flow-link { width: 1px; height: 15px; margin-left: 20px; }
-  .flow-link::after { top: auto; right: -3px; bottom: 0; transform: rotate(135deg); }
+  .flowline { grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr); gap: 6px; margin: 20px 0 16px; }
+  .flow-clients { grid-row: 1 / span 3; gap: 5px; }
+  .flowline > .flow-link:first-of-type { grid-column: 2; grid-row: 2; }
+  .flow-gateway { grid-column: 3; grid-row: 1; }
+  .flowline > .flow-link:last-of-type { grid-column: 2; grid-row: 3; }
+  .flowline > .flow-node:last-child { grid-column: 3; grid-row: 3; }
+  .flow-link { width: auto; height: 1px; margin-left: 0; }
+  .flow-link::after { top: -3px; right: 0; bottom: auto; transform: rotate(45deg); }
+  .flow-clients { gap: 5px; }
+  .flow-client { gap: 7px; padding: 6px 7px; }
+  .flow-client b { font-size: 10.5px; }
+  .flow-client small { font-size: 9px; }
   .flow-node { gap: 7px; padding: 9px 7px; }
   .flow-node-icon { width: 28px; height: 28px; font-size: 14px; }
   .flow-node b { font-size: 11px; }
   .flow-node small { font-size: 9px; }
   .workbench-controls { align-items: stretch; flex-direction: column; }
-  .workbench-provider select { max-width: none; width: 100%; }
+  .provider-picker-trigger { max-width: none; width: 100%; }
+  .provider-picker-popover { width: min(100%, 440px); }
+  .route-explainer { align-items: flex-start; flex-direction: column; gap: 3px; }
   .workbench-actions > .btn { flex: 1; }
   .workbench-stats { grid-template-columns: 1fr; gap: 9px; }
   .workbench-stat { grid-template-columns: 1fr auto; align-items: baseline; }
