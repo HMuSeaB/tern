@@ -168,7 +168,13 @@ pub fn start_gateway(state: &Arc<GatewayState>) -> anyhow::Result<SocketAddr> {
 
     // 网关的 config 要 move 进线程，listen 得先抄出来
     let listen = config.listen;
-    let gateway = tern_gateway::Gateway::new(config)?.with_usage_sink(recorder);
+    // PluginCommand 供应商才需要 token 命令；没有时网关行为和原来一样。
+    // 面板不直接建网关，走 agent，所以这里接一次就够了。
+    let needs_plugin_tokens = tern_gateway::CommandTokenProvider::needed_for(&config);
+    let mut gateway = tern_gateway::Gateway::new(config)?.with_usage_sink(recorder);
+    if needs_plugin_tokens {
+        gateway = gateway.with_token_provider(Arc::new(tern_gateway::CommandTokenProvider::new()));
+    }
 
     let shutdown = Arc::new(Notify::new());
     let serve_shutdown = shutdown.clone();
