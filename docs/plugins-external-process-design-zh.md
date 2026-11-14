@@ -182,19 +182,13 @@ Claude Code / Codex
 - 不扫描、不轮询、不自动写回接线。插件列表由面板每次打开时
   如实读，显示成未启用，用户自己点一下启用。
 
-### D5. 安全边界：插件只能碰自己的登录态
+### D5. 信任边界：独立进程不是安全沙箱
 
-- 插件以当前用户权限运行，能读自己的 session 文件，
-  不能读 `tern.json` 里其他供应商的 key。tern 传给插件的
-  只有三样：插件自己的 `plugin.toml`、分配的端口、
-  本次请求已经翻译好的请求体。tern 自己的 `accessToken`
-  不传给插件。
-- key / token 不进日志、不进面板渲染进程。`ProviderAuth` 的
-  手写 `Debug` 已经把 key 遮成前 4 后 4（`provider.rs` 的
-  `mask_secret`），插件日志沿用同一条：只记后 4 位，不记全文。
-- 插件的登录态文件单独放，每个插件一个文件，权限 600，
-  不进仓库，不进 `tern.json`。面板 `provider_detail` 不回传
-  key 的老规矩（DECISIONS §4）同样适用于插件。
+- 插件以当前用户权限运行，**没有 OS 沙箱**：它原则上可以读取该用户有权访问的文件、访问网络或启动子进程。不能保证“插件只能碰自己的登录态”。用户必须只启用自己信任的插件；界面明确提示插件代码会以当前用户身份执行。不要把不可信插件当作安全隔离的第三方扩展。
+- tern 不把自己的 `accessToken`、其它供应商的 API key 或客户端认证头发给插件。插件会收到当前模型请求的完整内容（包括提示词、模型和必要的协议字段），因此插件作者本身也属于请求数据的接收方。插件所需的登录凭据仅由插件自行读取。
+- tern 启动插件时清理继承环境，仅提供插件端口、一次性随机 `TERN_PLUGIN_TOKEN` 和启动所需的最小运行环境。插件的本地 HTTP 端点每次请求都必须校验 `X-Tern-Plugin-Token`（恒定时间比较），包括 `/health` 和 `/v1/models`；缺失或不匹配返回 401。该 token 不得写日志、不得转发给真实上游。它用于要求本地调用方持有令牌，降低无凭据进程随意调用监听端口的风险；由于令牌通过子进程环境传入，同一用户运行的进程仍可能读取它，**不构成进程间安全隔离，也不构成对插件本身的隔离**。
+- key / token 不进日志、不进面板渲染进程。`ProviderAuth` 的手写 `Debug` 已经把 key 遮蔽（`provider.rs` 的 `mask_secret`）；插件日志同样不得输出凭据全文。
+- 插件登录态单独存放，每个插件一个数据目录，不进仓库、不进 `tern.json`。POSIX 使用 600 权限，Windows 使用当前用户 ACL。权限只能降低其它账户读取风险，不能阻止同一用户权限下运行的插件读取文件。面板 `provider_detail` 不回传 key 的规则（DECISIONS §4）同样适用。
 
 ## 4. 插件契约 v1（最小集）
 
@@ -206,8 +200,10 @@ name = "WorkBuddy"
 version = "0.1.0"
 description = "腾讯 WorkBuddy 订阅：每日签到积分换模型调用（自用）"
 
-# tern 怎么拉起它。command 是可执行文件，args 原样传。
-# tern 不解析 shell，不拼字符串，不走 PATH 查找以外的魔法。
+# tern 怎么拉起它。command 是可执行文件，args 原样传，不经过 shell。
+# 带路径的相对 command 按本 manifest 所在目录解析；裸命令名仅按启动时
+# 的 PATH 查找。args 原样传入，不做 shell 或环境变量展开；工作目录固定为
+# 插件目录，插件将参数解释为路径时，相对路径基于该目录。
 command = "tern-plugin-workbuddy"
 args = ["serve"]
 
@@ -216,9 +212,10 @@ args = ["serve"]
 # anthropic / openai_chat / openai_responses / gemini_native
 api_format = "openai_chat"
 
-# 插件提供的模型。面板列表和 /v1/models 都从这里来，
-# 插件也可以在 /v1/models 里动态返回更多。
-models = ["workbuddy/hunyuan-a52b"]
+# 插件提供的是上游模型 ID，不带 Tern 的供应商前缀。
+# 客户端写 workbuddy/hunyuan-a52b；路由器发给插件时会剥掉 workbuddy/。
+# /v1/models 的 id 也必须是同样的裸上游 ID。
+models = ["hunyuan-a52b"]
 
 # 可选：插件自己要读的 session 文件相对路径（相对插件目录）。
 # tern 不读这个文件，只把它所在目录的权限要求写进文档。
@@ -229,17 +226,18 @@ session_file = "session.json"
 
 - `id` 不能为空、不能含 `/`、不能和已有供应商 id 重复
   （`ModelRouter::new` 本来就会报“供应商 id 重复”）。
-- `command` 必须存在且可执行，找不到时 `tern check` 就报，
-  不要等到用户发请求。
+- `command` 必须解析到存在的可执行文件，找不到时 `tern check` 报错，不要等到用户请求才报错。带路径的相对命令按 manifest 目录解析，裸命令按启动时保存的 `PATH` 查找；任何情况都不经 shell 执行。args 按 manifest 原样传入，不做变量展开或路径改写。
 - `api_format` 必须是上面四种之一。
 
 ### 4.2 插件必须实现的三个端点（全部只听 127.0.0.1）
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| `GET` | `/health` | 存活 + 模型列表。`{"ok": true, "models": ["..."]}` |
-| `GET` | `/v1/models` | OpenAI 兼容的模型列表。tern 的 `models.rs` 候选规则照样适用：404 / 405 当“这个候选不对”继续试，401 / 429 / 5xx 直接返回，连接失败直接返回。 |
-| `POST` | 按 `api_format` 走：`/v1/messages`（Anthropic）、`/v1/chat/completions`（OpenAI Chat）、`/v1/responses`（OpenAI Responses）、`models/*:generateContent`（Gemini Native） | 真正的模型调用。请求体就是 tern 发给普通上游的那个体，响应也必须是那种格式，流式走 SSE。 |
+| `GET` | `/health` | 存活 + 模型列表。`{"ok": true, "models": ["hunyuan-a52b"]}`。模型 ID 是不带供应商前缀的上游 ID。 |
+| `GET` | `/v1/models` | OpenAI 兼容的模型列表，`data[].id` 返回裸上游模型 ID。tern 的 `models.rs` 候选规则照样适用：404 / 405 当“这个候选不对”继续试，401 / 429 / 5xx 直接返回，连接失败直接返回。 |
+| `POST` | 按 `api_format` 走：`/v1/messages`（Anthropic）、`/v1/chat/completions`（OpenAI Chat）、`/v1/responses`（OpenAI Responses）、`models/*:generateContent`（Gemini Native） | 真正的模型调用。请求体是 tern 已完成协议翻译的请求，`model` 为裸上游模型 ID（例如 `hunyuan-a52b`），响应也必须是声明的协议格式，流式响应须边读边转发 SSE，不得先读完整个响应再返回。 |
+
+上述每个请求都必须携带 `X-Tern-Plugin-Token`。tern 对每次插件进程启动生成新的随机 token，通过 `TERN_PLUGIN_TOKEN` 环境变量传给插件；插件恒定时间比较后才处理请求，未授权请求统一返回 401。该头只用于 tern 到本地 sidecar 的认证，插件转发到真实服务前必须剥离。
 
 不实现 `/health` 的插件，tern 视为未就绪，不路由请求过去。
 
@@ -253,15 +251,12 @@ session_file = "session.json"
    `TERN_PLUGIN_PORT` 和参数 `--port <端口>` 同时传给插件
    （两个都传，插件只用其中一个就行，另一个是防插件作者
    只读了一种）。
-2. 插件绑 `127.0.0.1:$TERN_PLUGIN_PORT`，5 秒内 `GET /health`
-   必须返回 200，否则 tern 杀掉进程，记一次启动失败，
-   面板显示“插件启动超时”，不重试到天荒地老。
-3. 插件进程的标准输出 / 标准错误重定向到
-   `%APPDATA%\tern\plugins\<id>\logs\`，按天切分，密钥照样遮蔽。
+2. tern 为本次进程生成高熵随机 `TERN_PLUGIN_TOKEN`，启动时通过环境变量提供；插件绑定 `127.0.0.1:$TERN_PLUGIN_PORT`。5 秒内携带 `X-Tern-Plugin-Token` 请求 `GET /health` 必须返回 200，否则 tern 杀掉进程，记一次启动失败，面板显示“插件启动超时”，不无限重试。
+3. 插件工作目录固定为 manifest 所在目录。`command` 绝不经 shell：绝对路径直接执行；含路径的相对命令按插件目录解析；裸命令只从启动时的 `PATH` 查找。启动前校验解析后的可执行文件存在。`args` 按 manifest 原样传入，不做 shell、环境变量展开或路径改写；插件将其解释为路径时，相对路径基于该工作目录。
+4. 插件进程不继承整个 tern 环境。只传启动必需的系统运行时变量，以及 `TERN_PLUGIN_PORT`、`TERN_PLUGIN_TOKEN`；其它环境变量须由用户显式声明，禁止自动透传 tern 的供应商凭据。
+5. 标准输出 / 标准错误重定向到 `%APPDATA%\tern\plugins\<id>\logs\`，按天切分；任何密钥都不得原样写入日志。
 
-端口被占用的竞态（tern 释放后、插件绑定前的窗口期）：
-v1 接受这个小概率，失败时按启动失败处理，用户点一下重试。
-不要为这个窗口期引入端口协商协议，那是第二版的事。
+端口被占用的竞态（tern 释放后、插件绑定前的窗口期）：v1 将它按启动失败处理并向用户报告，不自动无限重试；不要为此引入端口协商协议。
 
 ### 4.4 生命周期
 
@@ -301,11 +296,7 @@ pub struct PluginRef {
 }
 ```
 
-为什么不用新的 `ProviderAuth::Plugin` 变体起手：
-`ProviderAuth` 现在管的是“上游要什么凭证”，插件的凭证
-在插件自己手里，tern 侧不需要知道。先加 `plugin` 字段，
-`auth` 保持 `ApiKey { key: "plugin" }` 或 `None` 都行，
-等 Step 1 做鉴权外包时再加 `ProviderAuth::PluginCommand`。
+为什么不用新的 `ProviderAuth::Plugin` 变体起手：`ProviderAuth` 管的是“真实上游要什么凭证”，插件凭证留在插件自己的 session 中。插件供应商配置用 `auth: { type: "none" }`，绝不放假 API key；tern→sidecar 的本地认证使用单独的 `X-Tern-Plugin-Token` 请求头。等 Step 1 做鉴权外包时再考虑 `ProviderAuth::PluginCommand`。
 
 `ProviderSpec::effective_base_url()` 对插件供应商要短路：
 插件的 `base_url` 在启动前是不知道的（临时端口），
@@ -356,16 +347,11 @@ let url = if let Some(plugin) = spec.plugin.as_ref() {
 };
 ```
 
-其余不动：`build_headers()` 还是走 `resolve_auth_headers()`，
-插件供应商的 `auth` 是占位 key，不会把 tern 的 `accessToken`
-泄露给插件；`is_streaming()`、`read_error_body()`、
-超时和空闲超时照样适用。
+其余不动：`build_headers()` 按 `auth: none` 生成供应商请求头，绝不伪造插件 API key；supervisor 单独注入 `X-Tern-Plugin-Token` 做 sidecar 本地认证。插件转发真实上游前移除本地认证头。`is_streaming()`、`read_error_body()`、超时和空闲超时照样适用。
 
 ### 5.5 `crates/tern-gateway/src/models.rs`、`router.rs`
 
-- `router.rs`：不动。插件供应商的 id 就是路由前缀，
-  `workbuddy/<模型>` 和 `magpie/workbuddy/<模型>` 的双前缀
-  情况已经由“只按第一个 `/` 切分”覆盖了，加两个单测就行。
+- `router.rs`：不动。插件供应商 id 是客户端路由前缀；`workbuddy/hunyuan-a52b` 到插件前变成 `hunyuan-a52b`。走 Magpie 桥接时客户端可写 `magpie/workbuddy/<模型>`，tern 只剥第一层 `magpie/`，其余路径原样传给 Magpie。manifest 和插件 `/v1/models` 返回的 ID 一律是裸上游模型 ID，UI 再附上 Tern 供应商前缀。
 - `models.rs`：`fetch_models()` 对插件供应商走同样的候选规则，
   只是 baseUrl 是插件的临时地址。404 / 405 继续试下一个候选，
   401 / 429 / 5xx 直接返回，连接失败直接返回（DECISIONS §7.2）。
@@ -516,25 +502,23 @@ WASM 插件、插件市场、插件自动更新、50+ agent 适配。
 - [ ] 真核对（ROADMAP 第 3 步的地基）：`tern usage --from/--to`
   钉死账期后，能和上游账单对上，插件走的账也一样。
 
-## 9. 未决问题（需要用户拍板，本文档不替用户定）
+## 9. 已决定项与待决定项
 
-1. 参考插件用什么语言写？**已定（2026-11-14）：先 Python，再逐步
-   迁到 Rust，因为 Rust 更好用。** Python 先跑通契约，Rust 阶段
-   只换语言不换契约，见 §6。
-2. 端口分配：tern 分配临时端口再传给插件（本文档选的），
-   还是插件自己绑 `0` 再把端口打印到 stdout？后者少一次
-   释放再绑定的竞态，但 stdout 解析容易出竞态，两害相权取其轻，
-   选了前者。
-3. 插件凭证放哪？每个插件一个单独的 session 文件（本文档选的），
-   还是统一放 `tern.json` 里？统一放的好处是备份方便，坏处是
-   插件能读到不属于它的 key。本文档选分开。
-4. 要不要做一个“magpie 插件桥”：tern 的插件进程里直接跑
-   magpie 的插件？那样能立刻用上 magpie-community 的插件，
-   但要把 Bun 也带进来，轻量就丢了。本文档建议不做，
-   先用 §2.2 的 magpie 当上游桥接验证需求。
-5. 插件目录放哪？`%APPDATA%\tern\plugins\`（本文档选的，
-   和 `tern.json` 同目录，好备份）还是 `%LOCALAPPDATA%`？
-   Windows 上两者都常见，定一个就行，别两头写。
+### 已决定
+
+1. 参考插件先用 Python 跑通契约，再逐步迁到 Rust；迁移不改变端点和 JSON 约定，见 §6。
+2. tern 分配回环临时端口；端口竞态失败时将启动判为失败，不无限重试。
+3. 插件数据单独放在插件目录，不放 `tern.json`。POSIX 使用 600 权限，Windows 使用当前用户 ACL。
+4. 不内嵌 Magpie/Bun；先将 Magpie 作为普通 HTTP 上游验证桥接需求。
+5. 插件由用户显式信任和启用；sidecar 运行时不是沙箱，不能声称它只能读取自己的数据。
+6. 每次启动使用独立随机 token 做 tern→sidecar 的 HTTP 认证；token 不是 OS 安全边界，见 §4.2、§4.3。
+
+### 仍待实现时确认
+
+1. 插件数据目录跟随 `TERN_CONFIG` 改动时的迁移与备份行为。
+2. Windows 运行时变量 allowlist 的精确清单（Python/DLL 等依赖需要哪些变量）。
+3. 安装器如何显示插件代码来源、权限警告和显式启用确认。
+（无。v1 端口绑定竞态按启动失败处理，见 §4.3。）
 
 ## 附录 A：`tern.json` 里的插件供应商长什么样
 
@@ -549,7 +533,7 @@ WASM 插件、插件市场、插件自动更新、50+ agent 适配。
       "name": "WorkBuddy",
       "baseUrl": "http://127.0.0.1:0",
       "apiFormat": "openai_chat",
-      "auth": { "type": "api_key", "key": "plugin" },
+      "auth": { "type": "none" },
       "plugin": { "pluginId": "workbuddy" }
     }
   ],
@@ -559,10 +543,7 @@ WASM 插件、插件市场、插件自动更新、50+ agent 适配。
 }
 ```
 
-注意：`baseUrl` 里的 `127.0.0.1:0` 是占位，真正地址由
-supervisor 在启动插件后填。不要在配置里写死一个端口，
-那个端口下次启动就不在了。`plugins[]` 里 `enabled: false`
-的插件，manifest 读到了也不拉起。
+注意：`baseUrl` 里的 `127.0.0.1:0` 只是配置占位，不是可用端点；真正地址由 supervisor 在启动插件后填。不要写死临时端口。`apiFormat` 要和 manifest 一致；插件模型列表填裸上游 ID，Tern 路由器会将客户端的 `workbuddy/<上游模型>` 转成只含 `<上游模型>` 的上游请求。sidecar HTTP 另用 `X-Tern-Plugin-Token` 认证，`auth: none` 表示不把假的供应商 API key 当作本地插件认证。`plugins[]` 里 `enabled: false` 的插件即使发现 manifest 也不启动。
 
 ## 附录 B：请求流（文字版时序）
 
@@ -572,12 +553,11 @@ supervisor 在启动插件后填。不要在配置里写死一个端口，
    upstream_model="hunyuan-a52b"，kind=explicit
 3. tern adapter：按 (客户端协议, 上游协议) 翻译请求体
 4. tern plugin supervisor：workbuddy 没跑 -> 读 plugin.toml，
-   分一个临时端口，拉起 tern-plugin-workbuddy，
-   5 秒内 GET /health 200 才继续
+   分一个临时端口和随机本地认证 token，拉起 tern-plugin-workbuddy，
+   5 秒内带 X-Tern-Plugin-Token 的 GET /health 返回 200 才继续
 5. tern upstream：POST 到 127.0.0.1:<port>/v1/chat/completions，
-   请求头只带插件需要的占位 key，不带 tern 的 accessToken
-6. 插件：补签名 / 刷新 token，转发到 WorkBuddy 真实端点，
-   SSE 原样流回 tern
+   model="hunyuan-a52b"，只带本地 sidecar 认证头，不带供应商 key 或 tern accessToken
+6. 插件：参考样例仅 mock；真实 WorkBuddy 签名/转发尚未实现。未来实现时使用自己的 session，转发前移除本地认证头，并将 SSE 流式传回 tern
 7. tern response：转换回 Anthropic Messages，出口处记用量
    （client_model / upstream_model / role / session_id）
 8. Claude Code 收到回答；面板“最近请求”里这条标 explicit，

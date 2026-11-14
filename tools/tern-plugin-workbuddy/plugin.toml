@@ -3,7 +3,7 @@ name = "WorkBuddy"
 version = "0.1.0"
 description = "腾讯 WorkBuddy 订阅：每日签到积分换模型调用（自用，参考插件）"
 
-# tern 怎么拉起它。command 是可执行文件，args 原样传。
+# 参考 manifest。command/args 不经 shell；相对路径和工作目录相对本文件。
 command = "python3"
 args = ["tern-plugin-workbuddy.py", "serve", "--mock"]
 
@@ -11,7 +11,7 @@ args = ["tern-plugin-workbuddy.py", "serve", "--mock"]
 api_format = "openai_chat"
 
 # 插件提供的模型。面板列表和 /v1/models 都从这里来。
-models = ["workbuddy/hunyuan-a52b"]
+models = ["hunyuan-a52b"]
 
 # 插件自己要读的 session 文件相对路径（相对插件目录）。
 # tern 不读这个文件。真实模式下去掉 --mock，并把 token 写进 session.json（权限 600，不进仓库）。
