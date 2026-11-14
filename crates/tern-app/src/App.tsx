@@ -168,7 +168,7 @@ function Tabs({
     { id: "workbench", label: "工作台", alert: activeKeyBroken || error !== null },
     { id: "providers", label: "供应商", alert: activeKeyBroken },
     { id: "usage", label: "用量", alert: usageAlerts },
-    { id: "wire", label: "接入" },
+    { id: "wire", label: "连接应用" },
     { id: "permissions", label: "权限" },
   ];
 
@@ -259,7 +259,7 @@ function Tabs({
         {/* 接线是网关的下游：得知道在不在跑、监听哪个口 */}
         <TabPage id="wire" active={active === "wire"}>
           <div className="client-connections">
-            <Wire running={running} onChanged={panel.refresh} />
+            <Wire running={running} startBusy={busy} onStart={onStart} onChanged={panel.refresh} />
             <ClaudeDesktopWire config={config} running={running} />
           </div>
         </TabPage>

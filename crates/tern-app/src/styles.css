@@ -1794,11 +1794,66 @@ select.prov-modal-input {
 
 @media (max-width: 640px) {
   .desktop-wire-form { grid-template-columns: 1fr; }
+  .wire-step { grid-template-columns: 28px minmax(0, 1fr); }
+  .wire-step > .btn { grid-column: 2; justify-self: start; }
+  .wire-probe { align-items: flex-start; flex-direction: column; }
 }
 
 /* ---- 接入 Claude Code ---- */
-/* 这一块是面板里唯一"改用户环境"的地方，所以现状要摆明：
-   当前地址是什么、是不是 tern。藏起来只会让人以为已经通了 */
+.wire-status { color: var(--dim); font-size: 12px; }
+.wire-status.is-ready { color: var(--ok); }
+.wire-steps { display: grid; gap: 8px; margin: 4px 0 14px; }
+.wire-step {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.wire-step.is-current { border-color: color-mix(in srgb, var(--accent) 58%, var(--line)); }
+.wire-step.is-done .wire-step-number { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, var(--panel)); }
+.wire-step-number {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: var(--dim);
+  background: var(--track);
+  font-size: 12px;
+  font-weight: 700;
+}
+.wire-step > span:nth-child(2) { min-width: 0; }
+.wire-step b, .wire-step small { display: block; }
+.wire-step b { color: var(--fg); font-size: 13px; }
+.wire-step small { margin-top: 2px; color: var(--dim-2); font-size: 11px; }
+.wire-details { margin-top: 12px; color: var(--dim); font-size: 12px; }
+.wire-details > summary { width: fit-content; color: var(--dim); cursor: pointer; }
+.wire-details > summary:hover { color: var(--fg); }
+.wire-details .wire-now { margin-top: 10px; }
+.wire-details .wire-route { margin-top: 10px; }
+.wire-caution { padding-top: 10px; border-top: 1px solid var(--line); }
+.wire-security-hint { margin: 12px 0 0; color: var(--warm); font-size: 11px; line-height: 1.5; }
+.wire-probe {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.wire-probe b, .wire-probe small { display: block; }
+.wire-probe b { color: var(--fg); font-size: 12px; }
+.wire-probe small { margin-top: 2px; color: var(--dim-2); font-size: 11px; }
+.desktop-wire-details { margin-top: 0; }
+.desktop-wire-details > summary { padding: 3px 0; }
+.desktop-wire-details .perm-hint { margin: 10px 0 0; }
+
+/* 地址详情是次要信息，默认收起 */
 .wire-now {
   display: flex;
   align-items: baseline;

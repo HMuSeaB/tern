@@ -15,10 +15,14 @@ import type { ConfigSummary } from "./types";
  */
 export function Wire({
   running,
+  onStart,
+  startBusy = false,
   onChanged,
 }: {
-  /** 网关是否在跑。没跑时接线成功也没流量，UI 要催启动 */
+  /** 网关未启动时不允许接入，避免客户端指向一个没有服务的地址 */
   running: boolean;
+  startBusy?: boolean;
+  onStart: () => void;
   onChanged?: () => void;
 }) {
   const [status, setStatus] = useState<WireStatus | null>(null);
@@ -73,8 +77,8 @@ export function Wire({
   if (!status) {
     return (
       <div className="card">
-        <div className="head"><span className="title">接入 Claude Code</span></div>
-        <p className="empty-text">正在读取…</p>
+        <div className="head"><span className="title">Claude Code CLI</span></div>
+        <p className="empty-text">正在读取接入状态…</p>
       </div>
     );
   }
@@ -82,71 +86,62 @@ export function Wire({
   return (
     <div className="card">
       <div className="head">
-        <span className="title">接入 Claude Code</span>
-        <span className="act">{status.wired ? "已接入" : "未接入"}</span>
+        <span className="title">Claude Code CLI</span>
+        <span className={`wire-status ${status.wired && running ? "is-ready" : ""}`}>
+          {status.wired ? (running ? "已接入 tern" : "已接入 · 网关未运行") : "尚未接入"}
+        </span>
       </div>
 
-      {/* 说清楚现在流量去哪了——这是用户最想知道、也最容易被绿灯骗的一件事 */}
-      <div className="wire-now">
-        <span className="side-label">当前生效的地址</span>
-        <code className="wire-url">{status.current_base_url ?? "（未配置）"}</code>
-        {!status.wired && (
-          <span className="wire-vs">不是 tern，流量还绕着我们走</span>
-        )}
-      </div>
-
-      <div className="wire-row">
-        <button
-          className={`btn ${status.wired ? "" : "primary"}`}
-          onClick={() => void toggle()}
-          disabled={busy}
-        >
-          {status.wired ? "断开" : "接入"}
-        </button>
-        <button className="btn" onClick={() => void runProbe()} disabled={probing}>
-          {probing ? "正在发一条测试请求…" : "发一条测试请求"}
-        </button>
-        <span className="wire-cost">会消耗约 1 次调用的费用</span>
-      </div>
-
-      {/* 接线只解决"流量进不进得来"，走哪一家是另一件事——而用户正是在这一刻
-          决定 model 怎么写。不说清楚的话，接完线模型名还是从 cc-switch 带来的
-          裸名，请求全部落到默认供应商，显式路由等于没做。
-          不写成"必须"：默认供应商那条路是用户自己选的，图省事一直用它没问题 */}
-      <div className="wire-route">
-        <div className="wire-route-head">
-          想指定走哪家，把 model 写成 <code>供应商/模型名</code>
+      <div className="wire-steps" aria-label="接入步骤">
+        <div className={`wire-step ${running ? "is-done" : "is-current"}`}>
+          <span className="wire-step-number">{running ? "✓" : "1"}</span>
+          <span><b>启动网关</b><small>{running ? "网关正在运行" : "先启动，Claude Code 才能连接"}</small></span>
+          {!running && <button className="btn primary" onClick={onStart} disabled={startBusy}>{startBusy ? "正在启动…" : "启动 tern"}</button>}
         </div>
-        <p>
-          比如 <code>deepseek/deepseek-v4-pro</code> 就固定走 deepseek 那家，
-          和当前默认供应商是谁无关。不写前缀则落到默认供应商——切换供应商时
-          自动配好的那几档模型名就是这种写法，图省事可以一直用它。
-        </p>
-        <p>
-          模型名去「供应商」页点「获取模型列表」，每行还有个「复制前缀」按钮；
-          面板的「最近请求」里会标出每条走了显式还是兜底。
-        </p>
+        <div className={`wire-step ${status.wired ? "is-done" : running ? "is-current" : ""}`}>
+          <span className="wire-step-number">{status.wired ? "✓" : "2"}</span>
+          <span><b>连接 Claude Code</b><small>{status.wired ? (running ? "请求会经过 tern 网关" : "地址已设好，启动网关后即可使用") : "只修改连接地址，可随时恢复"}</small></span>
+          <button
+            className={`btn ${status.wired ? "" : "primary"}`}
+            onClick={() => void toggle()}
+            disabled={busy || (!running && !status.wired)}
+          >
+            {busy ? "处理中…" : status.wired ? "断开并恢复原设置" : "接入 Claude Code"}
+          </button>
+        </div>
       </div>
 
-      {status.wired && !running && (
-        <div className="notice warn" style={{ marginTop: 14 }}>
-          <span className="notice-ic">!</span>
-          <span className="notice-body">
-            <b>接线成功了，但网关没在跑。</b>
-            Claude Code 现在会连一个没有服务的端口。点右上角「启动」。
-          </span>
+      <details className="wire-details">
+        <summary>查看当前连接地址和设置说明</summary>
+        <div className="wire-now">
+          <span className="side-label">Claude Code 当前地址</span>
+          <code className="wire-url">{status.current_base_url ?? "尚未配置"}</code>
+          {status.wired && <span className="wire-vs is-ok">当前指向 tern</span>}
+          {!status.wired && status.current_base_url && <span className="wire-vs">当前指向其它服务，不经过 tern</span>}
         </div>
-      )}
+        <p className="perm-foot">接入会修改 <code>~/.claude/settings.json</code> 中的网关地址和认证令牌，其它设置不动；断开时恢复接入前的值。</p>
+      </details>
+
+      <div className="wire-probe">
+        <div><b>确认连接是否正常</b><small>发送一条真实请求，会产生约 1 次调用费用。</small></div>
+        <button className="btn" onClick={() => void runProbe()} disabled={probing || !running || !status.wired}>
+          {probing ? "正在测试…" : "发送测试请求"}
+        </button>
+      </div>
+
+      <details className="wire-details">
+        <summary>进阶：如何指定请求走哪家供应商？</summary>
+        <div className="wire-route">
+          <div className="wire-route-head">模型名前加「供应商 ID/」即可指定</div>
+          <p>例如 <code>deepseek/deepseek-v4-pro</code> 会固定走 deepseek；不加前缀则使用工作台选定的默认供应商。</p>
+          <p>供应商 ID 和模型名可在「供应商」页查看；「最近请求」会显示实际走向。</p>
+        </div>
+      </details>
 
       {!status.token_configured && (
-        <div className="notice warn" style={{ marginTop: 14 }}>
-          <span className="notice-ic">!</span>
-          <span className="notice-body">
-            <b>还没设 accessToken。</b>
-            接入后本机任何进程都能连上 tern 借用你的供应商 key。建议先去
-            <code> tern.json</code> 里填一个。
-          </span>
-        </div>
+        <p className="wire-security-hint">
+          提醒：尚未设置 accessToken，本机其它程序也能使用网关。个人单机使用可继续；需要隔离访问时，请先设置 accessToken。
+        </p>
       )}
 
       {probe && (
@@ -169,13 +164,13 @@ export function Wire({
         </div>
       )}
 
-      <p className="perm-foot">
-        写入 <code>~/.claude/settings.json</code> 的 <code>env</code> 段，只改
-        <code> ANTHROPIC_BASE_URL</code> 和 <code> ANTHROPIC_AUTH_TOKEN</code>
-        ，其余字段不动。原值存在 tern 自己那儿，断开时还原。
-        注意这个文件被 cc-switch 托管，切一次供应商接线就会被擦掉——
-        这里会显示成未接入，再点一次即可。测试请求会真花一次调用的钱。
-      </p>
+      <details className="wire-details wire-caution">
+        <summary>接入后没生效怎么办？</summary>
+        <p className="perm-foot">
+          cc-switch 切换供应商时可能覆盖 Claude Code 的连接设置。如果这里显示「尚未接入」，重新点一次「接入 Claude Code」即可。
+          接入前会保存原设置，断开时可恢复。
+        </p>
+      </details>
     </div>
   );
 }
@@ -260,20 +255,21 @@ export function ClaudeDesktopWire({
   return (
     <section className="card desktop-wire">
       <div className="head">
-        <span className="title">Claude Desktop · Chat / Cowork / Code</span>
-        <span className="act">{status?.connected ? "已接入 tern" : status?.active ? "有活动配置" : "未接入"}</span>
+        <span className="title">Claude Desktop</span>
+        <span className="act">{status?.connected ? "已接入 tern" : status?.active ? "有活动配置" : "可选"}</span>
       </div>
-      <p className="perm-hint">
-        Claude Desktop 的 Chat、Cowork 和 Code 共用这条网关配置。它和 Claude Code CLI 是两套设置：此处写入 Desktop 的 3P profile，不会改动 <code>~/.claude/settings.json</code>。
-      </p>
-
-      {status?.connected && (
-        <div className="wire-now">
-          <span className="side-label">当前 Desktop 网关</span>
-          <code className="wire-url">{status.baseUrl}</code>
-          <span className="wire-vs">模型：{status.models.join("、")}</span>
-        </div>
-      )}
+      <details className="wire-details desktop-wire-details">
+        <summary>{status?.connected ? "查看或修改 Desktop 设置（Chat / Cowork / Code）" : "可选设置：接入 Claude Desktop（Chat / Cowork / Code）"}</summary>
+        <p className="perm-hint">
+          这是独立于上方 Claude Code CLI 的可选配置。接入后需完全退出并重开 Claude Desktop。
+        </p>
+        {status?.connected && (
+          <div className="wire-now">
+            <span className="side-label">当前 Desktop 网关</span>
+            <code className="wire-url">{status.baseUrl}</code>
+            <span className="wire-vs">模型：{status.models.join("、")}</span>
+          </div>
+        )}
 
       <div className="desktop-wire-form">
         <label className="desktop-wire-field">
@@ -318,10 +314,9 @@ export function ClaudeDesktopWire({
       {notice && <div className="notice ok" style={{ marginTop: 12 }}><span className="notice-ic">✓</span><span className="notice-body">{notice}</span></div>}
       {error && <div className="notice err" style={{ marginTop: 12 }}><span className="notice-ic">!</span><span className="notice-body">{error}</span></div>}
       <p className="perm-foot">
-        写入 <code>{status?.profilePath ?? "%LOCALAPPDATA%/Claude-3p/configLibrary"}</code> 中 tern 专属的 3P profile，并保留其它 profile。
-        Claude Desktop 的模型列表不负责自动发现 Tern 的路由名，因此这里按 <code>供应商/模型</code> 配置。
-        接入后完全退出并重开 Claude Desktop；断开会恢复原活动 profile 和原启动模式。
+        设置保存在 <code>{status?.profilePath ?? "%LOCALAPPDATA%/Claude-3p/configLibrary"}</code> 的 tern 专属 profile 中；断开时恢复原配置。
       </p>
+      </details>
     </section>
   );
 }
