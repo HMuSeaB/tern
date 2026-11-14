@@ -152,6 +152,19 @@ const RESPONSES = {
     FOLDERS.map((f) =>
       f.name === args?.name ? { ...f, isExpanded: args?.expanded } : f,
     ),
+  folders_group_state: () => ({ folders: FOLDERS, collapsedGroups: [] }),
+  folders_set_groups_expanded: (args) => {
+    const keys = (args?.keys ?? []) as string[];
+    const names = keys.filter((k) => k.startsWith("folder:")).map((k) => k.slice(7));
+    return {
+      folders: FOLDERS.map((f) =>
+        names.includes(f.name) ? { ...f, isExpanded: args?.expanded } : f,
+      ),
+      collapsedGroups: args?.expanded
+        ? []
+        : keys.filter((k) => !FOLDERS.some((f) => `folder:${f.name}` === k)),
+    };
+  },
   wire_status: () => ({
     wired: true,
     base_url: "http://127.0.0.1:15800",

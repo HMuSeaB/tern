@@ -36,7 +36,28 @@ import type {
 /** 三种视图。做成单选而不是两个独立开关：两个开关会同时开，
  *  那时"到底听哪个"得靠代码里的优先级猜，用户看不出所以然。 */
 type ViewMode = "flat" | "url" | "folder";
-const COLLAPSED_KEY = "tern-collapsed-groups";
+const VIEW_MODE_KEY = "tern-provider-view-mode";
+/** 旧版把收起状态存在 webview 的 localStorage 里；现在只用来做一次性迁移 */
+const LEGACY_COLLAPSED_KEY = "tern-collapsed-groups";
+/** 分组键的视图前缀。地址分组和文件夹可以同名（文件夹常按域名起名），
+ *  不加前缀的话收起一边会连带另一边。Rust 侧 folders.rs 认同一个 "folder:"。 */
+const urlKey = (key: string) => `url:${key}`;
+const folderKey = (name: string) => `folder:${name}`;
+
+/** folders_group_state / folders_set_groups_expanded 的返回 */
+interface GroupUiState {
+  folders: ProviderFolder[];
+  collapsedGroups: string[];
+}
+
+function initialViewMode(): ViewMode {
+  try {
+    const saved = localStorage.getItem(VIEW_MODE_KEY);
+    return saved === "flat" || saved === "url" || saved === "folder" ? saved : "flat";
+  } catch {
+    return "flat";
+  }
+}
 
 function apiFormatLabel(format: string): string {
   const labels: Record<string, string> = {
@@ -70,7 +91,7 @@ export function Providers({
   /** 展开模型列表的那个供应商 id。一次只展开一个：38 个全展开会把页面撑爆 */
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  const [mode, setMode] = useState<ViewMode>("flat");
+  const [mode, setMode] = useState<ViewMode>(initialViewMode);
   /** 勾了准备批量移动的供应商 id。只在文件夹视图下出现勾选框 */
   const [picked, setPicked] = useState<Set<string>>(new Set());
   /** 新建 / 重命名对话框 */
@@ -86,17 +107,9 @@ export function Providers({
    *  不叫 folderBusy 了：地址视图的批量收起也归它管，跟文件夹没关系 */
   const [groupBusy, setGroupBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  /** 收起来的分组名（含地址视图的分组键）。空集 = 全展开 */
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
-    try {
-      const saved: unknown = JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]");
-      return Array.isArray(saved)
-        ? new Set(saved.filter((value): value is string => typeof value === "string"))
-        : new Set();
-    } catch {
-      return new Set();
-    }
-  });
+  /** 收起来的、不在注册表里的分组（带 url: / folder: 前缀），来自 folders.json。
+   *  注册表里的文件夹不看这里，看各自的 isExpanded。 */
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   /** provider_id → 近 30 天加权请求数。"常用地址排前面"的依据。
    *  拿不到就空 Map，顺序退化成"按配置里的原序"——用量库不存在是正常情况
    *  （还没跑过网关），不该因此让整页报错。 */
@@ -106,12 +119,31 @@ export function Providers({
     try {
       // 两边一起拉：供应商带着自己的 folder 字段，注册表决定有哪些组可显示。
       // 分两次请求的话，中间改一下就会看到"有归属但没文件夹"的半成品状态
-      const [summary, list] = await Promise.all([
+      const [summary, initialGroups] = await Promise.all([
         invoke<ConfigSummary>("config_summary"),
-        invoke<ProviderFolder[]>("folders_list"),
+        invoke<GroupUiState>("folders_group_state"),
       ]);
+      let groups = initialGroups;
+      // 一次性迁移旧版 localStorage。放在加载流程里，确保迁移完成后才应用状态，
+      // 避免并行请求时旧快照覆盖刚迁移好的折叠记忆。
+      try {
+        const saved: unknown = JSON.parse(localStorage.getItem(LEGACY_COLLAPSED_KEY) ?? "[]");
+        const legacy = Array.isArray(saved)
+          ? saved.filter((value): value is string => typeof value === "string")
+          : [];
+        if (legacy.length > 0) {
+          groups = await invoke<GroupUiState>("folders_set_groups_expanded", {
+            keys: legacy.flatMap((key) => [urlKey(key), folderKey(key)]),
+            expanded: false,
+          });
+          localStorage.removeItem(LEGACY_COLLAPSED_KEY);
+        }
+      } catch {
+        // 迁移失败保留旧键，下次加载再试
+      }
       setConfig(summary);
-      setFolders(list);
+      setFolders(groups.folders);
+      setCollapsed(new Set(groups.collapsedGroups));
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -135,8 +167,12 @@ export function Providers({
   }, [reload]);
 
   useEffect(() => {
-    localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...collapsed]));
-  }, [collapsed]);
+    try {
+      localStorage.setItem(VIEW_MODE_KEY, mode);
+    } catch {
+      // Preferences are best-effort if the webview storage is unavailable.
+    }
+  }, [mode]);
 
   const select = useCallback(
     async (id: string) => {
@@ -300,22 +336,40 @@ export function Providers({
     }
   }, [reloadAfterFolderChange]);
 
-  const saveExpanded = useCallback(async (name: string, expanded: boolean) => {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (expanded) next.delete(name);
-      else next.add(name);
-      return next;
-    });
-    // 只持久化注册表里有的（自定义文件夹）。地址视图的分组是算出来的，
-    // 没有名字可挂，收起状态这一轮会话里有效就够了
-    if (!folders.some((f) => f.name === name)) return;
-    try {
-      setFolders(await invoke<ProviderFolder[]>("folders_set_expanded", { name, expanded }));
-    } catch {
-      // 展开状态存不住不影响使用，别为它弹错误
-    }
-  }, [folders]);
+  /** 记下一批分组的展开 / 收起。先改界面再落盘：等写盘返回才动的话，
+   *  点一下分组头要顿一拍。落盘失败就报出来并按磁盘上的真实状态重画——
+   *  悄悄吞掉的话，用户以为记住了，重开才发现没有。 */
+  const saveExpanded = useCallback(
+    async (keys: string[], expanded: boolean) => {
+      if (keys.length === 0) return;
+      const names = new Set(
+        keys.filter((k) => k.startsWith("folder:")).map((k) => k.slice("folder:".length)),
+      );
+      setFolders((prev) =>
+        prev.map((f) => (names.has(f.name) ? { ...f, isExpanded: expanded } : f)),
+      );
+      setCollapsed((prev) => {
+        const next = new Set(prev);
+        for (const key of keys) {
+          if (expanded) next.delete(key);
+          else next.add(key);
+        }
+        return next;
+      });
+      try {
+        const state = await invoke<GroupUiState>("folders_set_groups_expanded", {
+          keys,
+          expanded,
+        });
+        setFolders(state.folders);
+        setCollapsed(new Set(state.collapsedGroups));
+      } catch (e) {
+        setError(`未能保存分组的折叠状态：${String(e)}`);
+        void reload();
+      }
+    },
+    [reload],
+  );
 
   const togglePick = useCallback((id: string) => {
     setPicked((prev) => {
@@ -412,36 +466,15 @@ export function Providers({
 
   /** 当前视图的「全部收起 / 全部展开」。地址和文件夹两个分组视图共用。
    *
-   *  会话集合和注册表里的 isExpanded 都要改：只改会话的话，重开面板又回到原状；
-   *  只改注册表的话，会话里残留的 collapsed 会盖住它（见下面 open 的计算）。
-   *  所以两边一起改。
-   *
-   *  只动**当前视图里看得见的组**。原来遍历整个注册表，一搜索之后"全部收起"
-   *  会把看不见的文件夹一起收掉，取消搜索才发觉少了一屏。
-   *
-   *  地址分组没有注册表项，`folders_set_expanded` 对未知名字静默无事，
-   *  所以那边只改会话集合——收起状态这一次会话有效，够用了。 */
+   *  只动**当前视图里看得见的组**：遍历整个注册表的话，一搜索之后"全部收起"
+   *  会把看不见的文件夹一起收掉，取消搜索才发觉少了一屏。 */
   const setAllGroups = useCallback(
-    async (expanded: boolean) => {
-      const titles = currentGroups.map((g) => g.title);
-      setCollapsed(expanded ? new Set() : new Set(titles));
-      const persisted = folders.filter((f) => titles.includes(f.name));
-      if (persisted.length === 0) return;
-      // 串行写：每次返回的都是完整注册表快照，并发的话后返回的快照会盖掉先返回的
-      let latest: ProviderFolder[] | null = null;
-      try {
-        for (const folder of persisted) {
-          latest = await invoke<ProviderFolder[]>("folders_set_expanded", {
-            name: folder.name,
-            expanded,
-          });
-        }
-      } catch {
-        // 展开状态存不住不影响使用，和 saveExpanded 一样不为它弹错误
-      }
-      if (latest) setFolders(latest);
-    },
-    [currentGroups, folders],
+    (expanded: boolean) =>
+      saveExpanded(
+        currentGroups.map((g) => (mode === "url" ? urlKey(g.key) : folderKey(g.title))),
+        expanded,
+      ),
+    [currentGroups, mode, saveExpanded],
   );
 
   if (!config) {
@@ -679,16 +712,13 @@ export function Providers({
                "一个组的标题里只有一行内容"省不下任何空间 */
             .filter((group) => group.providers.length >= 2)
             .map((group) => {
-              // 目标状态从"此刻渲染出来的"expanded 反推，不从 collapsed.has() 现算：
-              // 后者读的是闭包里的旧值，批量收起之后紧接着点单个分组头时
-              // collapsed 还没提交，会把"展开"当成"收起"传出去
-              const expanded = !collapsed.has(group.key);
+              const expanded = !collapsed.has(urlKey(group.key));
               return (
                 <GroupCard
                   key={group.key}
                   group={group}
                   expanded={expanded}
-                  onToggle={() => void saveExpanded(group.key, !expanded)}
+                  onToggle={() => void saveExpanded([urlKey(group.key)], !expanded)}
                 >
                   <ul className="prov-list">{group.providers.map(renderRow)}</ul>
                 </GroupCard>
@@ -711,16 +741,17 @@ export function Providers({
         <div className="prov-groups">
           {folderGroups.map((group) => {
             const persisted = folders.find((f) => f.name === group.title);
-            // 注册表里的文件夹用用户上次收起的记忆；算出来的组（未登记归属）默认展开
-            const open = collapsed.has(group.title)
-              ? false
-              : (persisted?.isExpanded ?? true);
+            // 注册表里的文件夹看自己的 isExpanded；算出来的组（未分组、未登记归属）
+            // 看收起集合。两者都存在 folders.json 里，重开后一样记得
+            const open = persisted
+              ? (persisted.isExpanded ?? true)
+              : !collapsed.has(folderKey(group.title));
             return (
               <GroupCard
                 key={group.key}
                 group={group}
                 expanded={open}
-                onToggle={() => void saveExpanded(group.title, !open)}
+                onToggle={() => void saveExpanded([folderKey(group.title)], !open)}
                 actions={
                   group.custom ? (
                     <>

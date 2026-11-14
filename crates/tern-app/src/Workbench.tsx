@@ -218,12 +218,20 @@ export function Workbench({
           <span className={`flow-link ${running ? "is-active" : ""}`} aria-hidden />
           <div className="flow-node flow-routing">
             <span className="flow-node-icon">⇄</span>
-            <span><b>路由规则</b><small><code>供应商/模型</code> 优先</small></span>
+            <span><b>看模型名</b><small>有没有 <code>供应商/</code> 前缀</small></span>
           </div>
           <span className={`flow-link ${running ? "is-active" : ""}`} aria-hidden />
-          <div className={`flow-node flow-fallback ${active ? "is-connected" : ""}`}>
-            <span className="flow-node-icon">↗</span>
-            <span><b>{active?.name ?? "选择供应商"}</b><small>{active ? `仅作兜底 · ${apiFormatLabel(active.api_format)}` : "尚未设置兜底"}</small></span>
+          {/* 两条去向并排画：只画兜底那一家的话，看上去像所有请求都走它，
+              而写了前缀的请求其实根本不经过兜底 */}
+          <div className="flow-branches">
+            <div className={`flow-branch ${providers.length ? "is-connected" : ""}`}>
+              <span className="flow-branch-tag">写了前缀</span>
+              <span><b>前缀指定的那一家</b><small>{providers.length ? `${providers.length} 家可选 · 不经过兜底` : "还没有供应商"}</small></span>
+            </div>
+            <div className={`flow-branch flow-fallback ${active ? "is-connected" : ""}`}>
+              <span className="flow-branch-tag">没写前缀</span>
+              <span><b>{active?.name ?? "选择供应商"}</b><small>{active ? `兜底 · ${apiFormatLabel(active.api_format)}` : "尚未设置兜底"}</small></span>
+            </div>
           </div>
         </div>
 

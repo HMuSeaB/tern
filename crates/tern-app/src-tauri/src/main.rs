@@ -100,6 +100,8 @@ fn main() {
             tern_app_lib::folders::folders_delete,
             tern_app_lib::folders::folders_assign,
             tern_app_lib::folders::folders_set_expanded,
+            tern_app_lib::folders::folders_group_state,
+            tern_app_lib::folders::folders_set_groups_expanded,
             // 供应商分组：按请求地址的域名根自动归组
             tern_app_lib::folders::folders_group_by_domain,
         ])

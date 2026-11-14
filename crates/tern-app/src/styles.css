@@ -1993,8 +1993,33 @@ select.prov-modal-input {
 
 .flow-routing { border-style: dashed; }
 .flow-routing code { color: var(--accent); font: 9px var(--mono); }
-.flow-fallback { border-color: color-mix(in srgb, var(--accent) 24%, var(--line)); }
-.flow-fallback.is-connected { background: color-mix(in srgb, var(--accent) 5%, var(--panel)); }
+.flow-branches { display: grid; gap: 7px; min-width: 0; }
+.flow-branch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--bg) 76%, var(--panel));
+}
+.flow-branch.is-connected { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); }
+.flow-branch.flow-fallback.is-connected { background: color-mix(in srgb, var(--accent) 5%, var(--panel)); }
+.flow-branch-tag {
+  flex: none;
+  padding: 2px 6px;
+  border-radius: 5px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-size: 9.5px;
+  font-weight: 620;
+  white-space: nowrap;
+}
+.flow-branch > span:last-child { min-width: 0; }
+.flow-branch b, .flow-branch small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow-branch b { font-size: 11px; font-weight: 620; }
+.flow-branch small { margin-top: 1px; color: var(--dim); font-size: 9.5px; }
 
 .flow-node-icon {
   display: grid;
@@ -2116,7 +2141,7 @@ select.prov-modal-input {
   .flowline > .flow-link:nth-of-type(2) { grid-column: 2; grid-row: 3; }
   .flow-routing { grid-column: 3; grid-row: 3; }
   .flowline > .flow-link:nth-of-type(3) { grid-column: 2; grid-row: 5; }
-  .flowline > .flow-node:last-child { grid-column: 3; grid-row: 5; }
+  .flow-branches { grid-column: 3; grid-row: 5; }
   .flow-link { width: 1px; height: 14px; justify-self: center; }
   .flow-link::after { top: auto; right: -3px; bottom: 0; transform: rotate(135deg); }
   .flow-clients { gap: 5px; }

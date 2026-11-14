@@ -31,7 +31,7 @@
 //! `isExpanded`），这样两份数据可以互相看；归属表是 tern 自己的（cc-switch 把归属写进
 //! 供应商 meta，这里集中在一处）。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -42,6 +42,8 @@ use crate::error::{AppError, Result};
 const FOLDER_FILE_NAME: &str = "folders.json";
 /// 写盘时先写这个再 rename。半份 JSON 会让下次读取按空处理——用户的分组静默消失。
 const TEMP_SUFFIX: &str = "tmp";
+/// 分组键里"文件夹视图"的前缀。前端 `Providers.tsx` 用同一个字面量。
+const FOLDER_KEY_PREFIX: &str = "folder:";
 
 /// 一个自定义文件夹。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +81,14 @@ pub struct FolderFile {
     /// 只是不能重命名/解散，直到 [`ensure_folder_names`] 把它补登记。
     #[serde(default)]
     pub assignments: BTreeMap<String, String>,
+    /// 收起来的、**不在注册表里**的分组，键带视图前缀：`url:<group_key>` /
+    /// `folder:<名字>`（"未分组"、孤儿归属）。
+    ///
+    /// 注册表里的文件夹不进这里，它们的状态在各自的 `isExpanded` 上。原来这部分只存在
+    /// webview 的 localStorage 里，于是"文件夹记得住、未分组和地址分组记不住"——
+    /// 同一个动作两套记忆。现在全落在这一个文件。
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub collapsed_groups: BTreeSet<String>,
 }
 
 /// [`FolderFile::assign`] 的结果。
@@ -188,6 +198,28 @@ impl FolderFile {
         for folder in &mut self.folders {
             if folder.name == name.trim() {
                 folder.is_expanded = Some(expanded);
+            }
+        }
+    }
+
+    /// 批量记下分组的展开 / 收起。键带视图前缀（见 [`FolderFile::collapsed_groups`]）。
+    ///
+    /// `folder:<名字>` 命中注册表时写到那条的 `isExpanded` 上，并从 `collapsed_groups`
+    /// 里清掉同名键——两处都留着的话，哪天文件夹被解散，旧键会让同名分组莫名收着。
+    pub fn set_groups_expanded(&mut self, keys: &[String], expanded: bool) {
+        for key in keys {
+            let registered = key.strip_prefix(FOLDER_KEY_PREFIX).is_some_and(|name| {
+                let mut hit = false;
+                for folder in self.folders.iter_mut().filter(|f| f.name == name) {
+                    folder.is_expanded = Some(expanded);
+                    hit = true;
+                }
+                hit
+            });
+            if registered || expanded {
+                self.collapsed_groups.remove(key);
+            } else {
+                self.collapsed_groups.insert(key.clone());
             }
         }
     }
@@ -600,6 +632,38 @@ pub fn folders_set_expanded(name: String, expanded: bool) -> Result<Vec<Provider
     Ok(file.folders)
 }
 
+/// 分组的展开 / 收起状态：注册表 + 其余分组的收起集合。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupUiState {
+    pub folders: Vec<ProviderFolder>,
+    pub collapsed_groups: Vec<String>,
+}
+
+impl From<FolderFile> for GroupUiState {
+    fn from(file: FolderFile) -> Self {
+        Self {
+            folders: file.folders,
+            collapsed_groups: file.collapsed_groups.into_iter().collect(),
+        }
+    }
+}
+
+/// 读所有分组的展开 / 收起状态。
+#[tauri::command]
+pub fn folders_group_state() -> Result<GroupUiState> {
+    Ok(read().into())
+}
+
+/// 批量记下分组的展开 / 收起，一次读写。键带 `url:` / `folder:` 前缀。
+#[tauri::command]
+pub fn folders_set_groups_expanded(keys: Vec<String>, expanded: bool) -> Result<GroupUiState> {
+    let mut file = read();
+    file.set_groups_expanded(&keys, expanded);
+    write(&file)?;
+    Ok(file.into())
+}
+
 /// 一次"按域名归组"的结果。
 ///
 /// `rename_all` 不能省：前端 `types.ts` 的 `DomainGroup` 接口读的是 `providerIds` /
@@ -740,7 +804,33 @@ mod tests {
                 .iter()
                 .map(|(id, name)| (id.to_string(), name.to_string()))
                 .collect(),
+            collapsed_groups: BTreeSet::new(),
         }
+    }
+
+    /// 注册表里的文件夹写 `isExpanded`，其余分组（未分组、地址分组）进收起集合——
+    /// 两类都得落盘，否则重开后只有一半记得住
+    #[test]
+    fn group_state_covers_registered_and_computed_groups() {
+        let mut file = file_of(&["NVIDIA"], &[]);
+        let keys = vec![
+            "folder:NVIDIA".to_string(),
+            "folder:未分组".to_string(),
+            "url:https://a.example/v1".to_string(),
+        ];
+        file.set_groups_expanded(&keys, false);
+        assert_eq!(file.folders[0].is_expanded, Some(false));
+        assert!(!file.collapsed_groups.contains("folder:NVIDIA"));
+        assert!(file.collapsed_groups.contains("folder:未分组"));
+        assert!(file.collapsed_groups.contains("url:https://a.example/v1"));
+
+        let json = serde_json::to_string(&file).unwrap();
+        let mut back: FolderFile = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.collapsed_groups.len(), 2, "got: {json}");
+
+        back.set_groups_expanded(&keys, true);
+        assert_eq!(back.folders[0].is_expanded, Some(true));
+        assert!(back.collapsed_groups.is_empty());
     }
 
     #[test]
