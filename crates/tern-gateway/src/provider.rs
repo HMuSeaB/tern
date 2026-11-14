@@ -110,6 +110,17 @@ pub enum ProviderAuth {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         account_id: Option<String>,
     },
+    /// 外挂插件的 token 命令（Step 1，见
+    /// `docs/plugins-external-process-design-zh.md` §7）。
+    ///
+    /// 每次需要 token 时运行一次命令，命令不经过 shell；命令在 stdout
+    /// 输出一个 JSON 对象：`{"token": "...", "account_id": "..."}`
+    ///（`account_id` 可选）。token 由网关动态换取后填入请求头。
+    PluginCommand {
+        command: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        args: Vec<String>,
+    },
 }
 
 impl ProviderAuth {
@@ -148,12 +159,18 @@ impl fmt::Debug for ProviderAuth {
                 .debug_struct("XaiOauth")
                 .field("account_id", account_id)
                 .finish(),
+            // 参数里可能含凭据：只显示命令名，参数一律遮蔽
+            ProviderAuth::PluginCommand { command, .. } => f
+                .debug_struct("PluginCommand")
+                .field("command", command)
+                .field("args", &"<redacted>")
+                .finish(),
         }
     }
 }
 
 /// 前 4 后 4，其余用 `...` 代替；不足 8 位整体遮蔽（与 cc-switch `AuthInfo::masked_key` 一致）
-fn mask_secret(secret: &str) -> String {
+pub(crate) fn mask_secret(secret: &str) -> String {
     let count = secret.chars().count();
     if count > 8 {
         let prefix: String = secret.chars().take(4).collect();
@@ -364,6 +381,37 @@ mod tests {
 
         spec.api_format = ApiFormat::OpenaiResponses;
         assert_eq!(spec.effective_api_format(), ApiFormat::OpenaiResponses);
+    }
+
+    #[test]
+    fn plugin_command_round_trips_and_masks_debug() {
+        let auth = ProviderAuth::PluginCommand {
+            command: "my-token-cmd".to_string(),
+            args: vec!["--secret".to_string(), "s3cr3t-value".to_string()],
+        };
+        let json = serde_json::to_value(&auth).unwrap();
+        assert_eq!(json["type"], "plugin_command");
+        assert_eq!(json["command"], "my-token-cmd");
+        let back: ProviderAuth = serde_json::from_value(json).unwrap();
+        assert_eq!(back, auth);
+
+        // args 省略时也能解析（默认值为空）
+        let bare: ProviderAuth =
+            serde_json::from_value(serde_json::json!({"type": "plugin_command", "command": "cmd"}))
+                .unwrap();
+        assert_eq!(
+            bare,
+            ProviderAuth::PluginCommand {
+                command: "cmd".to_string(),
+                args: Vec::new(),
+            }
+        );
+
+        // Debug 只显示命令名，参数不得出现
+        let printed = format!("{auth:?}");
+        assert!(printed.contains("my-token-cmd"), "{printed}");
+        assert!(!printed.contains("s3cr3t-value"), "{printed}");
+        assert!(!printed.contains("--secret"), "{printed}");
     }
 
     #[test]
