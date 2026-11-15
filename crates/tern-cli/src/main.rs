@@ -609,6 +609,7 @@ fn auth_kind(auth: &ProviderAuth) -> &'static str {
         ProviderAuth::GithubCopilot { .. } => "github_copilot",
         ProviderAuth::CodexOauth { .. } => "codex_oauth",
         ProviderAuth::XaiOauth { .. } => "xai_oauth",
+        ProviderAuth::PluginCommand { .. } => "plugin_command",
     }
 }
 
