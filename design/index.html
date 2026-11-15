@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tern · 用量面板视觉稿 · 选版</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0f1115;
+    --panel: #16181d;
+    --line: #262a31;
+    --fg: #e8eaed;
+    --dim: #8b909a;
+    --accent: #7dd3fc;
+    --warm: #f0b429;
+  }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+    padding: 48px 32px 80px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  header { border-bottom: 1px solid var(--line); padding-bottom: 22px; margin-bottom: 34px; }
+  .eyebrow {
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+    color: var(--accent); letter-spacing: .12em; font-size: 12px;
+    text-transform: uppercase; margin-bottom: 10px;
+  }
+  h1 { font-size: 27px; font-weight: 650; letter-spacing: -.01em; }
+  .sub { color: var(--dim); margin-top: 8px; font-size: 14px; max-width: 62ch; }
+  .grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+  a.card {
+    display: block; text-decoration: none; color: inherit;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 22px 24px; transition: border-color .15s, transform .15s;
+  }
+  a.card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .card h2 { font-size: 19px; font-weight: 620; display: flex; align-items: center; gap: 10px; }
+  .tag {
+    font-family: ui-monospace, monospace; font-size: 11px; letter-spacing: .08em;
+    padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim);
+  }
+  .card p { color: var(--dim); margin-top: 8px; font-size: 14px; }
+  .card .swatch { display: flex; gap: 6px; margin-top: 14px; }
+  .swatch i { width: 22px; height: 22px; border-radius: 5px; border: 1px solid rgba(255,255,255,.08); }
+  footer { color: var(--dim); font-size: 13px; margin-top: 34px; }
+  code { font-family: ui-monospace, monospace; color: var(--warm); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">tern · stage 6 · visual draft</div>
+    <h1>用量面板视觉稿 · 选版</h1>
+    <p class="sub">
+      三版用同一套假数据（见 <code>README.md</code>），只比视觉与编排。选定后翻译成
+      Tauri + React，再接真实查询。浏览器直接打开即可，离线可看。
+    </p>
+  </header>
+
+  <div class="grid">
+    <a class="card" href="a-terminal.html">
+      <h2>版本 A · 工程终端 <span class="tag">深色 · 密集 · 等宽</span></h2>
+      <p>纯深色、紧凑栅格、tabular-nums、单一荧光青强调、状态色点。信息密度优先，一屏能扫很多数。</p>
+      <div class="swatch">
+        <i style="background:#0f1115"></i><i style="background:#16181d"></i>
+        <i style="background:#22d3ee"></i><i style="background:#f0b429"></i>
+        <i style="background:#f87171"></i>
+      </div>
+    </a>
+
+    <a class="card" href="b-workbench.html">
+      <h2>版本 B · 工作台 <span class="tag">浅为主 · 可切深 · 工作台留白</span></h2>
+      <p>中性灰底 + teal 强调，深浅双主题，请求流做成清晰表格。长时间盯不累，适合日常工作。</p>
+      <div class="swatch">
+        <i style="background:#f6f7f9"></i><i style="background:#111418"></i>
+        <i style="background:#0d9488"></i><i style="background:#d97706"></i>
+        <i style="background:#dc2626"></i>
+      </div>
+    </a>
+
+    <a class="card" href="c-canvas.html">
+      <h2>版本 C · 画布 <span class="tag">暖色 · 大 hero · treemap 主视觉</span></h2>
+      <p>暖调深底、超大 hero 花费、treemap 讲"花在哪"、模型流向做桑基流、粗边框卡片叠压成记忆点。</p>
+      <div class="swatch">
+        <i style="background:#1a1410"></i><i style="background:#2a2420"></i>
+        <i style="background:#e8894a"></i><i style="background:#d4b483"></i>
+        <i style="background:#e5734f"></i>
+      </div>
+    </a>
+  </div>
+
+  <footer>
+    数据为构造，见 <code>README.md</code>。字段口径对齐
+    <code>tern-store::query</code>（<code>summary / breakdown / failures / unpriced_models / recent</code>）。
+  </footer>
+</div>
+</body>
+</html>

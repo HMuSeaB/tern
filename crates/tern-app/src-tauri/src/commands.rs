@@ -1,0 +1,982 @@
+//! 给前端的查询命令。
+//!
+//! SQL 口径与 `tern-store::query` 逐字对齐，这样面板和 `tern usage` 命令行
+//! 永远对得上。凡是上百万行的明细都走 `daily` 预聚合表，不把明细拉进前端。
+
+use serde::Serialize;
+// Manager：`app.state::<AppState>()` 要靠它。State 借的是函数栈上的引用，
+// 跨不进 spawn_blocking 的 'static 闭包，所以异步命令改拿 AppHandle 自己取
+use tauri::{Manager, State};
+
+use crate::error::Result;
+use crate::AppState;
+
+/// 与 `tern_store::query::Summary` 同构，成本给字符串避免 JS 的 float 误差
+/// （纳美元是 i64，转 f64 再过 JSON 会在小数位上丢数）
+#[derive(Debug, Serialize)]
+pub struct SummaryDto {
+    pub requests: u64,
+    pub failures: u64,
+    pub aborted: u64,
+    pub fresh_input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub cost: String,
+    pub cache_savings: String,
+    pub unpriced: u64,
+}
+
+/// 一个供应商的近 30 天加权请求数。供应商页据此把常用的地址排到前面。
+///
+/// 注意它记的是 `provider_id` 而不是 base_url：账本来就按供应商记。
+/// 同一个地址下挂两个供应商会被算成两条，由前端按 group_key 聚合成组。
+#[derive(Debug, Serialize)]
+pub struct ProviderUsageDto {
+    pub provider_id: String,
+    pub requests: u64,
+}
+
+/// 面板首屏需要的全部数字。按 cc-switch 使用统计页的密度做：
+/// 一个 hero（Token 总量）+ 一组小卡 + 两条醒目提示。
+#[derive(Debug, Serialize)]
+pub struct PanelDto {
+    /// 数据库文件路径，出错时前端可以直接展示
+    pub db_path: String,
+    /// 今天没有数据时为 true，前端显示引导而不是 0
+    pub first_run: bool,
+    pub today: SummaryDto,
+    /// 昨天同口径，"较昨日"对比用
+    pub yesterday: SummaryDto,
+    /// 未定价模型：有 token 却没查到价，成本图因此偏低
+    pub unpriced_models: Vec<UnpricedDto>,
+    /// 失败按（原因, 供应商, 状态码）聚类，不混进模型统计。**最多 6 组**，
+    /// 所以"今天失败几次"要看 `today.failures`，不能把这个 Vec 的元素个数当总数
+    pub failures: Vec<FailureDto>,
+    /// 今天"客户端要的模型"和"实际计费的模型"不一样的组合，按花费降序。
+    /// 空数组 = 今天没有被换模型。见 `MappedModelDto`
+    pub mapped_models: Vec<MappedModelDto>,
+    /// 今天被换模型的请求**总**数，不受 `mapped_models` 那个 `LIMIT 5` 限制。
+    /// 没有它的话，告警会把"最贵那几条"的次数说成"今天全部"——说少了比不说更糟，
+    /// 因为用户是拿这个数字判断钱花在哪儿
+    pub mapped_total: u64,
+    /// 未定价请求今天一共多少 token。`unpriced_models` 是 `LIMIT 8`，
+    /// 把它的 token 加起来当总数会少算
+    pub unpriced_tokens: u64,
+    /// 最近若干条，给"请求流"折叠区用
+    pub recent: Vec<RecentDto>,
+}
+
+/// 今天"客户端要的模型"和"实际花钱的模型"不一样的那些组合。
+///
+/// 这是 tern 有、cc-switch 没有的那类信号里最硬的一条：供应商静默把 sonnet
+/// 换成 opus，token 和钱都按 opus 算，而客户端一路都以为自己在用 sonnet。
+/// cc-switch 的真实数据里 212 条 `claude-sonnet-4-6 → claude-opus-5.5`
+/// 全是子代理被这么换掉的，在原界面上完全看不出来。
+///
+/// 判据与 `PanelInsights` 的模型流向图逐字一致（`client_model !=
+/// COALESCE(response_model, upstream_model)`，排除失败行）——首屏告警和二级
+/// 视图那张图必须报同一个数，不然用户会以为其中一个是错的。
+#[derive(Debug, Serialize)]
+pub struct MappedModelDto {
+    /// 客户端请求里写的模型名
+    pub client_model: String,
+    /// 实际计费的那个模型名
+    pub response_model: String,
+    pub requests: u64,
+    /// 这条映射今天一共花了多少，美元字符串
+    pub cost: String,
+    pub tokens: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UnpricedDto {
+    pub model: String,
+    pub requests: u64,
+    pub tokens: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FailureDto {
+    pub error_kind: String,
+    pub provider_id: Option<String>,
+    pub status: u16,
+    pub count: u64,
+    pub sample: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RecentDto {
+    pub started_at_ms: i64,
+    pub client: String,
+    pub provider_id: Option<String>,
+    /// 客户端原始模型名
+    pub client_model: String,
+    /// 上游回显的模型名，被供应商换过模型时和 client_model 不同
+    pub response_model: Option<String>,
+    /// `explicit` = 请求写明了 `provider/model`；`fallback` = 没写前缀，落到默认供应商。
+    /// schema 里一直有这列，此前没查出来——没有它用户看不出"我到底走没走到显式路由"，
+    /// 而那是验证"推前缀"有没有生效的唯一反馈
+    pub route_kind: Option<String>,
+    pub role: String,
+    pub status: u16,
+    pub outcome: String,
+    pub error_kind: Option<String>,
+    pub fresh_input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub cost: Option<String>,
+    pub duration_ms: u64,
+}
+
+/// `Summary` 的十个聚合列，与 tern-store 的 SUMMARY_COLUMNS 一致
+const SUMMARY_COLUMNS: &str = "COALESCE(SUM(requests), 0), COALESCE(SUM(failures), 0),
+    COALESCE(SUM(aborted), 0), COALESCE(SUM(fresh_input), 0), COALESCE(SUM(output), 0),
+    COALESCE(SUM(cache_read), 0), COALESCE(SUM(cache_write), 0), COALESCE(SUM(cost_nano), 0),
+    COALESCE(SUM(savings_nano), 0), COALESCE(SUM(unpriced), 0)";
+
+/// 今天满足某个额外条件的请求数。给"列表被 LIMIT 截断了但文案要说总数"用。
+///
+/// 单独一个函数而不是在每处写 `query_row`：这个坑会反复出现（mapped_models
+/// LIMIT 5、unpriced_models LIMIT 8、failures LIMIT 6），而每次漏掉的表现都是
+/// **数字说少了却看不出被截断**——比不显示更糟。
+fn count(conn: &rusqlite::Connection, day: &str, extra_where: &str) -> rusqlite::Result<u64> {
+    // extra_where 是本文件里的常量字符串，不是外部输入，拼进 SQL 没有注入面
+    let sql = format!("SELECT COUNT(*) FROM requests WHERE day = ?1 AND {extra_where}");
+    let n = conn.query_row(&sql, [day], |row| row.get::<_, i64>(0))?;
+    Ok(u64::try_from(n.max(0)).unwrap_or(u64::MAX))
+}
+
+/// 纳美元 → 十进制字符串。与 `tern_store::query::nano_to_usd` 保持同样精度。
+fn nano_to_usd_string(nano: i64) -> String {
+    // 手写而不是用 Decimal：这里只需要显示，且不想让面板依赖 rust_decimal 的版本
+    let sign = if nano < 0 { "-" } else { "" };
+    let nano = nano.unsigned_abs();
+    format!(
+        "{}{}.{:09}",
+        sign,
+        nano / 1_000_000_000,
+        nano % 1_000_000_000
+    )
+    .trim_end_matches('0')
+    .trim_end_matches('.')
+    .to_string()
+}
+
+// hero 的 token 总量、缓存命中率由前端自己算（Dto 只搬原始桶），
+// 不在 Rust 侧留一份同逻辑的两处实现。
+
+fn summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SummaryDto> {
+    let u = |i: usize| -> rusqlite::Result<u64> {
+        Ok(u64::try_from(row.get::<_, i64>(i)?).unwrap_or(0))
+    };
+    Ok(SummaryDto {
+        requests: u(0)?,
+        failures: u(1)?,
+        aborted: u(2)?,
+        fresh_input: u(3)?,
+        output: u(4)?,
+        cache_read: u(5)?,
+        cache_write: u(6)?,
+        cost: nano_to_usd_string(row.get(7)?),
+        cache_savings: nano_to_usd_string(row.get(8)?),
+        unpriced: u(9)?,
+    })
+}
+
+/// 本地日期 `YYYY-MM-DD`，与写入时算 `day` 列的 `tern_store::local_day` 同一时区口径
+fn local_days_ago(days: i64) -> String {
+    (chrono::Local::now().date_naive() - chrono::Days::new(u64::try_from(days).unwrap_or(0)))
+        .format("%Y-%m-%d")
+        .to_string()
+}
+
+/// 打开数据库并返回首屏全部数据。库不存在时返回错误，前端据此显示引导。
+#[tauri::command]
+pub fn open_db(state: State<'_, AppState>) -> Result<String> {
+    let path = state.db_path();
+    state.ensure_open()?;
+    Ok(path)
+}
+
+// ---------------------------------------------------------------------------
+// 首次运行：从 cc-switch 导入
+// ---------------------------------------------------------------------------
+
+/// 首次运行判定：没有配置、或供应商列表为空都算。
+#[tauri::command]
+pub fn first_run() -> bool {
+    crate::config::is_first_run()
+}
+
+/// 生成一份空样例配置（带随机 accessToken）。不导入时用户从这里开始。
+#[tauri::command]
+pub fn write_sample_config() -> Result<String> {
+    let path = crate::config::config_path()?;
+    crate::config::write_sample(&path).map_err(|e| crate::error::AppError::Config(e.to_string()))
+}
+
+/// 探测 cc-switch 数据库，返回"如果导入会发生什么"。
+///
+/// 纯只读：不写盘、不备份、不改任何状态。和执行用的
+/// [`import_from_cc_switch`] 分开，是因为确认必须发生在写入之前——
+/// 用户要先看见"将复制 N 个凭据"这句话，再决定要不要继续。
+#[derive(Debug, Serialize)]
+pub struct CcSwitchPreview {
+    /// cc-switch 数据库路径
+    pub db_path: String,
+    /// 数据库不存在时为 false，前端据此隐藏导入按钮
+    pub found: bool,
+    /// 可导入的供应商
+    pub providers: Vec<CcSwitchProviderPreview>,
+    /// 搬不过来但用户该知道的（缺地址 / 缺凭据 / JSON 坏）
+    pub skipped: Vec<String>,
+    /// 这些供应商里哪些是第三方网关（导入后联网工具会失效）
+    pub third_party_count: usize,
+    /// 会一起搬过来的自定义文件夹，按 cc-switch 里的顺序。
+    /// 非空时前端要说一句"你的分组也一起过来了"——用户排过的文件夹
+    ///  silently 消失是最容易让人以为导入失败的一种
+    pub folder_names: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CcSwitchProviderPreview {
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    pub api_format: String,
+}
+
+/// 只读探测。要开 cc-switch 那个 11 MB 的库并全表扫一遍，
+/// 同步命令跑在主线程上就是界面冻一会儿——丢线程池。
+#[tauri::command]
+pub async fn import_preview() -> Result<CcSwitchPreview> {
+    tauri::async_runtime::spawn_blocking(preview_from_cc_switch)
+        .await
+        .map_err(|e| crate::error::AppError::Config(format!("任务失败: {e}")))?
+}
+
+fn preview_from_cc_switch() -> Result<CcSwitchPreview> {
+    let db = tern_gateway::ccswitch_import::default_cc_switch_db()
+        .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
+    if !db.exists() {
+        return Ok(missing_cc_switch(db));
+    }
+
+    let report = tern_gateway::ccswitch_import::import_providers(&db, "claude")
+        .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
+    Ok(preview_of(&db, report))
+}
+
+/// 真正落盘。用户看过 [`import_preview`] 的结果并确认后才该调到这里。
+///
+/// # 为什么是 async
+///
+/// 要开 cc-switch 那个 11 MB 的库、把 39 家供应商写进配置、还可能重启网关。
+/// 同步命令跑在主线程上，用户点完"导入"有好几秒界面点哪儿都没反应。
+#[tauri::command]
+pub async fn import_from_cc_switch(app: tauri::AppHandle) -> Result<CcSwitchPreview> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        import_from_cc_switch_now(&state)
+    })
+    .await
+    .map_err(|e| crate::error::AppError::Config(format!("任务失败: {e}")))?
+}
+
+fn import_from_cc_switch_now(state: &AppState) -> Result<CcSwitchPreview> {
+    let db = tern_gateway::ccswitch_import::default_cc_switch_db()
+        .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
+    if !db.exists() {
+        return Ok(missing_cc_switch(db));
+    }
+
+    let report = tern_gateway::ccswitch_import::import_providers(&db, "claude")
+        .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
+
+    // 写之前先备份：导入覆盖的是整个 providers 列表，用户手改过的东西不该无声消失
+    let config_path = crate::config::config_path()?;
+    if config_path.exists() {
+        let backup = config_path.with_extension("json.bak");
+        if let Err(error) = std::fs::copy(&config_path, &backup) {
+            log::warn!("[tern-app] 备份 {config_path:?} 失败: {error}");
+        }
+    }
+
+    // 保留用户已有的 accessToken / listen，只替换供应商列表
+    let mut config = crate::config::load(&config_path)
+        .unwrap_or_else(|_| tern_gateway::GatewayConfig::new(Vec::new()));
+    config.providers = report.specs.clone();
+    if config
+        .access_token
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .is_empty()
+    {
+        config.access_token = Some(format!("tern-{}", uuid::Uuid::new_v4().simple()));
+    }
+    std::fs::write(&config_path, serde_json::to_string_pretty(&config)? + "\n")
+        .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
+
+    // 分组数据在另一个文件，跟着落一份。顺序：先建注册表再把归属写进去，
+    // 否则归属会指向一个还没登记的文件夹（界面上是个管不了的组）
+    apply_imported_folders(&report.folder_names, &report.folder_assignments)?;
+
+    // 导入后库路径可能变了，丢掉旧的只读连接，下次查询重新打开
+    state.invalidate_db();
+    log::info!(
+        "[tern-app] 从 cc-switch 导入 {} 个供应商、{} 个文件夹到 {}",
+        report.specs.len(),
+        report.folder_names.len(),
+        config_path.display()
+    );
+
+    // 网关还拿着旧配置在跑。不重起的话面板里显示的供应商列表是新的、
+    // 实际路由用的是旧的，用户会以为导入失败。
+    // 失败不阻断导入本身——文件已经落盘了，那才是要紧的
+    if let Err(error) = crate::server::restart_after_config_change() {
+        log::warn!("[tern-app] 导入后重起网关失败: {error}");
+    }
+
+    Ok(preview_of(&db, report))
+}
+
+/// 从 cc-switch **补**档位映射。
+///
+/// # 为什么需要单独一条
+///
+/// `client_env` 是后加的功能。此前导入过的人（比如从 0.1.4 升上来的）
+/// 配置里 38 个供应商的 `client_env` 全是空的——导入是一次性的，补了代码
+/// 不会追溯已经导完的数据。手工补 38 家不现实，所以要有这条把映射补上。
+///
+/// # 只补空的，不动已配的
+///
+/// 用户在面板里改过的映射是**当前的意图**，拿 cc-switch 的旧值盖掉它没有
+/// 道理。所以判据是 `client_env.is_empty()`：空的才补，非空的原样留。
+/// 宁可少补一家，也不能把用户刚调好的抹回旧值。
+///
+/// # 只碰 client_env
+///
+/// 地址、key、倍率一律不动。那条路是 `import_from_cc_switch` 的事，
+/// 而它是"整个 providers 列表换掉"——这边只想补一个字段，混在一起会让
+/// "我只想补映射"变成"顺手把 key 也换成 cc-switch 的"。
+#[derive(Debug, Serialize)]
+pub struct ModelEnvBackfillReport {
+    /// 库路径，前端展示"从哪儿补的"
+    pub db_path: String,
+    /// 本机有没有 cc-switch。没有时前端直接隐藏入口
+    pub found: bool,
+    /// 补了几家
+    pub patched: usize,
+    /// cc-switch 里配了映射、但 tern 这边已经有值的（没动）
+    pub skipped_configured: usize,
+    /// cc-switch 里也没配映射的（没东西可补）
+    pub skipped_empty: usize,
+    /// 补了什么，逐家一行给人看
+    pub details: Vec<String>,
+}
+
+/// 只有真的 apply、且真有改动时才落盘。patched > 0 但 apply = false
+/// 是预览，不能写
+#[tauri::command]
+pub async fn cc_switch_backfill_model_env(apply: bool) -> Result<ModelEnvBackfillReport> {
+    // 同步跑的话主线程冻结：要开 cc-switch 那个 11 MB 的库、读 45 家、
+    // 解析每家一整套 env。实测约 30 ms，但磁盘在喘的时候没上限。
+    // 用户点的是「检查有没有可补的」，不该连界面一起卡住
+    tauri::async_runtime::spawn_blocking(move || backfill_model_env(apply))
+        .await
+        .map_err(|e| crate::error::AppError::Config(format!("任务失败: {e}")))?
+}
+
+/// 本体。拆出来是为了能单测——`spawn_blocking` 的闭包拿不到夹具。
+fn backfill_model_env(apply: bool) -> Result<ModelEnvBackfillReport> {
+    let db = tern_gateway::ccswitch_import::default_cc_switch_db()
+        .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
+    let empty = ModelEnvBackfillReport {
+        db_path: db.display().to_string(),
+        found: false,
+        patched: 0,
+        skipped_configured: 0,
+        skipped_empty: 0,
+        details: Vec::new(),
+    };
+    if !db.exists() {
+        return Ok(empty);
+    }
+
+    let report = tern_gateway::ccswitch_import::import_providers(&db, "claude")
+        .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
+
+    let config_path = crate::config::config_path()?;
+    let mut config = crate::config::load(&config_path)?;
+
+    let mut patched = 0;
+    let mut skipped_configured = 0;
+    let mut skipped_empty = 0;
+    let mut details = Vec::new();
+
+    for spec in &report.specs {
+        let Some(target) = config.providers.iter_mut().find(|p| p.id == spec.id) else {
+            // tern 这边没这家（用户删过 / 从没导过它）。不新建——
+            // 那会往用户没想用的列表里加东西
+            continue;
+        };
+        if !target.client_env.is_empty() {
+            skipped_configured += 1;
+            continue;
+        }
+        if spec.client_env.is_empty() {
+            skipped_empty += 1;
+            continue;
+        }
+        // 预览模式只报"会补几家"，不动 config——否则一进面板就改配置，
+        // 用户根本不知道发生了什么。写盘只发生在 apply = true
+        if !apply {
+            patched += 1;
+            details.push(format!("{}（{} 个档位）", spec.name, spec.client_env.len()));
+            continue;
+        }
+        target.client_env = spec.client_env.clone();
+        patched += 1;
+        details.push(format!("{}（{} 个档位）", spec.name, spec.client_env.len()));
+    }
+
+    // 只有真的 apply、且真有改动时才落盘。patched > 0 但 apply = false
+    // 是预览，不能写
+    if apply && patched > 0 {
+        // 写前备份，和其他写配置的路径同一套规矩
+        if config_path.exists() {
+            let backup = config_path.with_extension("json.bak");
+            if let Err(error) = std::fs::copy(&config_path, &backup) {
+                log::warn!("[tern-app] 备份 {config_path:?} 失败: {error}");
+            }
+        }
+        std::fs::write(&config_path, serde_json::to_string_pretty(&config)? + "\n")
+            .map_err(|e| crate::error::AppError::Config(e.to_string()))?;
+        // 网关还拿着旧配置。不重起的话面板显示新的、路由用旧的
+        if let Err(error) = crate::server::restart_after_config_change() {
+            log::warn!("[tern-app] 补档位映射后重起网关失败: {error}");
+        }
+        log::info!("[tern-app] 从 cc-switch 补了 {patched} 家的档位映射");
+    }
+
+    Ok(ModelEnvBackfillReport {
+        db_path: db.display().to_string(),
+        found: true,
+        patched,
+        skipped_configured,
+        skipped_empty,
+        details,
+    })
+}
+
+/// cc-switch 不在时的预览结果。
+fn missing_cc_switch(db: std::path::PathBuf) -> CcSwitchPreview {
+    CcSwitchPreview {
+        db_path: db.display().to_string(),
+        found: false,
+        providers: Vec::new(),
+        skipped: Vec::new(),
+        third_party_count: 0,
+        folder_names: Vec::new(),
+    }
+}
+
+/// 把 cc-switch 的文件夹搬进 tern 的 `folders.json`。
+///
+/// # 为什么是"合并"而不是"覆盖"
+///
+/// 用户在 tern 这边可能已经建过文件夹了。导入把整个 providers 数组换掉，
+/// 但分组文件不该跟着被清零——那会同时丢掉 tern 侧的手工分组。
+/// 所以：注册表里没有的名字才追加，归属按 id 覆盖（id 没变的保持原样）。
+fn apply_imported_folders(
+    folder_names: &[String],
+    assignments: &[(String, String)],
+) -> crate::error::Result<()> {
+    if folder_names.is_empty() && assignments.is_empty() {
+        return Ok(());
+    }
+    let mut file = crate::folders::read();
+    // 顺序按 cc-switch 里的来：用户排过的文件夹不该被重排
+    crate::folders::ensure_folder_names(&mut file.folders, folder_names);
+    for (id, folder) in assignments {
+        file.assignments
+            .insert(id.trim().to_string(), folder.trim().to_string());
+    }
+    crate::folders::write(&file)
+}
+
+fn preview_of(
+    db: &std::path::Path,
+    report: tern_gateway::ccswitch_import::ImportReport,
+) -> CcSwitchPreview {
+    let providers = report
+        .specs
+        .iter()
+        .map(|spec| CcSwitchProviderPreview {
+            id: spec.id.clone(),
+            name: spec.name.clone(),
+            base_url: spec.effective_base_url(),
+            api_format: spec.effective_api_format().to_string(),
+        })
+        .collect::<Vec<_>>();
+
+    let third_party_count = report
+        .specs
+        .iter()
+        .filter(|spec| {
+            matches!(
+                tern_gateway::assess(spec),
+                tern_gateway::WebToolsSupport::ThirdParty
+            )
+        })
+        .count();
+
+    CcSwitchPreview {
+        db_path: db.display().to_string(),
+        found: true,
+        providers,
+        skipped: report
+            .skipped
+            .iter()
+            .map(|(id, reason)| format!("{id}: {reason}"))
+            .collect(),
+        third_party_count,
+        folder_names: report.folder_names,
+    }
+}
+
+/// 面板首屏的数据。`usePanel` 每隔几秒就拉一次，而它底下是好几次聚合查询——
+/// 同步跑的话每轮轮询都让主线程阻塞一回，翻页面会觉得"发涩"。
+#[tauri::command]
+pub async fn panel_summary(app: tauri::AppHandle) -> Result<PanelDto> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        state.with_db(|db| db.with_conn(|conn| build_panel(conn, &state.db_path())))
+    })
+    .await
+    .map_err(|e| crate::error::AppError::Config(format!("任务失败: {e}")))?
+}
+
+/// 供应商页的「常用地址」排序依据。
+///
+/// # 为什么单独一个命令，不搭 panel_summary 的车
+///
+/// 面板可能正处在 `first_run`（库刚建、还没有任何数据），那时 `build_panel`
+/// 直接返回引导页，里面根本没有用量字段。而首次引导那一刻恰恰是用户最需要
+/// 在供应商列表里看到"哪些常用"的时候——他正准备挑一个填进去。
+///
+/// # 口径
+///
+/// 只算**近 30 天**，且近 7 天加权三倍。"最近一直在用"和"三十天前用过一回"
+/// 不是一回事：累计的话一个早就不用的老供应商会一直霸着顶位。
+#[tauri::command]
+pub async fn provider_usage(app: tauri::AppHandle) -> Result<Vec<ProviderUsageDto>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        state.with_db(|db| db.with_conn(build_provider_usage))
+    })
+    .await
+    .map_err(|e| crate::error::AppError::Config(format!("任务失败: {e}")))?
+}
+
+/// 近 30 天每个供应商的加权请求数。抽成普通函数以便测试。
+pub fn build_provider_usage(conn: &rusqlite::Connection) -> Result<Vec<ProviderUsageDto>> {
+    // 近 7 天的权重。3 倍是"最近一周"和"前三周"之间的一个中间值：
+    // 1 倍等于没区分，10 倍会让一周的偶发用量盖过一个月的稳定使用。
+    const RECENT_WEIGHT: i64 = 3;
+    let recent_from = local_days_ago(7);
+    let window_from = local_days_ago(30);
+    let sql = format!(
+        "SELECT provider_id,
+                SUM(CASE WHEN day >= ?2 THEN {RECENT_WEIGHT} ELSE 1 END * requests)
+         FROM daily
+         WHERE day BETWEEN ?1 AND ?3
+           AND provider_id IS NOT NULL
+           AND provider_id != ''
+         GROUP BY provider_id
+         ORDER BY 2 DESC, provider_id ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![window_from, recent_from, local_days_ago(0)],
+            |row| {
+                Ok(ProviderUsageDto {
+                    provider_id: row.get(0)?,
+                    // SQLite 的 SUM 可能返回 NULL（空组），也可能超出 i64；
+                    // 两种情况都不该让整页崩掉
+                    requests: u64::try_from(row.get::<_, i64>(1)?).unwrap_or(u64::MAX),
+                })
+            },
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// 面板首屏的全部数据。抽成不依赖 tauri 的普通函数，测试可以直接调用。
+pub fn build_panel(conn: &rusqlite::Connection, db_path: &str) -> Result<PanelDto> {
+    {
+        let today = local_days_ago(0);
+        let yesterday = local_days_ago(1);
+        let summary = |day: &str| -> rusqlite::Result<SummaryDto> {
+            conn.query_row(
+                &format!("SELECT {SUMMARY_COLUMNS} FROM daily WHERE day = ?1"),
+                [day],
+                summary_from_row,
+            )
+        };
+        let today_summary = summary(&today)?;
+        let yesterday_summary = summary(&yesterday)?;
+        // 有数据才谈"今日"，否则前端显示首次引导
+        let first_run = conn.query_row::<i64, _, _>(
+            "SELECT COALESCE(SUM(requests), 0) FROM daily",
+            [],
+            |row| row.get(0),
+        )? == 0;
+
+        let unpriced_models = {
+            let mut stmt = conn.prepare(
+                "SELECT COALESCE(response_model, upstream_model, client_model) AS model,
+                        COUNT(*), SUM(fresh_input + output + cache_read + cache_write)
+                 FROM requests
+                 WHERE day = ?1 AND has_usage = 1 AND cost_nano IS NULL
+                 GROUP BY model ORDER BY 3 DESC LIMIT 8",
+            )?;
+            let rows = stmt.query_map([&today], |row| {
+                Ok(UnpricedDto {
+                    model: row.get(0)?,
+                    requests: u64::try_from(row.get::<_, i64>(1)?).unwrap_or(0),
+                    tokens: u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
+                })
+            })?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+
+        let failures = {
+            let mut stmt = conn.prepare(
+                // 与 tern-store 的 failures() 相同：按（原因, 供应商, 状态码）聚类，
+                // 取每组最近一条错误摘要做样本
+                "SELECT COALESCE(error_kind, 'unknown'), provider_id, status, COUNT(*),
+                        (SELECT r2.error_message FROM requests r2
+                         WHERE r2.day = ?1 AND r2.outcome = 'failed'
+                           AND COALESCE(r2.error_kind, 'unknown') = COALESCE(r.error_kind, 'unknown')
+                           AND r2.provider_id IS r.provider_id AND r2.status = r.status
+                         ORDER BY r2.started_at DESC LIMIT 1)
+                 FROM requests r
+                 WHERE day = ?1 AND outcome = 'failed'
+                 GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 6",
+            )?;
+            let rows = stmt.query_map([&today], |row| {
+                Ok(FailureDto {
+                    error_kind: row.get(0)?,
+                    provider_id: row.get(1)?,
+                    status: u16::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
+                    count: u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0),
+                    sample: row.get(4)?,
+                })
+            })?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+
+        // 模型被换：今天有没有"客户端要 A、实际按 B 计费"的组合。
+        // 放在 build_panel 里而不是另开一条命令：首屏已经在轮询 panel_summary
+        // 一条了，再开一条等于每次刷新多一次 IPC 往返；而这里本来就是单连接
+        // 连查多表，加一个子查询符合现有形状
+        let mapped_models = {
+            let mut stmt = conn.prepare(
+                "SELECT client_model, COALESCE(response_model, upstream_model) AS billed,
+                        COUNT(*), COALESCE(SUM(cost_nano), 0),
+                        SUM(fresh_input + output + cache_read + cache_write)
+                 FROM requests
+                 WHERE day = ?1 AND outcome != 'failed' AND has_usage = 1
+                 GROUP BY 1, 2
+                 HAVING client_model != COALESCE(response_model, upstream_model)
+                 ORDER BY 4 DESC, 5 DESC LIMIT 5",
+            )?;
+            let rows = stmt.query_map([&today], |row| {
+                Ok(MappedModelDto {
+                    client_model: row.get(0)?,
+                    response_model: row.get(1)?,
+                    requests: u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
+                    cost: nano_to_usd_string(row.get(3)?),
+                    tokens: u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
+                })
+            })?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+
+        // 被换请求的总数。和上面那条同一个 WHERE，只是不分组不截断——
+        // 上面 LIMIT 5 只影响"列哪几条"，不影响"一共几条"
+        let mapped_total = count(
+            conn,
+            &today,
+            "outcome != 'failed' AND has_usage = 1
+             AND client_model != COALESCE(response_model, upstream_model)",
+        )?;
+
+        // 未定价的 token 总量。unpriced_models 那个列表 LIMIT 8，把它的 token
+        // 加起来当总数会少算；而未定价模型的个数 daily.unpriced 已经有了
+        let unpriced_tokens = conn
+            .query_row(
+                "SELECT COALESCE(SUM(fresh_input + output + cache_read + cache_write), 0)
+             FROM requests WHERE day = ?1 AND has_usage = 1 AND cost_nano IS NULL",
+                [&today],
+                |row| row.get::<_, i64>(0),
+            )?
+            .max(0);
+        let unpriced_tokens = u64::try_from(unpriced_tokens).unwrap_or(u64::MAX);
+
+        let recent = {
+            let mut stmt = conn.prepare(
+                "SELECT started_at, client, provider_id, client_model, response_model,
+                        route_kind, role, status, outcome, error_kind,
+                        fresh_input, output, cache_read, cache_write, cost_nano, duration_ms
+                 FROM requests ORDER BY started_at DESC, id DESC LIMIT 12",
+            )?;
+            let u = |row: &rusqlite::Row<'_>, i: usize| -> rusqlite::Result<u64> {
+                Ok(u64::try_from(row.get::<_, i64>(i)?).unwrap_or(0))
+            };
+            let rows = stmt.query_map([], |row| {
+                Ok(RecentDto {
+                    started_at_ms: row.get(0)?,
+                    client: row.get(1)?,
+                    provider_id: row.get(2)?,
+                    client_model: row.get(3)?,
+                    response_model: row.get(4)?,
+                    route_kind: row.get(5)?,
+                    role: row.get(6)?,
+                    status: u16::try_from(row.get::<_, i64>(7)?).unwrap_or(0),
+                    outcome: row.get(8)?,
+                    error_kind: row.get(9)?,
+                    fresh_input: u(row, 10)?,
+                    output: u(row, 11)?,
+                    cache_read: u(row, 12)?,
+                    cache_write: u(row, 13)?,
+                    cost: row.get::<_, Option<i64>>(14)?.map(nano_to_usd_string),
+                    duration_ms: u(row, 15)?,
+                })
+            })?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+
+        Ok(PanelDto {
+            db_path: db_path.to_string(),
+            first_run,
+            today: today_summary,
+            yesterday: yesterday_summary,
+            unpriced_models,
+            failures,
+            mapped_models,
+            mapped_total,
+            unpriced_tokens,
+            recent,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 二级视图（ROADMAP T+3）：趋势 / 花在哪 / 会话 / 模型流向
+// ---------------------------------------------------------------------------
+
+/// 日期范围。`days = 0` 表示今天一天。
+///
+/// 日期由 Rust 侧算而不是前端传：本地时区的"今天"得和写入时算 `day` 列的
+/// `tern_store::local_day` 同一口径。前端传字符串的话，换时区的人会看到一个
+/// 空窗口，而库明明有数据。
+#[derive(Debug, Serialize, Clone)]
+pub struct RangeDto {
+    pub from: String,
+    pub to: String,
+    pub days: u32,
+}
+
+fn range_of(days: u32) -> tern_store::DayRange {
+    if days <= 1 {
+        tern_store::DayRange::today()
+    } else {
+        tern_store::DayRange::last_days(days)
+    }
+}
+
+/// 在 Store 上执行查询。
+///
+/// 网关在跑（`set_shared_store` 存了一份）就直接用它——同一份 Store，口径不会
+/// 分叉；没在跑才另开只读连接。只读打开见 `tern_store::Store::open_readonly`：
+/// 它不建库、不迁移，所以库不存在时必须由这里报错，而不是造一个空库。
+fn with_store<T>(
+    state: &AppState,
+    f: impl FnOnce(&tern_store::Store) -> std::result::Result<T, crate::error::AppError>,
+) -> Result<T> {
+    if let Some(store) = state.shared_store() {
+        return f(&store);
+    }
+    let path = crate::db::resolve_db_path()?;
+    if !path.exists() {
+        return Err(crate::error::AppError::NoConfigDir);
+    }
+    // `?` 走 AppError::from(StoreError)：Sqlite 变体保留原错，其余折成 Store。
+    // 但路径要补上——库打不开时用户最想知道的是"它在找哪个文件"
+    let store = tern_store::Store::open_readonly(&path).map_err(|error| {
+        let with_path = match &error {
+            tern_store::StoreError::Sqlite(_) => {
+                format!("打不开用量数据库 {}：{error}", path.display())
+            }
+            other => other.to_string(),
+        };
+        crate::error::AppError::Store(with_path)
+    })?;
+    f(&store)
+}
+
+/// 花费趋势。`dim` 是 `provider` / `model` / `role` / `client` / `day`，
+/// 与 tern-store 的 `Breakdown` 同名，解析不了按天走。
+#[tauri::command]
+pub fn panel_trend(state: State<'_, AppState>, days: u32, dim: String) -> Result<Vec<TrendDto>> {
+    with_store(state.inner(), |store| {
+        let by = match dim.as_str() {
+            "provider" => tern_store::Breakdown::Provider,
+            "model" => tern_store::Breakdown::Model,
+            "role" => tern_store::Breakdown::Role,
+            "client" => tern_store::Breakdown::Client,
+            // 不认识的值按天走：报错会让整张图消失，而按天总归是能看的
+            _ => tern_store::Breakdown::Day,
+        };
+        Ok(store
+            .trend(&range_of(days), by)?
+            .into_iter()
+            .map(|point| TrendDto {
+                day: point.day,
+                key: point.key,
+                summary: summary_to_dto(&point.summary),
+            })
+            .collect())
+    })
+}
+
+/// 花在哪：按维度拆的占比。和趋势用同一个 [`Breakdown`]，口径才对得上。
+#[tauri::command]
+pub fn panel_breakdown(
+    state: State<'_, AppState>,
+    days: u32,
+    dim: String,
+) -> Result<Vec<BreakdownDto>> {
+    with_store(state.inner(), |store| {
+        let by = match dim.as_str() {
+            "provider" => tern_store::Breakdown::Provider,
+            "model" => tern_store::Breakdown::Model,
+            "role" => tern_store::Breakdown::Role,
+            "client" => tern_store::Breakdown::Client,
+            _ => tern_store::Breakdown::Day,
+        };
+        Ok(store
+            .breakdown(&range_of(days), by)?
+            .into_iter()
+            .map(|row| BreakdownDto {
+                key: row.key,
+                summary: summary_to_dto(&row.summary),
+            })
+            .collect())
+    })
+}
+
+/// 会话视图：按 `session_id` 聚合。"这次重构花了多少"由它回答。
+#[tauri::command]
+pub fn panel_sessions(
+    state: State<'_, AppState>,
+    days: u32,
+    limit: usize,
+) -> Result<Vec<SessionDto>> {
+    with_store(state.inner(), |store| {
+        Ok(store
+            .sessions(&range_of(days), limit)?
+            .into_iter()
+            .map(|row| SessionDto {
+                session_id: row.session_id,
+                client: row.client,
+                started_at_ms: row.started_at_ms,
+                ended_at_ms: row.ended_at_ms,
+                roles: row.roles,
+                summary: summary_to_dto(&row.summary),
+            })
+            .collect())
+    })
+}
+
+/// 模型流向：客户端模型 → 实际模型。
+///
+/// 这是"谁在花钱"的直接答案：子代理请求的 sonnet 全被供应商送去 Opus 这件事，
+/// 只有把它画出来才看得见。
+#[tauri::command]
+pub fn panel_model_flow(state: State<'_, AppState>, days: u32) -> Result<Vec<ModelFlowDto>> {
+    with_store(state.inner(), |store| {
+        Ok(store
+            .model_flow(&range_of(days))?
+            .into_iter()
+            .map(|row| ModelFlowDto {
+                client_model: row.client_model,
+                response_model: row.response_model,
+                summary: summary_to_dto(&row.summary),
+            })
+            .collect())
+    })
+}
+
+#[derive(Debug, Serialize)]
+pub struct TrendDto {
+    pub day: String,
+    pub key: String,
+    pub summary: SummaryDto,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BreakdownDto {
+    pub key: String,
+    pub summary: SummaryDto,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SessionDto {
+    pub session_id: String,
+    pub client: String,
+    pub started_at_ms: i64,
+    pub ended_at_ms: i64,
+    pub roles: Vec<String>,
+    pub summary: SummaryDto,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ModelFlowDto {
+    pub client_model: String,
+    pub response_model: Option<String>,
+    pub summary: SummaryDto,
+}
+
+/// `tern_store::Summary` → DTO。成本转成十进制字符串，理由同 [`SummaryDto`]。
+fn summary_to_dto(summary: &tern_store::Summary) -> SummaryDto {
+    SummaryDto {
+        requests: summary.requests,
+        failures: summary.failures,
+        aborted: summary.aborted,
+        fresh_input: summary.fresh_input,
+        output: summary.output,
+        cache_read: summary.cache_read,
+        cache_write: summary.cache_write,
+        // 与 nano_to_usd 同一套精度：trim 尾零再补分位，避免 "18.470000000"
+        cost: decimal_string(&summary.cost),
+        cache_savings: decimal_string(&summary.cache_savings),
+        unpriced: summary.unpriced,
+    }
+}
+
+fn decimal_string(value: &rust_decimal::Decimal) -> String {
+    let text = value.normalize().to_string();
+    if text.contains('.') {
+        text
+    } else {
+        // 前端按分位显示，整数也要有小数部分才好排版
+        format!("{text}.0")
+    }
+}

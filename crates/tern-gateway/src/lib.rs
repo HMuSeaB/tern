@@ -1,0 +1,31 @@
+//! tern-gateway：面向编码 agent 的本地协议翻译网关。
+//!
+//! `proxy/` 下的协议转换层原样取自 cc-switch（MIT，见仓库根目录 LICENSE），
+//! 模块路径保持 `crate::proxy::...` 不变，以便继续从上游 cherry-pick 修复。
+
+pub mod adapter;
+pub mod ccswitch_import;
+/// `~/.claude/settings.json` 的读改写。CLI 的 `tern use` / `tern wire` 和面板
+/// 的接线、模型档位、权限放行共用它——那份逻辑此前在 tern-app 里抄了三遍。
+pub mod claude_settings;
+pub mod gateway;
+pub mod models;
+pub mod plugin_token;
+pub mod provider;
+// 转换层里仍有不少函数只被 cc-switch 的故障转移 / 用量 / Copilot 优化器使用。
+// 加在这里而不是被搬运的文件里，保持它们与上游逐字节一致。
+#[allow(dead_code)]
+pub mod proxy;
+pub mod resilience;
+pub mod router;
+pub mod web_tools;
+
+pub use gateway::usage::{
+    ClientKind, ErrorKind, Outcome, RequestRole, TokenCounts, UsageEvent, UsageSink,
+};
+pub use gateway::{Gateway, GatewayConfig, ManagedToken, TokenProvider, UpstreamProxy};
+pub use plugin_token::{CommandTokenProvider, DEFAULT_TOKEN_COMMAND_TIMEOUT};
+pub use provider::{ApiFormat, KeyHeader, ProviderAuth, ProviderSpec};
+pub use resilience::{Breakers, ResilienceConfig};
+pub use router::{ModelRouter, Route, RouteKind};
+pub use web_tools::{assess, third_party_providers, warning_for, WebToolsSupport};

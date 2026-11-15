@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>版本 A · 工程终端 — tern 用量面板视觉稿</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:      #0b0d10;
+    --panel:   #121519;
+    --panel-2: #171b20;
+    --line:    #232830;
+    --line-2:  #2d333c;
+    --fg:      #e6e9ee;
+    --dim:     #7d848f;
+    --dim-2:   #5b626c;
+    --accent:  #22d3ee;   /* 单一荧光青 */
+    --accent-dim: #0e7490;
+    --warn:    #f0b429;
+    --bad:     #f4623f;
+    --ok:      #3fb27f;
+    --mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, "Microsoft YaHei", monospace;
+    --sans: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  html, body { background: var(--bg); }
+  body {
+    color: var(--fg); font: 14px/1.5 var(--sans);
+    -webkit-font-smoothing: antialiased;
+    padding: 0;
+  }
+  .tnum { font-variant-numeric: tabular-nums; font-family: var(--mono); }
+
+  /* ---- 顶栏 ---- */
+  .topbar {
+    position: sticky; top: 0; z-index: 20;
+    display: flex; align-items: center; gap: 18px;
+    padding: 12px 22px; background: rgba(11,13,16,.92); backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--line);
+  }
+  .brand { display: flex; align-items: baseline; gap: 9px; font-weight: 640; letter-spacing: -.01em; }
+  .brand .logo { color: var(--accent); font-family: var(--mono); font-size: 18px; }
+  .brand .ver { font-family: var(--mono); font-size: 11px; color: var(--dim-2); }
+  .topbar nav { display: flex; gap: 4px; margin-left: 8px; }
+  .topbar nav a {
+    color: var(--dim); text-decoration: none; font-size: 13px; padding: 5px 10px; border-radius: 7px;
+  }
+  .topbar nav a.on { color: var(--fg); background: var(--panel-2); }
+  .topbar nav a:hover { color: var(--fg); }
+  .spacer { flex: 1; }
+  .live { display: flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 12px; color: var(--dim); }
+  .live .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px rgba(63,178,127,.15); }
+  .btn {
+    font: 12px/1 var(--mono); color: var(--dim); background: var(--panel-2);
+    border: 1px solid var(--line-2); border-radius: 7px; padding: 6px 11px; cursor: pointer;
+  }
+  .btn:hover { color: var(--fg); border-color: var(--accent-dim); }
+  .seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 7px; overflow: hidden; font: 12px/1 var(--mono); }
+  .seg span { padding: 6px 11px; color: var(--dim); background: var(--panel-2); cursor: pointer; }
+  .seg span + span { border-left: 1px solid var(--line-2); }
+  .seg span.on { color: #061316; background: var(--accent); }
+  .seg span:not(.on):hover { color: var(--fg); }
+
+  /* ---- 布局 ---- */
+  .shell { max-width: 1380px; margin: 0 auto; padding: 20px 22px 60px; }
+  .grid { display: grid; gap: 12px; }
+  .row { display: grid; gap: 12px; }
+  .row.kpi { grid-template-columns: repeat(4, 1fr); }
+  .row.mid { grid-template-columns: 5fr 3fr; }
+  .row.trio { grid-template-columns: 1fr 1fr; }
+  .row.full { grid-template-columns: 1fr; }
+  @media (max-width: 980px) {
+    .row.kpi { grid-template-columns: repeat(2, 1fr); }
+    .row.mid, .row.trio { grid-template-columns: 1fr; }
+  }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 15px 16px; min-width: 0;
+  }
+  .card > .head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .card .title { font-size: 13px; font-weight: 620; color: var(--fg); letter-spacing: .01em; }
+  .card .title .hint { color: var(--dim-2); font-weight: 400; font-family: var(--mono); font-size: 11px; margin-left: 7px; }
+  .card .head .spacer { flex: 1; }
+  .card .sub { font-family: var(--mono); font-size: 11px; color: var(--dim-2); }
+
+  /* ---- KPI ---- */
+  .kpi .big { font-family: var(--mono); font-size: 30px; font-weight: 600; letter-spacing: -.02em; line-height: 1.1; }
+  .kpi .unit { font-size: 14px; color: var(--dim); margin-left: 3px; font-family: var(--sans); }
+  .kpi .label { display: flex; align-items: center; gap: 7px; color: var(--dim); font-size: 12px; }
+  .kpi .delta { font-family: var(--mono); font-size: 12px; margin-top: 7px; }
+  .kpi .delta.up   { color: var(--warn); }
+  .kpi .delta.down { color: var(--ok); }
+  .kpi .delta .prev { color: var(--dim-2); margin-left: 6px; }
+  .kpi.accent .big { color: var(--accent); }
+  .spark { margin-top: 8px; height: 26px; }
+
+  /* ---- 图表 ---- */
+  .chart { width: 100%; display: block; }
+  .legend { display: flex; flex-wrap: wrap; gap: 12px 18px; margin-top: 12px; }
+  .legend .li { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--dim); }
+  .legend .li b { color: var(--fg); font-family: var(--mono); font-weight: 500; }
+  .legend .key { width: 10px; height: 10px; border-radius: 3px; }
+  .bars { display: flex; flex-direction: column; gap: 9px; }
+  .barrow { display: grid; grid-template-columns: 150px 1fr 78px; align-items: center; gap: 12px; font-size: 13px; }
+  .barrow .name { color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .barrow .track { background: var(--panel-2); border-radius: 5px; height: 15px; position: relative; overflow: hidden; }
+  .barrow .fill { position: absolute; inset: 0 auto 0 0; border-radius: 5px; }
+  .barrow .val { font-family: var(--mono); text-align: right; color: var(--fg); }
+  .barrow .val .m { color: var(--dim-2); font-size: 11px; }
+
+  /* ---- 热力图 ---- */
+  .heat { display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 13px); gap: 3px; }
+  .heat i { width: 13px; height: 13px; border-radius: 3px; background: var(--panel-2); }
+  .heat .l1 { background: #0e3a44; } .heat .l2 { background: #136a7a; }
+  .heat .l3 { background: #1aa0b5; } .heat .l4 { background: var(--accent); }
+  .heatlabel { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10px; color: var(--dim-2); margin-top: 8px; }
+
+  /* ---- 表格 ---- */
+  table.t { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.t th {
+    text-align: left; font-weight: 500; color: var(--dim-2); font-size: 11px; letter-spacing: .04em;
+    padding: 0 10px 8px; border-bottom: 1px solid var(--line); font-family: var(--mono); text-transform: uppercase;
+  }
+  table.t td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  table.t tr:last-child td { border-bottom: none; }
+  table.t td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  table.t td.mono { font-family: var(--mono); font-size: 12px; }
+  .modelref { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 12px; }
+  .modelref .arrow { color: var(--dim-2); }
+  .modelref .mapped { color: var(--warn); }
+  .st { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 12px; }
+  .st .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .st.ok   { color: var(--dim); } .st.ok .dot { background: var(--ok); }
+  .st.abort{ color: var(--warn); } .st.abort .dot { background: var(--warn); }
+  .st.fail { color: var(--bad); } .st.fail .dot { background: var(--bad); }
+  .role { font-family: var(--mono); font-size: 11px; color: var(--dim); border: 1px solid var(--line-2); border-radius: 5px; padding: 1px 6px; }
+  .role.sub { color: var(--warn); border-color: rgba(240,180,41,.3); }
+
+  .flow { display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
+  .flowlink { display: grid; grid-template-columns: 1fr 44px 1fr; align-items: center; gap: 8px; }
+  .flowlink .node { font-family: var(--mono); font-size: 12px; padding: 5px 9px; border-radius: 6px; border: 1px solid var(--line-2); background: var(--panel-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .flowlink .node.src { color: var(--dim); }
+  .flowlink .node.dst { color: var(--fg); border-color: var(--line); }
+  .flowlink .node.dst.warn { color: var(--warn); border-color: rgba(240,180,41,.35); }
+  .flowlink .mid { text-align: center; font-family: var(--mono); font-size: 11px; color: var(--dim-2); position: relative; }
+  .flowlink .mid .w { position: absolute; left: 0; right: 0; top: 50%; height: 2px; background: var(--line-2); z-index: 0; }
+  .flowlink .mid .lbl { position: relative; z-index: 1; background: var(--panel); padding: 0 3px; }
+
+  .fail { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .fail:last-child { border-bottom: none; }
+  .fail .code { font-family: var(--mono); font-size: 12px; color: var(--bad); min-width: 96px; }
+  .fail .bar { flex: 1; height: 12px; background: var(--panel-2); border-radius: 5px; overflow: hidden; }
+  .fail .bar i { display: block; height: 100%; background: var(--bad); border-radius: 5px; }
+  .fail .cnt { font-family: var(--mono); font-size: 13px; min-width: 46px; text-align: right; }
+  .fail .prov { font-family: var(--mono); font-size: 11px; color: var(--dim-2); min-width: 130px; text-align: right; }
+
+  .banner {
+    display: flex; align-items: center; gap: 12px; padding: 11px 14px; border-radius: 9px;
+    background: rgba(240,180,41,.08); border: 1px solid rgba(240,180,41,.28); font-size: 13px;
+  }
+  .banner .ic { color: var(--warn); font-family: var(--mono); font-weight: 700; }
+  .banner .b { color: var(--warn); }
+  .banner a { color: var(--accent); text-decoration: none; margin-left: auto; font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+  .banner a:hover { text-decoration: underline; }
+  .banner.error { background: rgba(244,98,63,.07); border-color: rgba(244,98,63,.25); }
+  .banner.error .ic, .banner.error .b { color: var(--bad); }
+
+  .foot { margin-top: 26px; color: var(--dim-2); font-family: var(--mono); font-size: 11px; display: flex; gap: 18px; flex-wrap: wrap; }
+  .foot a { color: var(--dim-2); text-decoration: none; }
+  a.up { color: var(--accent); text-decoration: none; border-bottom: 1px dotted var(--accent-dim); }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">⌥</span><span>tern</span><span class="ver">·usage</span>
+  </div>
+  <nav>
+    <a class="on" href="#">面板</a>
+    <a href="#">会话</a>
+    <a href="#">供应商</a>
+    <a href="#">定价</a>
+  </nav>
+  <div class="spacer"></div>
+  <div class="live"><span class="dot"></span>serving :8787</div>
+  <div class="seg"><span class="on">7d</span><span>30d</span><span>自定义</span></div>
+</header>
+
+<div class="shell">
+
+  <!-- 多用例告警条 -->
+  <div style="display:grid;gap:12px;margin-bottom:12px">
+    <div class="banner" id="unpricedBanner">
+      <span class="ic">!</span>
+      <span><b class="b">step-5-preview</b> 未定价 —— 今日 8 次请求 1.2M token 未计费，成本图因此偏低</span>
+      <a href="#">去定价 →</a>
+    </div>
+    <div class="banner error">
+      <span class="ic">↯</span>
+      <span><b class="b">litellm-relay</b> 今日被限流 12 次（gateway_concurrency_limit），多为子代理并发</span>
+      <a href="#">查看失败 →</a>
+    </div>
+  </div>
+
+  <!-- KPI -->
+  <div class="row kpi" style="margin-bottom:12px">
+    <div class="card kpi accent">
+      <div class="label">今日花费</div>
+      <div class="big">$18<span class="unit">.47</span></div>
+      <div class="delta up">▲ 49.9%<span class="prev">日 $12.32</span></div>
+      <div class="spark" id="sparkCost"></div>
+    </div>
+    <div class="card kpi">
+      <div class="label">请求</div>
+      <div class="big">214</div>
+      <div class="delta up">▲ 31.3%<span class="prev">日 163</span></div>
+    </div>
+    <div class="card kpi">
+      <div class="label">Token</div>
+      <div class="big">8.42<span class="unit">M</span></div>
+      <div class="delta up">▲ 42.5%<span class="prev">日 5.91M</span></div>
+    </div>
+    <div class="card kpi">
+      <div class="label">缓存命中</div>
+      <div class="big">91.3<span class="unit">%</span></div>
+      <div class="delta down">▼ 省 $5.31<span class="prev">日省 $3.66</span></div>
+    </div>
+  </div>
+
+  <!-- 趋势 + 供应商占比 -->
+  <div class="row mid" style="margin-bottom:12px">
+    <div class="card">
+      <div class="head">
+        <span class="title">花费趋势<span class="hint">按供应商 · 堆叠</span></span>
+        <span class="spacer"></span>
+        <span class="sub" id="trendTotal"></span>
+      </div>
+      <svg class="chart" id="trendChart" height="248" role="img" aria-label="按供应商堆叠的花费趋势"></svg>
+      <div class="legend" id="trendLegend"></div>
+    </div>
+
+    <div class="card">
+      <div class="head"><span class="title">供应商<span class="hint">今日花费 · 占比</span></span></div>
+      <div class="bars" id="provBars"></div>
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-family:var(--mono);font-size:11px;color:var(--dim-2)">
+        点击下钻模型 · 未定价不计占比
+      </div>
+    </div>
+  </div>
+
+  <!-- 模型流向 + 失败 -->
+  <div class="row mid" style="margin-bottom:12px">
+    <div class="card">
+      <div class="head"><span class="title">模型流向<span class="hint">客户端 → 实际 · 今日</span></span></div>
+      <div class="flow" id="modelFlow"></div>
+    </div>
+    <div class="card">
+      <div class="head"><span class="title">失败<span class="hint">按原因 · 今日 · 不混模型统计</span></span></div>
+      <div id="failList"></div>
+    </div>
+  </div>
+
+  <!-- 热力图 + 请求流 -->
+  <div class="row mid" style="margin-bottom:12px">
+    <div class="card">
+      <div class="head"><span class="title">活跃度<span class="hint">98 天 · 颜色映射每日花费</span></span></div>
+      <div class="heat" id="heatmap"></div>
+      <div class="heatlabel"><span>14 周前</span><span>今天</span></div>
+    </div>
+    <div class="card">
+      <div class="head"><span class="title">最近请求<span class="hint">实时 · 失败标红</span></span><span class="spacer"></span><span class="sub" id="recentCount"></span></div>
+      <table class="t" id="recentTbl">
+        <thead><tr>
+          <th>状态</th><th>客户端/角色</th><th>模型</th><th style="text-align:right">Token</th><th style="text-align:right">花费</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span>版本 A · 工程终端风 —— 视觉稿，数据为构造</span>
+    <a class="up" href="index.html">← 返回选版</a>
+    <a class="up" href="b-workbench.html">版本 B →</a>
+    <a class="up" href="c-canvas.html">版本 C →</a>
+    <span>字段口径: tern-store::query</span>
+  </div>
+</div>
+
+<script>
+/* ============ 共享假数据（三版一致，详见 README.md）============ */
+const PROV = {
+  relay:    { name: "litellm-relay",     color: "#22d3ee" },
+  openrouter:{name: "openrouter",        color: "#7c9cf0" },
+  official: { name: "official-anthropic",color: "#a58bf0" },
+  copilot:  { name: "copilot",           color: "#3fb27f" },
+};
+
+/* 14 天堆叠：每天每个供应商花费（USD） */
+const TREND_DAYS = ["09-23","09-24","09-25","09-26","09-27","09-28","09-29","09-30","10-01","10-02","10-03","10-04","10-05","10-06"];
+const TREND = {
+  relay:     [4.1,6.2,3.9,7.8,5.4,2.1,1.2, 8.0,6.7,9.3, 4.4,7.1,6.9,9.84],
+  openrouter:[2.3,3.4,2.8,4.1,3.7,1.9,2.2, 5.2,4.1,5.6, 3.2,4.0,4.7,5.61],
+  official:  [1.1,1.6,0.9,2.2,1.4,0.7,0.6, 2.4,1.8,2.9, 1.5,2.0,2.6,2.34],
+  copilot:   [0.5,0.7,0.4,0.9,0.6,0.3,0.2, 1.0,0.8,1.1, 0.6,0.8,0.9,0.68],
+};
+
+/* 今日供应商花费（降序） */
+const PROV_TODAY = [
+  { id:"relay",     cost: 9.840, requests:  98, share: 0.534 },
+  { id:"openrouter",cost: 5.612, requests:  70, share: 0.304 },
+  { id:"official",  cost: 2.340, requests:  30, share: 0.127 },
+  { id:"copilot",   cost: 0.680, requests:  16, share: 0.037 },
+];
+
+/* 今日模型流向：客户端模型 → 实际模型 */
+const FLOW = [
+  { src:"claude-sonnet-4-6", dst:"claude-opus-5.5", n:82, warn:true, via:"litellm-relay" },
+  { src:"claude-sonnet-4-6", dst:"claude-sonnet-5",  n:41 },
+  { src:"claude-opus-5",    dst:"claude-opus-5.5",   n:28, warn:true },
+  { src:"gpt-5-codex",      dst:"gpt-5-codex",       n:22 },
+  { src:"claude-sonnet-4-6",dst:"step-5-preview",    n: 8, warn:true },
+  { src:"main-dialog",      dst:"claude-opus-5.5",   n:12 },
+];
+
+/* 失败聚类 */
+const FAILS = [
+  { kind:"限流",           code:"rate_limit",           prov:"litellm-relay", status:"429", count:12, note:"gateway_concurrency_limit" },
+  { kind:"上游过载",        code:"upstream_overloaded",  prov:"official",      status:"529", count: 4, note:"overloaded_error" },
+  { kind:"连接",           code:"connection",           prov:"copilot",       status:"—",  count: 3, note:"connection refused" },
+  { kind:"鉴权",           code:"auth_failed",          prov:"openrouter",    status:"401", count: 2, note:"invalid api key" },
+];
+
+/* 最近请求流 */
+const RECENT = [
+  { st:"ok",    client:"claude", role:"main",     cm:"claude-sonnet-4-6", rm:"claude-opus-5.5", tin:1240, tout:820, cost:"$3.412" },
+  { st:"ok",    client:"claude", role:"subagent", cm:"claude-sonnet-4-6", rm:"claude-opus-5.5", tin:48200, tout:2100, cost:"$0.984" },
+  { st:"abort", client:"codex",  role:"background",cm:"gpt-5-codex",       rm:"gpt-5-codex",     tin:5200, tout:340, cost:"$0.041" },
+  { st:"fail",  client:"claude", role:"subagent", cm:"claude-sonnet-4-6", rm:null, tin:0, tout:0, cost:"—" },
+  { st:"ok",    client:"claude", role:"main",     cm:"claude-sonnet-4-6", rm:"claude-sonnet-5", tin:980, tout:410, cost:"$0.088" },
+  { st:"ok",    client:"claude", role:"subagent", cm:"claude-sonnet-4-6", rm:"step-5-preview",  tin:22000, tout:640, cost:null },
+  { st:"fail",  client:"claude", role:"subagent", cm:"claude-opus-5",     rm:null, tin:0, tout:0, cost:"—" },
+  { st:"ok",    client:"claude", role:"main",     cm:"claude-sonnet-4-6", rm:"claude-opus-5.5", tin:540, tout:210, cost:"$0.052" },
+  { st:"ok",    client:"claude", role:"subagent", cm:"claude-sonnet-4-6", rm:"claude-opus-5.5", tin:18400, tout:1220, cost:"$0.411" },
+  { st:"ok",    client:"codex",  role:"main",     cm:"gpt-5-codex",       rm:"gpt-5-codex",     tin:6100, tout:980, cost:"$0.077" },
+  { st:"ok",    client:"claude", role:"subagent", cm:"cl<SECRET_bea1c54f>-sonnet-4-6", rm:"claude-opus-5.5", tin:36000, tout:1640, cost:"$0.802" },
+  { st:"fail",  client:"claude", role:"subagent", cm:"claude-sonnet-4-6", rm:null, tin:0, tout:0, cost:"—" },
+];
+
+/* 98 天热力图强度（0~4 */
+const HEAT = (() => {
+  let seed = 42, out = [];
+  const rnd = () => (seed = (seed*1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  for (let i = 0; i < 98; i++) {
+    const recent = i > 90 ? 1 : i > 70 ? .7 : .4;
+    const v = rnd() * recent;
+    out.push(v > .78 ? 4 : v > .58 ? 3 : v > .34 ? 2 : v > .12 ? 1 : 0);
+  }
+  return out;
+})();
+
+/* 今日 hero spark：最近 14 天总花费 */
+const HERO_SPARK = TREND_DAYS.map((_, i) =>
+  Object.values(TREND).reduce((s, arr) => s + arr[i], 0));
+
+/* ============ 小工具 ============ */
+const $ = (id) => document.getElementById(id);
+const fmtTok = (n) => n >= 1e6 ? (n/1e6).toFixed(2)+"M" : n >= 1e3 ? (n/1e3).toFixed(1)+"K" : String(n);
+const money = (n) => "$" + n.toFixed(2);
+const NS = "http://www.w3.org/2000/svg";
+function el(tag, attrs, parent){ const e=document.createElementNS(NS,tag); for(const k in attrs) e.setAttribute(k,attrs[k]); if(parent)parent.appendChild(e); return e; }
+
+/* ============ 今日 hero sparkline ============ */
+(function(){
+  const W=$("sparkCost").clientWidth||160, H=26, max=Math.max(...HERO_SPARK);
+  const svg=document.createElementNS(NS,"svg");
+  svg.setAttribute("width","100%"); svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
+  const pts=HERO_SPARK.map((v,i)=>[i/(HERO_SPARK.length-1)*W, H-2 - (v/max)*(H-6)]);
+  el("path",{d:"M"+pts.map(p=>p.map(x=>x.toFixed(1)).join(",")).join(" L "),
+    fill:"none",stroke:"rgba(34,211,238,.35)","stroke-width":"1.5"},svg);
+  const last=pts[pts.length-1];
+  el("circle",{cx:last[0],cy:last[1],r:"2.4",fill:"#22d3ee"},svg);
+  const area=svg.appendChild(document.createElementNS(NS,"path"));
+  area.setAttribute("d","M"+pts.map(p=>p.map(x=>x.toFixed(1)).join(",")).join(" L ")+` L ${W},${H} L 0,${H} Z`);
+  area.setAttribute("fill","rgba(34,211,238,.06)");
+  $("sparkCost").appendChild(svg);
+})();
+
+/* ============ 花费趋势（堆叠柱）============ */
+(function(){
+  const box=$("trendChart");
+  const W=box.clientWidth||640, H=248, pad={l:44,r:6,t:10,b:24};
+  const iw=W-pad.l-pad.r, ih=H-pad.t-pad.b;
+  const svg=el("svg",{width:"100%",height:H,viewBox:`0 0 ${W} ${H}`},null);
+  const provs=Object.keys(PROV);
+  const totals=TREND_DAYS.map((_,i)=>provs.reduce((s,p)=>s+TREND[p][i],0));
+  const max=Math.ceil(Math.max(...totals));
+  // y 网格
+  for(let g=0;g<=4;g++){
+    const y=pad.t+ih-(g/4)*ih;
+    el("line",{x1:pad.l,x2:W-pad.r,y1:y,y2:y,stroke:"#1c2027","stroke-width":"1"},svg);
+    const t=el("text",{x:pad.l-8,y:y+3,fill:"#5b626c","font-size":"10","text-anchor":"end","font-family":"var(--mono)"},svg);
+    t.textContent="$"+Math.round(max*g/4);
+  }
+  const bw=iw/TREND_DAYS.length;
+  TREND_DAYS.forEach((d,i)=>{
+    let acc=0; const x=pad.l+i*bw+bw*0.18, w=bw*0.64;
+    provs.forEach(p=>{
+      const v=TREND[p][i], h=(v/max)*ih, y=pad.t+ih-acc-h;
+      const r=el("rect",{x:x,y:y,width:w,height:Math.max(h,0.5),fill:PROV[p].color,opacity: i===TREND_DAYS.length-1?1:.9},svg);
+      r.innerHTML="<title>"+d+" "+PROV[p].name+" "+money(v)+"</title>";
+      acc+=h;
+    });
+    const t=el("text",{x:x+w/2,y:H-7,fill:"#5b626c","font-size":"9","text-anchor":"end","font-family":"var(--mono)",
+      transform:`rotate(-45 ${x+w/2} ${H-7})`},svg);
+    t.textContent=d;
+  });
+  box.appendChild(svg);
+
+  const tot=totals[TREND_DAYS.length-1];
+  $("trendTotal").textContent="today "+money(tot);
+  $("trendLegend").innerHTML=provs.map(p=>
+    `<span class="li"><span class="key" style="background:${PROV[p].color}"></span>${PROV[p].name} <b>${money(PROV_TODAY.find(x=>x.id===p).cost)}</b></span>`
+  ).join("");
+})();
+
+/* ============ 供应商条形（点击下钻提示）============ */
+(function(){
+  const max=Math.max(...PROV_TODAY.map(p=>p.cost));
+  $("provBars").innerHTML=PROV_TODAY.map(p=>`
+    <div class="barrow" title="点击下钻 ${p.name} 的模型分布">
+      <span class="name">${PROV[p.id].name}</span>
+      <span class="track"><span class="fill" style="width:${(p.cost/max*100).toFixed(1)}%;background:${PROV[p.id].color}"></span></span>
+      <span class="val">${money(p.cost)}<span class="m"> ${p.requests}</span></span>
+    </div>`).join("");
+})();
+
+/* ============ 模型流向 ============ */
+(function(){
+  const maxN=Math.max(...FLOW.map(f=>f.n));
+  $("modelFlow").innerHTML=FLOW.map(f=>`
+    <div class="flowlink">
+      <span class="node src">${f.src}</span>
+      <span class="mid"><span class="w" style="width:${f.n/maxN*100}%;background:${f.warn?'var(--warn)':'var(--line-2)'}"></span><span class="lbl">${f.n}</span></span>
+      <span class="node dst ${f.warn?'warn':''}">${f.dst}</span>
+    </div>`).join("");
+})();
+
+/* ============ 失败聚类 ============ */
+(function(){
+  const max=Math.max(...FAILS.map(f=>f.count));
+  $("failList").innerHTML=FAILS.map(f=>`
+    <div class="fail" title="${f.note}">
+      <span class="code">${f.kind} ${f.status}</span>
+      <span class="bar"><i style="width:${f.count/max*100}%"></i></span>
+      <span class="prov">${f.prov} · ${f.note}</span>
+      <span class="cnt">${f.count}</span>
+    </div>`).join("");
+})();
+
+/* ============ 热力图 ============ */
+(function(){
+  $("heatmap").innerHTML=HEAT.map(v=>`<i class="${v?'l'+v:''}"></i>`).join("");
+})();
+
+/* ============ 最近请求 ============ */
+(function(){
+  const stText={ok:"ok",abort:"abort",fail:"fail"};
+  const stWord={ok:"成功",abort:"断开",fail:"失败"};
+  $("recentCount").textContent="recent "+RECENT.length;
+  document.querySelector("#recentTbl tbody").innerHTML=RECENT.map(r=>{
+    const tot=r.tin+r.tout;
+    const model = r.rm===null ? `<span style="color:var(--bad)">—</span>`
+      : (r.rm!==r.cm
+        ? `<span class="modelref"><span>${r.cm}</span><span class="arrow">→</span><span class="mapped">${r.rm}</span></span>`
+        : `<span class="modelref"><span>${r.rm}</span></span>`);
+    const cost = r.cost===null ? `<span style="color:var(--warn)">未定价</span>` : r.cost;
+    return `<tr>
+      <td><span class="st ${r.st}"><span class="dot"></span>${stWord[r.st]}</span></td>
+      <td>${r.client} <span class="role ${r.role==='subagent'||r.role==='background'?'sub':''}">${r.role}</span></td>
+      <td class="mono">${model}</td>
+      <td class="num">${r.st==='fail'?'—':fmtTok(tot)}</td>
+      <td class="num">${cost}</td>
+    </tr>`;
+  }).join("");
+})();
+</script>
+</body>
+</html>

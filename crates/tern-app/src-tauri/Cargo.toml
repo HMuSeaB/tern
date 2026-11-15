@@ -1,0 +1,53 @@
+[package]
+name = "tern-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "tern 桌面面板：本地网关的用量与开关"
+# 有多个 bin 时必须指定默认跑哪个，否则 tauri dev / cargo run 都会问
+default-run = "tern-app"
+
+[lib]
+name = "tern_app_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tern-app"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tern-gateway = { path = "../../tern-gateway" }
+tern-store = { path = "../../tern-store" }
+# 控制端客户端：找 agent、拉起它、起停网关。曾经面板自己写了一份，还刻意不依赖
+# agent 的 lib。现在 CLI 也要打同一组端点，而两端必须行为一致（token 怎么带、
+# 超时各给多少、出错转述谁的原话）——漂一处的表现是"面板点能成、命令行跑不行"。
+tern-agent = { path = "../../tern-agent" }
+tauri.workspace = true
+tauri-plugin-opener.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+thiserror = "2.0"
+chrono = "0.4"
+dirs = "6.0"
+anyhow = "1.0"
+# 内嵌网关：serve 是长期阻塞的 async 任务，必须有独立多线程运行时
+tokio = { version = "1", features = ["rt-multi-thread", "signal", "macros", "sync", "time"] }
+# 首次启动生成随机 accessToken
+uuid = { version = "1.11", features = ["v4"] }
+# 接线探测：发一条真实请求证明整条链路是通的。
+# 用 blocking 版是因为 tauri 命令跑在 async runtime 上，同步客户端会把它堵住；
+# 调用处包在 spawn_blocking 里
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+# bundled：不依赖系统 sqlite3，与 tern-store 保持一致
+rusqlite = { version = "0.31", features = ["bundled"] }
+# 成本倍率的校验。版本与 tern-store 钉同一行：同一份 Decimal 语义，
+# 别让 "0.3" 在一个库里能 parse、在另一个里不行
+rust_decimal = "1.33"
+
+[dev-dependencies]
+tempfile = "3"

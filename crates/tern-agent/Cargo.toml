@@ -1,0 +1,35 @@
+[package]
+name = "tern-agent"
+description = "tern 的常驻进程：持有网关，随时可被面板和 CLI 问状态"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "tern_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tern-agent"
+path = "src/main.rs"
+
+[dependencies]
+tern-gateway = { path = "../tern-gateway" }
+tern-store = { path = "../tern-store" }
+anyhow = "1.0"
+chrono = "0.4"
+dirs = "6.0"
+log = "0.4"
+# 关掉 humantime / regex：agent 的日志带时间戳就够，过滤按模块前缀走
+env_logger = { version = "0.11", default-features = false, features = ["auto-color"] }
+# 控制端与网关同享一个多线程运行时，特性与 tern-gateway 对齐
+tokio = { version = "1", features = ["rt-multi-thread", "signal", "macros", "sync", "net", "time"] }
+serde.workspace = true
+serde_json.workspace = true
+# 控制端客户端（src/client.rs）用。reqwest 早就经由 tern-gateway 在这条依赖树里，
+# 所以常驻进程不会因此变大——这里只是把 blocking 那一面打开给自己用
+reqwest = { version = "0.12", features = ["blocking"] }
+
+[dev-dependencies]
+tempfile = "3"
