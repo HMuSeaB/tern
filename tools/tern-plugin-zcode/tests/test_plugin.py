@@ -243,5 +243,90 @@ class TestContract(unittest.TestCase):
             self.assertEqual(e.code, 404)
 
 
+
+
+# ---------------------------------------------------------------- v0.2 指纹对齐
+
+
+class TestFingerprint(unittest.TestCase):
+    def test_strip_gift_suffix_case_insensitive(self):
+        self.assertEqual(zc.strip_gift_suffix("glm-5.3-flash-Trial"), "glm-5.3-flash")
+        self.assertEqual(zc.strip_gift_suffix("glm-5.3-flash-trial"), "glm-5.3-flash")
+        self.assertEqual(zc.strip_gift_suffix("GLM-5.3-FLASH-TRIAL"), "glm-5.3-flash")
+        self.assertEqual(zc.strip_gift_suffix("glm-5.3-flash"), "glm-5.3-flash")
+
+    def test_uuid_of_deterministic(self):
+        a = zc.uuid_of("zcode-query\0sess\01")
+        b = zc.uuid_of("zcode-query\0sess\01")
+        c = zc.uuid_of("zcode-query\0sess\02")
+        self.assertEqual(a, b)
+        self.assertNotEqual(a, c)
+        self.assertRegex(a, r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
+
+    def test_session_of_stable_per_device(self):
+        s1 = zc.session_of(None, "dev-1")
+        s2 = zc.session_of(None, "dev-1")
+        s3 = zc.session_of(None, "dev-2")
+        self.assertEqual(s1, s2)
+        self.assertNotEqual(s1, s3)
+
+    def test_query_of_counts_user_turns(self):
+        body = {"messages": [
+            {"role": "user", "content": "第一句"},
+            {"role": "assistant", "content": "好"},
+            {"role": "tool", "tool_call_id": "1", "content": "结果"},
+            {"role": "user", "content": "第二句"},
+        ]}
+        q1 = zc.query_of({"messages": body["messages"][:1]}, "sess")
+        q2 = zc.query_of(body, "sess")
+        self.assertNotEqual(q1, q2)
+        self.assertEqual(zc.query_of({"messages": []}, "sess"), "")
+
+    def test_start_headers_complete(self):
+        h = zc.ZCodeClient._start_headers("jwt-x", stream=True)
+        for k in [
+            "HTTP-Referer", "User-Agent", "X-ZCode-App-Version", "X-Title",
+            "X-Release-Channel", "X-Client-Language", "X-Client-Timezone",
+            "X-ZCode-Agent", "X-Platform", "X-Os-Category", "X-Os-Version",
+            "x-request-id", "x-zcode-session-type", "x-zcode-trace-id",
+            "x-zcode-query-source", "anthropic-version", "Authorization",
+        ]:
+            self.assertIn(k, h, f"缺头 {k}")
+        self.assertIn("ai-sdk/anthropic", h["User-Agent"])
+        self.assertNotIn("X-Device-Mid", h)  # messages 路径不带（同社区插件）
+
+    def test_tool_search_alias_out(self):
+        body = {
+            "model": "glm-5.3-flash",
+            "messages": [
+                {"role": "user", "content": "x"},
+                {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "ToolSearch", "input": {}}]},
+                {"role": "tool", "tool_call_id": "t1", "content": "r"},
+            ],
+            "tools": [
+                {"name": "ToolSearch", "description": "search", "input_schema": {}},
+                {"name": "DeferredToolPlaceholder", "input_schema": {}},
+                {"name": "Bash", "input_schema": {}},
+            ],
+            "tool_choice": {"type": "tool", "name": "ToolSearch"},
+        }
+        out = zc.openai_to_anthropic(body, "glm-5.3-flash", "d")
+        names = [t["name"] for t in out.get("tools", [])]
+        self.assertIn("ToolSearchTool", names)
+        self.assertNotIn("ToolSearch", names)
+        self.assertNotIn("DeferredToolPlaceholder", names)
+        self.assertIn("Bash", names)
+        tool_use = out["messages"][2]["content"][0]
+        self.assertEqual(tool_use["name"], "ToolSearchTool")
+
+    def test_jwt_expiry(self):
+        import time as _t
+        # 构造 exp 在过去的 JWT（PyJWT 不需要，手工 base64）
+        payload = base64.urlsafe_b64encode(json.dumps({"exp": 1}).encode()).decode().rstrip("=")
+        jwt = f"aaa.{payload}.bbb"
+        self.assertTrue(zc.jwt_expired(jwt))
+        payload2 = base64.urlsafe_b64encode(json.dumps({"exp": int(_t.time()) + 3600}).encode()).decode().rstrip("=")
+        self.assertFalse(zc.jwt_expired(f"aaa.{payload2}.bbb"))
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"], exit=False)

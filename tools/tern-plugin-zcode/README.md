@@ -34,10 +34,23 @@ zcode.z.ai（Anthropic SSE 流回来）
   ◀─ 转成 OpenAI Chat chunks（usage 对齐 message_start/delta，tern 记账可用）
 ```
 
-伪装提示词与请求形状同 magpie 社区 `@magpie-community/opencode-zcode-auth`
-插件（其 README 与 prompt.mjs 的 sha256 前缀是本插件的字节级依据）。
-该插件 0.1.x 只认 ZCode 3.14–3.17 的 `enc:v1` 凭据，读不了 3.18 的
-`enc:v2:os` —— 这是它「ZCode app 登录」`auth: null` 的原因，
+伪装与 magpie 社区 `@magpie-community/opencode-zcode-auth` 对齐（0.2 起）：
+
+- **头部**：startHeaders 全套（HTTP-Referer / ai-sdk UA / X-Release-Channel /
+  X-Client-Language / X-Client-Timezone / X-ZCode-Agent / X-Platform /
+  X-Os-Category / X-Os-Version / x-request-id / x-zcode-session-type /
+  x-zcode-trace-id / x-zcode-query-source），messages 路径不带 X-Device-Mid
+- **x-query-id**：queryOf 同款——第 n 个用户文本轮派生，同轮稳定、下轮换新
+- **x-session-id**：sessionOf 同款——按设备派生，利于服务端 prompt cache 亲和
+- **身体**：三段系统块逐字节（sha256 校验）+ 日期前缀 + metadata.user_id
+- **ToolSearch 别名**：Claude Code 延迟加载兼容（ToolSearch→ToolSearchTool，返回改回）
+- **JWT**：exp 过期检查，过期自动重读凭据一次（应用刷新后无缝续）
+- **429 冷却**：赠送档对某模型 429 后该模型休息 60 秒，避免连续撞墙
+
+社区插件优势要承认：它是有人维护的上游（prompt 改版、风控新坑都有人跟），
+还带 BigModel（智谱）家族、free-first、多账号故障转移。本插件是自用快照，
+ZCode 改版后要手动跟。该插件 0.1.x 只认 ZCode 3.14–3.17 的 `enc:v1` 凭据，
+读不了 3.18 的 `enc:v2:os` —— 这是它「ZCode app 登录」`auth: null` 的原因，
 也是本插件存在的理由。
 
 ## 用法
