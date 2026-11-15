@@ -1,7 +1,7 @@
-"""tern-plugin-zcode 离线测试：契约 + 格式转换 + 加密还原。
+"""tern-plugin-zcode v0.3 离线测试：契约（Anthropic 直通）+ dress 整形 + 加密还原。
 
 跑法：python tests/test_plugin.py（无需 pytest；有 pytest 也能收集）。
-全部离线：mock 模式起真实 HTTP 服务测契约；解密测试用合成密钥，
+全部离线：mock 模式起真实 HTTP 服务测契约；解密测试用合成密钥/已知向量，
 不碰真实凭据。
 """
 import base64
@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import threading
+import urllib.error
 import urllib.request
 import unittest
 from http.server import ThreadingHTTPServer
@@ -20,33 +21,14 @@ sys.path.insert(0, HERE)
 import tern_plugin_zcode as zc  # noqa: E402
 
 
-# ---------------------------------------------------------------- 解密
+# ---------------------------------------------------------------- 解密 / 提示词
 
-class TestDecrypt(unittest.TestCase):
-    def test_v2_round_trip(self):
-        """enc:v2:os：合成密钥 → 构造值 → 解密还原。"""
-        key = bytes(range(32))
-        vid = hashlib.sha256(key).hexdigest()[:24]
-        plain = "bbb0fake_key_value"
-        # 用加密侧同构（iv.tag.data）构造密文
-        iv = bytes(12)
-        import ctypes
-        from ctypes import wintypes as wt
-
-        PUCHAR = ctypes.POINTER(ctypes.c_ubyte)
-        # 借助插件模块的 CNG：用 BCryptEncrypt 的对偶不可用（只实现了 decrypt），
-        # 改为：用已知 GCM testvector 语义在 decrypt 上做 round-trip 不可行，
-        # 因此这里用「同 key 同 iv 的 decrypt 输出 = 明文」的反向验证不成立。
-        # 直接构造：先用模块内 CNG 加密太重——改为验证 id 校验失败路径 + v1 路径。
-        self.assertNotEqual(zc.decrypt_value(key, f"enc:v2:os:{'0' * 24}:{'A' * 12}.{'B' * 16}.{'C' * 4}"), plain)
-        _ = vid, PUCHAR, wt  # 引用防未用告警
-
+class TestDecryptAndPrompt(unittest.TestCase):
     def test_plaintext_passthrough(self):
         self.assertEqual(zc.decrypt_value(b"k", "plain-key"), "plain-key")
 
     def test_v1_round_trip(self):
-        """enc:v1：sha256 种子 → AES-GCM。用 cryptography 加密（测试机有），
-        没有则跳过。"""
+        """enc:v1：sha256 种子 → AES-GCM（cryptography 加密，插件 CNG 解密）。"""
         try:
             from cryptography.hazmat.primitives.ciphers.aead import AESGCM
         except ImportError:
@@ -57,77 +39,174 @@ class TestDecrypt(unittest.TestCase):
         plain = "secret-value"
         sealed = AESGCM(key).encrypt(iv, plain.encode(), None)
         tag, ct = sealed[-16:], sealed[:-16]
-        enc = "enc:v1:" + ".".join(
-            base64.urlsafe_b64encode(x).decode().rstrip("=") for x in (iv, tag, ct)
-        )
+        enc = "enc:v1:" + ".".join(base64.urlsafe_b64encode(x).decode().rstrip("=") for x in (iv, tag, ct))
         self.assertEqual(zc.decrypt_value(key, enc), plain)
 
+    def test_prompt_json_sha256(self):
+        """prompt.json 的三段系统块必须逐字节等于 3.17.2 校验表。"""
+        self.assertEqual(
+            hashlib.sha256(zc.PROMPT["cliPrefix"].encode()).hexdigest()[:16], zc.PROMPT_SHA256["cliPrefix"]
+        )
+        for path, expected in zc.PROMPT_SHA256.items():
+            node = zc.PROMPT
+            for part in path.replace("]", "").split("["):
+                node = node[int(part)] if part.isdigit() else node[part]
+            self.assertEqual(hashlib.sha256(node.encode()).hexdigest()[:16], expected, path)
 
-# ---------------------------------------------------------------- 格式转换
 
-class TestConvert(unittest.TestCase):
-    def test_openai_to_anthropic_shape(self):
-        body = {
-            "model": "glm-5.3-flash-Trial",
-            "messages": [
-                {"role": "system", "content": "你是测试助手"},
-                {"role": "user", "content": "你好"},
-            ],
+# ---------------------------------------------------------------- dress 整形
+
+class TestDress(unittest.TestCase):
+    def _base_body(self):
+        return {
+            "model": "glm-5.3-flash-trial",
             "max_tokens": 100,
+            "system": [{"type": "text", "text": "你是测试助手", "cache_control": {"type": "ephemeral"}}],
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "你好"}]}],
         }
-        out = zc.openai_to_anthropic(body, "glm-5.3-flash", "device-uuid")
-        self.assertEqual(out["model"], "glm-5.3-flash")
-        self.assertEqual(len(out["system"]), 3)  # ZCode 三段系统块
-        self.assertEqual(out["system"][0]["text"], zc.SYSTEM_PROMPT["cliPrefix"])
-        # 第一条是日期前缀
+
+    def test_three_system_blocks(self):
+        out = zc.dress(self._base_body(), "device-uuid", "sess-uuid")
+        self.assertEqual(len(out["system"]), 3)  # 永远三段，第四段会被 405 拒
+        self.assertEqual(out["system"][0]["text"], zc.PROMPT["cliPrefix"])
+        self.assertIn("你是测试助手", out["system"][2]["text"])  # agent 的 system 并入第三块
+
+    def test_date_prefix_and_cache_shape(self):
+        out = zc.dress(self._base_body(), "d", "s")
         self.assertEqual(out["messages"][0]["role"], "user")
-        self.assertIn("<system-reminder>", out["messages"][0]["content"][0]["text"])
-        # 用户消息在最后且带 cache_control
-        self.assertEqual(out["messages"][-1]["role"], "user")
+        self.assertIn("<system-reminder>Today's date is", out["messages"][0]["content"][0]["text"])
+        marked = sum(
+            1
+            for m in out["messages"][1:]
+            for x in (m["content"] if isinstance(m["content"], list) else [])
+            if isinstance(x, dict) and "cache_control" in x
+        )
+        self.assertEqual(marked, 1)
         self.assertEqual(out["messages"][-1]["content"][-1]["cache_control"], {"type": "ephemeral"})
-        # metadata.user_id 是 JSON 字符串
+
+    def test_metadata_user_id(self):
+        out = zc.dress(self._base_body(), "dev", "sess")
         uid = json.loads(out["metadata"]["user_id"])
-        self.assertEqual(uid["device_id"], "device-uuid")
+        self.assertEqual(uid["device_id"], "dev")
         self.assertEqual(uid["account_uuid"], "")
+        self.assertEqual(uid["session_id"], "sess")
 
-    def test_tool_calls_mapping(self):
-        body = {
-            "model": "glm-5.3-flash",
+    def test_model_suffix_stripped(self):
+        out = zc.dress(self._base_body(), "d", "s")
+        self.assertEqual(out["model"], "glm-5.3-flash")
+
+    def test_tool_search_alias(self):
+        body = self._base_body()
+        body["tools"] = [
+            {"name": "ToolSearch", "description": "s", "input_schema": {}},
+            {"name": "DeferredToolPlaceholder", "input_schema": {}},
+            {"name": "Bash", "description": "b", "input_schema": {}},
+        ]
+        body["messages"].append(
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "ToolSearch", "input": {}}]}
+        )
+        body["messages"].append({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "r"}]})
+        out = zc.dress(body, "d", "s")
+        names = [t["name"] for t in out.get("tools", [])]
+        self.assertIn("ToolSearchTool", names)
+        self.assertNotIn("ToolSearch", names)
+        self.assertNotIn("DeferredToolPlaceholder", names)
+        self.assertIn("Bash", names)
+        renamed = [
+            x["name"]
+            for m in out["messages"]
+            if isinstance(m.get("content"), list)
+            for x in m["content"]
+            if isinstance(x, dict) and x.get("type") == "tool_use"
+        ]
+        self.assertIn("ToolSearchTool", renamed)
+
+
+# ---------------------------------------------------------------- 会话/查询派生
+
+class TestSession(unittest.TestCase):
+    def test_session_stable_per_device(self):
+        self.assertEqual(zc.session_of(None, "dev-1"), zc.session_of(None, "dev-1"))
+        self.assertNotEqual(zc.session_of(None, "dev-1"), zc.session_of(None, "dev-2"))
+
+    def test_session_uuid_passthrough(self):
+        u = "0123abcd-1111-4222-8333-444455556666"
+        self.assertEqual(zc.session_of(u, "dev"), u)
+
+    def test_query_of_stable_within_turn(self):
+        body = {"messages": [{"role": "user", "content": [{"type": "text", "text": "第一句"}]}]}
+        self.assertEqual(zc.query_of(body, "s"), zc.query_of(body, "s"))
+
+    def test_query_of_changes_with_turn(self):
+        b1 = {"messages": [{"role": "user", "content": [{"type": "text", "text": "第一句"}]}]}
+        b2 = {
             "messages": [
-                {"role": "user", "content": "跑一下"},
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {"id": "call_1", "type": "function", "function": {"name": "run", "arguments": "{\"cmd\":\"ls\"}"}}
-                    ],
-                },
-                {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
-            ],
-            "tools": [
-                {"type": "function", "function": {"name": "run", "description": "跑命令", "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}}}}
-            ],
+                {"role": "user", "content": [{"type": "text", "text": "第一句"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "答"}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": "x"}]},
+                {"role": "user", "content": [{"type": "text", "text": "第二句"}]},
+            ]
         }
-        out = zc.openai_to_anthropic(body, "glm-5.3-flash", "d")
-        roles = [(m["role"], [b.get("type") for b in m["content"]]) for m in out["messages"][1:]]
-        self.assertIn(("assistant", ["tool_use"]), roles)
-        self.assertIn(("user", ["tool_result"]), roles)
-        self.assertEqual(out["tools"][0]["name"], "run")
-        self.assertEqual(out["tools"][0]["input_schema"]["type"], "object")
+        self.assertNotEqual(zc.query_of(b1, "s"), zc.query_of(b2, "s"))
 
-    def test_sse_translation(self):
-        """Anthropic SSE → OpenAI 非流式聚合。"""
+    def test_query_of_empty(self):
+        self.assertEqual(zc.query_of({"messages": []}, "s"), "")
+
+    def test_strip_suffix_case_insensitive(self):
+        self.assertEqual(zc.strip_gift_suffix("glm-5.3-flash-trial"), "glm-5.3-flash")
+        self.assertEqual(zc.strip_gift_suffix("GLM-5.3-FLASH-TRIAL"), "glm-5.3-flash")
+        self.assertEqual(zc.strip_gift_suffix("glm-5.3-flash"), "glm-5.3-flash")
+
+    def test_uuid_of_deterministic(self):
+        self.assertEqual(zc.uuid_of("a"), zc.uuid_of("a"))
+        self.assertRegex(zc.uuid_of("a"), r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
+
+    def test_jwt_expiry(self):
+        payload = base64.urlsafe_b64encode(json.dumps({"exp": 1}).encode()).decode().rstrip("=")
+        self.assertTrue(zc.jwt_expired(f"aaa.{payload}.bbb"))
+        import time as _t
+
+        payload2 = base64.urlsafe_b64encode(json.dumps({"exp": int(_t.time()) + 3600}).encode()).decode().rstrip("=")
+        self.assertFalse(zc.jwt_expired(f"aaa.{payload2}.bbb"))
+
+    def test_start_headers_complete(self):
+        h = zc.ZCodeClient._start_headers("jwt-x")
+        for k in [
+            "HTTP-Referer", "User-Agent", "X-ZCode-App-Version", "X-Title",
+            "X-Release-Channel", "X-Client-Language", "X-Client-Timezone",
+            "X-ZCode-Agent", "X-Platform", "X-Os-Category", "X-Os-Version",
+            "x-request-id", "x-zcode-session-type", "x-zcode-trace-id",
+            "x-zcode-query-source", "anthropic-version", "Authorization", "content-type",
+        ]:
+            self.assertIn(k, h, f"缺头 {k}")
+        self.assertIn("ai-sdk/anthropic", h["User-Agent"])
+        self.assertNotIn("X-Device-Mid", h)  # messages 路径不带（同社区插件）
+
+
+# ---------------------------------------------------------------- SSE / JSON 透传
+
+class TestPassthrough(unittest.TestCase):
+    def test_nonstream_tool_use_name_restored(self):
+        raw = json.dumps(
+            {
+                "type": "message",
+                "content": [{"type": "tool_use", "id": "t1", "name": "ToolSearchTool", "input": {}}],
+                "usage": {"input_tokens": 5, "output_tokens": 3},
+            }
+        ).encode()
+
+        class FakeResp:
+            def read(self):
+                return raw
+
+        out = zc.anthropic_passthrough(FakeResp(), stream=False)
+        v = json.loads(out)
+        self.assertEqual(v["content"][0]["name"], "ToolSearch")
+
+    def test_stream_line_rewrite(self):
         sse = (
-            b'event: message_start\n'
-            b'data: {"type":"message_start","message":{"usage":{"input_tokens":10}}}\n\n'
             b'event: content_block_start\n'
-            b'data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}\n\n'
-            b'event: content_block_delta\n'
-            b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"\xe4\xbd\xa0"}}\n\n'
-            b'event: content_block_delta\n'
-            b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"\xe5\xa5\xbd"}}\n\n'
-            b'event: message_delta\n'
-            b'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}\n\n'
+            b'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","name":"ToolSearchTool","id":"t1"}}\n\n'
             b'event: message_stop\n'
             b'data: {"type":"message_stop"}\n\n'
         )
@@ -136,12 +215,10 @@ class TestConvert(unittest.TestCase):
             def __iter__(self):
                 yield from sse.split(b"\n")[:-1]
 
-        out = zc.anthropic_sse_to_openai(FakeResp(), "glm-5.3-flash", stream=False)
-        v = json.loads(out)
-        self.assertEqual(v["choices"][0]["message"]["content"], "你好")
-        self.assertEqual(v["usage"]["prompt_tokens"], 10)
-        self.assertEqual(v["usage"]["completion_tokens"], 2)
-        self.assertEqual(v["choices"][0]["finish_reason"], "stop")
+        out = zc.anthropic_passthrough(FakeResp(), stream=True)
+        text = "".join(out)
+        self.assertIn('"name": "ToolSearch"', text)
+        self.assertNotIn("ToolSearchTool", text)
 
 
 # ---------------------------------------------------------------- HTTP 契约（mock）
@@ -149,7 +226,6 @@ class TestConvert(unittest.TestCase):
 class TestContract(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # 子类隔离：避免两个服务实例共享类属性
         cls.handler = type(
             "HandlerWithToken", (zc.Handler,), {"client": zc.ZCodeClient(), "plugin_token": "test-token", "mock": True}
         )
@@ -162,12 +238,20 @@ class TestContract(unittest.TestCase):
     def tearDownClass(cls):
         cls.httpd.shutdown()
 
+    def _anthropic_body(self, stream=False):
+        return {
+            "model": "glm-5.3-flash-trial",
+            "max_tokens": 50,
+            "stream": stream,
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        }
+
     def _post(self, path, body, token="test-token"):
+        headers = {"Content-Type": "application/json"}
+        if token is not None:
+            headers["X-Tern-Plugin-Token"] = token
         req = urllib.request.Request(
-            self.base + path,
-            data=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json", "X-Tern-Plugin-Token": token},
-            method="POST",
+            self.base + path, data=json.dumps(body).encode(), headers=headers, method="POST"
         )
         try:
             with urllib.request.urlopen(req, timeout=10) as r:
@@ -199,40 +283,24 @@ class TestContract(unittest.TestCase):
         self.assertEqual(v["object"], "list")
         self.assertTrue(all("id" in m for m in v["data"]))
 
-    def test_chat_nonstream_mock(self):
-        st, text = self._post("/v1/chat/completions", {"model": "glm-5.3-flash-Trial", "messages": [{"role": "user", "content": "hi"}]})
+    def test_messages_nonstream_mock(self):
+        st, text = self._post("/v1/messages", self._anthropic_body())
         self.assertEqual(st, 200)
         v = json.loads(text)
-        self.assertEqual(v["object"], "chat.completion")
-        self.assertIn("[mock]", v["choices"][0]["message"]["content"])
-        self.assertEqual(v["usage"]["total_tokens"], 18)
+        self.assertEqual(v["type"], "message")
+        self.assertEqual(v["content"][0]["text"], "[mock] 收到")
+        self.assertEqual(v["usage"]["input_tokens"], 12)
 
-    def test_chat_stream_mock(self):
-        st, text = self._post("/v1/chat/completions", {"model": "m", "messages": [{"role": "user", "content": "hi"}], "stream": True})
+    def test_messages_stream_mock(self):
+        st, text = self._post("/v1/messages", self._anthropic_body(stream=True))
         self.assertEqual(st, 200)
-        self.assertIn("data: [DONE]", text)
-        self.assertIn("chat.completion.chunk", text)
-        # usage 必须在流里（tern 记账需要）
-        self.assertIn('"usage"', text)
+        self.assertIn("event: message_start", text)
+        self.assertIn("event: message_stop", text)
+        self.assertIn("input_tokens", text)
 
-    def test_chat_no_token_manual_mode(self):
-        """手动模式（服务端无 token，未设 TERN_PLUGIN_TOKEN）无头放行。"""
-        handler2 = type("HandlerNoToken", (zc.Handler,), {"client": zc.ZCodeClient(), "plugin_token": "", "mock": True})
-        httpd2 = ThreadingHTTPServer(("127.0.0.1", 0), handler2)
-        port2 = httpd2.server_address[1]
-        t = threading.Thread(target=httpd2.serve_forever, daemon=True)
-        t.start()
-        try:
-            req = urllib.request.Request(
-                f"http://127.0.0.1:{port2}/v1/chat/completions",
-                data=json.dumps({"model": "m", "messages": [{"role": "user", "content": "x"}]}).encode(),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=5) as r:
-                self.assertEqual(r.status, 200)
-        finally:
-            httpd2.shutdown()
+    def test_openai_path_404(self):
+        st, _ = self._post("/v1/chat/completions", self._anthropic_body())
+        self.assertEqual(st, 404)  # api_format=anthropic 只认 /v1/messages
 
     def test_unknown_path_404(self):
         req = urllib.request.Request(self.base + "/nope", headers={"X-Tern-Plugin-Token": "test-token"})
@@ -242,91 +310,24 @@ class TestContract(unittest.TestCase):
         except urllib.error.HTTPError as e:
             self.assertEqual(e.code, 404)
 
+    def test_manual_mode_no_token(self):
+        handler2 = type("HandlerNoToken", (zc.Handler,), {"client": zc.ZCodeClient(), "plugin_token": "", "mock": True})
+        httpd2 = ThreadingHTTPServer(("127.0.0.1", 0), handler2)
+        port2 = httpd2.server_address[1]
+        t = threading.Thread(target=httpd2.serve_forever, daemon=True)
+        t.start()
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port2}/v1/messages",
+                data=json.dumps(self._anthropic_body()).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=5) as r:
+                self.assertEqual(r.status, 200)
+        finally:
+            httpd2.shutdown()
 
-
-
-# ---------------------------------------------------------------- v0.2 指纹对齐
-
-
-class TestFingerprint(unittest.TestCase):
-    def test_strip_gift_suffix_case_insensitive(self):
-        self.assertEqual(zc.strip_gift_suffix("glm-5.3-flash-Trial"), "glm-5.3-flash")
-        self.assertEqual(zc.strip_gift_suffix("glm-5.3-flash-trial"), "glm-5.3-flash")
-        self.assertEqual(zc.strip_gift_suffix("GLM-5.3-FLASH-TRIAL"), "glm-5.3-flash")
-        self.assertEqual(zc.strip_gift_suffix("glm-5.3-flash"), "glm-5.3-flash")
-
-    def test_uuid_of_deterministic(self):
-        a = zc.uuid_of("zcode-query\0sess\01")
-        b = zc.uuid_of("zcode-query\0sess\01")
-        c = zc.uuid_of("zcode-query\0sess\02")
-        self.assertEqual(a, b)
-        self.assertNotEqual(a, c)
-        self.assertRegex(a, r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
-
-    def test_session_of_stable_per_device(self):
-        s1 = zc.session_of(None, "dev-1")
-        s2 = zc.session_of(None, "dev-1")
-        s3 = zc.session_of(None, "dev-2")
-        self.assertEqual(s1, s2)
-        self.assertNotEqual(s1, s3)
-
-    def test_query_of_counts_user_turns(self):
-        body = {"messages": [
-            {"role": "user", "content": "第一句"},
-            {"role": "assistant", "content": "好"},
-            {"role": "tool", "tool_call_id": "1", "content": "结果"},
-            {"role": "user", "content": "第二句"},
-        ]}
-        q1 = zc.query_of({"messages": body["messages"][:1]}, "sess")
-        q2 = zc.query_of(body, "sess")
-        self.assertNotEqual(q1, q2)
-        self.assertEqual(zc.query_of({"messages": []}, "sess"), "")
-
-    def test_start_headers_complete(self):
-        h = zc.ZCodeClient._start_headers("jwt-x", stream=True)
-        for k in [
-            "HTTP-Referer", "User-Agent", "X-ZCode-App-Version", "X-Title",
-            "X-Release-Channel", "X-Client-Language", "X-Client-Timezone",
-            "X-ZCode-Agent", "X-Platform", "X-Os-Category", "X-Os-Version",
-            "x-request-id", "x-zcode-session-type", "x-zcode-trace-id",
-            "x-zcode-query-source", "anthropic-version", "Authorization",
-        ]:
-            self.assertIn(k, h, f"缺头 {k}")
-        self.assertIn("ai-sdk/anthropic", h["User-Agent"])
-        self.assertNotIn("X-Device-Mid", h)  # messages 路径不带（同社区插件）
-
-    def test_tool_search_alias_out(self):
-        body = {
-            "model": "glm-5.3-flash",
-            "messages": [
-                {"role": "user", "content": "x"},
-                {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "ToolSearch", "input": {}}]},
-                {"role": "tool", "tool_call_id": "t1", "content": "r"},
-            ],
-            "tools": [
-                {"name": "ToolSearch", "description": "search", "input_schema": {}},
-                {"name": "DeferredToolPlaceholder", "input_schema": {}},
-                {"name": "Bash", "input_schema": {}},
-            ],
-            "tool_choice": {"type": "tool", "name": "ToolSearch"},
-        }
-        out = zc.openai_to_anthropic(body, "glm-5.3-flash", "d")
-        names = [t["name"] for t in out.get("tools", [])]
-        self.assertIn("ToolSearchTool", names)
-        self.assertNotIn("ToolSearch", names)
-        self.assertNotIn("DeferredToolPlaceholder", names)
-        self.assertIn("Bash", names)
-        tool_use = out["messages"][2]["content"][0]
-        self.assertEqual(tool_use["name"], "ToolSearchTool")
-
-    def test_jwt_expiry(self):
-        import time as _t
-        # 构造 exp 在过去的 JWT（PyJWT 不需要，手工 base64）
-        payload = base64.urlsafe_b64encode(json.dumps({"exp": 1}).encode()).decode().rstrip("=")
-        jwt = f"aaa.{payload}.bbb"
-        self.assertTrue(zc.jwt_expired(jwt))
-        payload2 = base64.urlsafe_b64encode(json.dumps({"exp": int(_t.time()) + 3600}).encode()).decode().rstrip("=")
-        self.assertFalse(zc.jwt_expired(f"aaa.{payload2}.bbb"))
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"], exit=False)

@@ -66,7 +66,7 @@ python tern_plugin_zcode.py serve --port 18085
   "id": "zcode",
   "name": "ZCode 赠送档",
   "baseUrl": "http://127.0.0.1:18085",
-  "apiFormat": "openai_chat",
+  "apiFormat": "anthropic",
   "auth": { "type": "none" }
 }
 
@@ -87,7 +87,7 @@ tern 分临时端口 + `TERN_PLUGIN_TOKEN` / `--port` 双通道握手，
 | --- | --- | --- |
 | GET | `/health` | `{"ok": true, "models": ["glm-5.3-flash-Trial", …]}`（读余额动态给出） |
 | GET | `/v1/models` | OpenAI 兼容列表 |
-| POST | `/v1/chat/completions` | OpenAI Chat，流式 SSE / 非流式，带 usage |
+| POST | `/v1/messages` | Anthropic Messages 原生直通（流式 SSE / 非流式，usage 如实透传；赠送档 input 常为 0） |
 
 所有请求校验 `X-Tern-Plugin-Token`（恒定时间比较）；手动模式
 （未设 `TERN_PLUGIN_TOKEN`）放行本机调用。转发真实上游前剥掉本地认证头。
