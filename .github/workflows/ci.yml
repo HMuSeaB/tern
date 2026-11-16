@@ -24,6 +24,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Python 插件契约测试
+        run: python3 -m unittest discover -s tools/tern-plugin-workbuddy/tests -v
+
       - uses: dtolnay/rust-toolchain@stable
 
       # 只测这四个 crate，**不含 tern-app / tern-agent**。原因有两个：

@@ -385,3 +385,9 @@ cc-switch 的切换器。** 三个病灶全在外壳，且都局部：
 ## 已决定
 
 - 桌面应用托盘常驻：**做**。关窗隐藏、托盘退出（原待定问题已消）
+
+## 插件：轻量外挂（设计稿，2026-11-14）
+
+- 设计见 `docs/plugins-external-process-design-zh.md`：插件是独立进程，只暴露 HTTP，tern 管翻译和记账，插件只管登录 / 签名 / 发请求；不嵌 Bun / JS，不追 50+ agent。
+- 三步走：Step 0 本设计稿 → Step 1 鉴权外包（TokenProvider 外部命令）→ Step 2 Sidecar 进程 + WorkBuddy 参考插件 → Step 3 面板。
+- 第一个插件先做 WorkBuddy，不先做豆包（豆包走火山方舟官方 API，不走客户端反代）。
