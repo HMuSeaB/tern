@@ -11,6 +11,9 @@ tern：面向编码 agent 的本地协议翻译网关
   tern serve [--listen <地址:端口>]          启动网关并记录用量，Ctrl+C 退出
   tern init  [--force]                       生成样例配置（含随机 accessToken）
   tern check                                 校验配置并列出供应商
+  tern plugin list                           列出已绑定的插件
+  tern plugin status <id>                    检查插件 manifest 与启动命令
+  tern plugin logs <id>                      说明插件日志的可用性
   tern tui  [--config <文件>]                终端界面：看账、供应商、网关状态（约 10 MB）
   tern panel                                 打开桌面面板看详细图表（需要更多内存）
   tern agent                                 起常驻进程：无窗口，持有网关（约几 MB）
@@ -106,6 +109,10 @@ pub enum Command {
     Check {
         paths: Paths,
     },
+    Plugin {
+        paths: Paths,
+        action: PluginAction,
+    },
     Usage {
         paths: Paths,
         window: UsageWindow,
@@ -146,6 +153,13 @@ pub enum Command {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub enum PluginAction {
+    List,
+    Status { id: String },
+    Logs { id: String },
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub enum PriceAction {
     List { model: Option<String> },
     Set { model: String, values: Vec<String> },
@@ -166,11 +180,11 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, String
     match sub.as_str() {
         "-h" | "--help" | "help" => return Ok(Command::Help),
         "-V" | "--version" => return Ok(Command::Version),
-        "serve" | "init" | "check" | "usage" | "price" | "tui" | "panel" | "agent" | "import" => {}
+        "serve" | "init" | "check" | "usage" | "price" | "plugin" | "tui" | "panel" | "agent"
+        | "import" => {}
         other => return Err(format!("未知子命令 {other}")),
     }
 
-    // price 的第二级动作
     let action = if sub == "price" {
         match args.peek().map(|a| a.to_string_lossy().into_owned()) {
             Some(a) if matches!(a.as_str(), "list" | "set" | "rm" | "sync") => {
@@ -183,12 +197,28 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, String
                 return Err(format!("price 没有 {other} 动作（list / set / rm / sync）"))
             }
         }
+    } else if sub == "plugin" {
+        match args
+            .next()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .as_deref()
+        {
+            Some("list") => Some("list".to_string()),
+            Some("status") => Some("status".to_string()),
+            Some("logs") => Some("logs".to_string()),
+            Some(other) => return Err(format!("plugin 没有 {other} 动作（list / status / logs）")),
+            None => return Err("用法: tern plugin <list|status|logs>".into()),
+        }
     } else {
         None
     };
-    let scope = action
-        .as_deref()
-        .map_or(sub.clone(), |a| format!("price {a}"));
+    let scope = action.as_deref().map_or(sub.clone(), |a| {
+        if sub == "plugin" {
+            format!("plugin {a}")
+        } else {
+            format!("price {a}")
+        }
+    });
 
     let mut paths = Paths::default();
     let mut listen = None;
@@ -285,6 +315,27 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, String
         "check" => {
             no_positional(&positional)?;
             Command::Check { paths }
+        }
+        "plugin" => {
+            let plugin_action = match action.as_deref() {
+                Some("list") => {
+                    no_positional(&positional)?;
+                    PluginAction::List
+                }
+                Some("status") => match positional.as_slice() {
+                    [id] => PluginAction::Status { id: id.clone() },
+                    _ => return Err("用法: tern plugin status <id>".into()),
+                },
+                Some("logs") => match positional.as_slice() {
+                    [id] => PluginAction::Logs { id: id.clone() },
+                    _ => return Err("用法: tern plugin logs <id>".into()),
+                },
+                _ => unreachable!(),
+            };
+            Command::Plugin {
+                paths,
+                action: plugin_action,
+            }
         }
         "usage" => {
             no_positional(&positional)?;
@@ -478,6 +529,40 @@ mod tests {
                 paths: Paths::default()
             })
         );
+    }
+
+    #[test]
+    fn plugin_commands_parse_actions_and_paths() {
+        assert_eq!(
+            p(&["plugin", "list", "-c", "plugins.json"]),
+            Ok(Command::Plugin {
+                paths: Paths {
+                    config: Some("plugins.json".into()),
+                    db: None,
+                },
+                action: PluginAction::List,
+            })
+        );
+        assert_eq!(
+            p(&["plugin", "status", "workbuddy"]),
+            Ok(Command::Plugin {
+                paths: Paths::default(),
+                action: PluginAction::Status {
+                    id: "workbuddy".into(),
+                },
+            })
+        );
+        assert_eq!(
+            p(&["plugin", "logs", "workbuddy"]),
+            Ok(Command::Plugin {
+                paths: Paths::default(),
+                action: PluginAction::Logs {
+                    id: "workbuddy".into(),
+                },
+            })
+        );
+        assert!(p(&["plugin", "status"]).is_err());
+        assert!(p(&["plugin", "logs", "workbuddy", "extra"]).is_err());
     }
 
     #[test]
@@ -705,6 +790,7 @@ mod tests {
                 Command::Serve { paths, .. }
                 | Command::Init { paths, .. }
                 | Command::Check { paths }
+                | Command::Plugin { paths, .. }
                 | Command::Tui { paths }
                 | Command::Panel { paths }
                 | Command::Agent { paths }
@@ -720,6 +806,7 @@ mod tests {
             &["serve"],
             &["init"],
             &["check"],
+            &["plugin", "list"],
             &["tui"],
             &["panel"],
             &["agent"],

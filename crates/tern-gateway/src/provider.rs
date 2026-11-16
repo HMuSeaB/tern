@@ -210,6 +210,9 @@ pub struct ProviderSpec {
     /// 成本倍率（十进制字符串，如中转站的 `"0.3"`）。网关本身不用，供用量计价
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_multiplier: Option<String>,
+    /// 外部 sidecar 插件引用。设置后由 Gateway 的 PluginSupervisor 懒启动。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<PluginRef>,
     /// **选中这家时要写给客户端的 env 键值对**。
     ///
     /// cc-switch 给每个供应商存一整套 env（`ANTHROPIC_MODEL`、四档
@@ -227,6 +230,16 @@ pub struct ProviderSpec {
     /// `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` 不在这里——那两个已有专门字段。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub client_env: BTreeMap<String, String>,
+}
+
+/// 显式绑定到一个已安装插件目录；插件目录本身仍需由用户信任。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginRef {
+    pub plugin_id: String,
+    /// 插件根目录；不填时使用 `TERN_PLUGIN_DIR` 或平台配置目录下的 `tern/plugins/<id>`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
 }
 
 impl ProviderSpec {
@@ -251,6 +264,7 @@ impl ProviderSpec {
             codex_fast_mode: false,
             cost_multiplier: None,
             client_env: BTreeMap::new(),
+            plugin: None,
         }
     }
 

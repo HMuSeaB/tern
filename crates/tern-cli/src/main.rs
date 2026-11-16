@@ -15,7 +15,7 @@ use anyhow::{bail, Context, Result};
 use tern_gateway::{Gateway, GatewayConfig, Outcome, ProviderAuth};
 use tern_store::{Inserted, ModelPrice, PriceSource, Store};
 
-use crate::args::{Command, Paths, PriceAction};
+use crate::args::{Command, Paths, PluginAction, PriceAction};
 
 const DB_FILE_NAME: &str = "usage.db";
 
@@ -49,6 +49,7 @@ fn run(command: Command) -> Result<()> {
         }
         Command::Init { paths, force } => init(&resolve_config(&paths)?, force),
         Command::Check { paths } => check(&resolve_config(&paths)?),
+        Command::Plugin { paths, action } => plugin(&resolve_config(&paths)?, action),
         // 在当前进程内跑：TUI 要接管这个终端的 raw mode 和 alternate screen，
         // spawn 子进程会另开窗口或在管道里失败。
         // `--db` 一路传到底：不传的话 TUI 会自己按 TERN_DB / 配置同目录推一次，
@@ -322,6 +323,7 @@ fn serve(path: &Path, db: &Path, listen: Option<SocketAddr>) -> Result<()> {
         .enable_all()
         .build()
         .context("创建 tokio 运行时失败")?;
+    gateway.validate_plugins().context("插件配置无效")?;
     let result = runtime.block_on(async move {
         gateway
             .serve(async {
@@ -528,6 +530,7 @@ fn check(path: &Path) -> Result<()> {
         .collect();
     // 走一遍网关自己的校验（id 重复、默认供应商不存在、代理地址无效等）
     let gateway = Gateway::new(config).context("配置无效")?;
+    let plugin_count = gateway.validate_plugins().context("插件配置无效")?;
     // 熔断状态是 async 的（内部用 tokio 的 RwLock）。check 本身是同步命令，
     // 现起一个运行时问一句就丢——比把 check 整个改成 async 省事，也比
     // "看不了状态"有用
@@ -547,6 +550,7 @@ fn check(path: &Path) -> Result<()> {
     println!();
     // 表头用英文：中文字符显示宽度是 2，按字符数对齐会错位
     print_table(&["id", "format", "auth", "url"], &rows);
+    println!("插件: {plugin_count} 个显式绑定；manifest 与 command 校验通过（未启动进程）");
     if !warnings.is_empty() {
         println!();
         for warning in &warnings {
@@ -585,6 +589,78 @@ fn check(path: &Path) -> Result<()> {
         }
     } else {
         println!("故障转移: 关（失败即报错，不换供应商）");
+    }
+    Ok(())
+}
+
+fn plugin(config_path: &Path, action: PluginAction) -> Result<()> {
+    let config = config::load(config_path)?;
+    let supervisor =
+        tern_gateway::PluginSupervisor::new(tern_gateway::PluginSupervisor::default_root())
+            .context("创建插件 supervisor 失败")?;
+    let providers: Vec<_> = config.providers.iter().collect();
+    supervisor
+        .validate_providers(providers.iter().copied())
+        .context("插件配置无效")?;
+    match action {
+        PluginAction::List => {
+            let rows: Vec<[String; 4]> = config
+                .providers
+                .iter()
+                .filter_map(|provider| {
+                    let reference = provider.plugin.as_ref()?;
+                    let models = supervisor
+                        .manifest_models(reference)
+                        .map(|models| models.join(", "))
+                        .unwrap_or_else(|error| format!("读取失败: {error}"));
+                    Some([
+                        reference.plugin_id.clone(),
+                        provider.id.clone(),
+                        provider.effective_api_format().to_string(),
+                        models,
+                    ])
+                })
+                .collect();
+            println!(
+                "插件: {} 个显式绑定（均已通过 manifest/command 校验）",
+                rows.len()
+            );
+            print_table(&["plugin", "provider", "format", "models"], &rows);
+        }
+        PluginAction::Status { id } => {
+            let provider = config.providers.iter().find(|provider| {
+                provider.id == id
+                    || provider
+                        .plugin
+                        .as_ref()
+                        .is_some_and(|reference| reference.plugin_id == id)
+            });
+            let Some(provider) = provider else {
+                bail!("找不到已绑定插件或供应商 {id}");
+            };
+            let reference = provider.plugin.as_ref().context("该供应商没有绑定插件")?;
+            let models = supervisor.manifest_models(reference)?;
+            println!(
+                "插件 {} -> 供应商 {}：配置有效，command 可解析，协议 {}；manifest 模型：{}。此命令不检查 agent 中 sidecar 的实时运行状态。",
+                reference.plugin_id,
+                provider.id,
+                provider.effective_api_format(),
+                if models.is_empty() { "（未声明）".to_string() } else { models.join(", ") }
+            );
+        }
+        PluginAction::Logs { id } => {
+            let bound = config.providers.iter().any(|provider| {
+                provider.id == id
+                    || provider
+                        .plugin
+                        .as_ref()
+                        .is_some_and(|reference| reference.plugin_id == id)
+            });
+            if !bound {
+                bail!("找不到已绑定插件或供应商 {id}");
+            }
+            println!("插件 {id} 的 stdout/stderr 未持久化：任意插件输出可能包含密钥或令牌。当前没有可读取的插件日志。\n启动/健康检查错误由 tern serve 或 tern-agent 日志报告。");
+        }
     }
     Ok(())
 }

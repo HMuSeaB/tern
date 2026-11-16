@@ -1,8 +1,9 @@
 # tern 轻量外挂插件设计：独立进程
 
-> 状态：设计稿，无代码。基准：`main @ 0d4a25a`（v0.3.7，2026-11-14）。
-> 配套：`ROADMAP.md`（定位：参照 magpie 的简洁体验，护城河在用量不在 agent 数）、
-> `docs/DECISIONS.md`（分层、key 不进渲染进程、故障转移三条规矩、依赖只用本地缓存）。
+> 状态：设计稿已部分落地（2026-11）；本文的目标、非目标和信任边界仍是设计约束，不代表所有功能已实现。
+> 已实现：显式 ProviderSpec 插件绑定、manifest/命令预检、请求时懒启动、loopback 随机令牌、健康检查、空闲回收、代理隔离、CLI `plugin list/status/logs` 的基础诊断。
+> 尚未实现：真实 WorkBuddy 登录/签名、Tauri 插件管理页、agent 实时插件状态控制、sidecar 模型端点抓取、持久化插件日志与启停管理。
+> 基准：当前 `feat/external-plugin-runtime` 开发分支（尚未提交）。配套：`ROADMAP.md`、`docs/DECISIONS.md`。
 >
 > 一句话：插件是独立进程，不是库，也不是 JS 运行时。
 > tern 还是管协议翻译和用量记账，插件只管“这家服务怎么登录 / 签名 / 发请求”。
@@ -222,12 +223,15 @@ models = ["hunyuan-a52b"]
 session_file = "session.json"
 ```
 
-校验规则（启动时就报错，不要等到第一次请求才炸）：
+当前实现的预检规则（`tern check`、`tern serve` 与 agent 启动时，不启动插件进程）：
 
 - `id` 不能为空、不能含 `/`、不能和已有供应商 id 重复
   （`ModelRouter::new` 本来就会报“供应商 id 重复”）。
 - `command` 必须解析到存在的可执行文件，找不到时 `tern check` 报错，不要等到用户请求才报错。带路径的相对命令按 manifest 目录解析，裸命令按启动时保存的 `PATH` 查找；任何情况都不经 shell 执行。args 按 manifest 原样传入，不做变量展开或路径改写。
-- `api_format` 必须是上面四种之一。
+- `api_format` 必须是上面四种之一，且与供应商配置一致。
+- 若 `session_file` 已存在，必须可读且指向普通文件；当前只做预检，不读取其内容、不设置文件权限，也不自动创建该文件。
+
+当前 `tern plugin list` 从 manifest 读取静态 `models` 列表；不会启动 sidecar 或调用 `/v1/models`。`tern plugin status <id>` 仅检查绑定、manifest 和 command，不代表 agent 中进程的实时状态。`tern plugin logs <id>` 因 stdout/stderr 被丢弃而明确报告无可读插件日志。
 
 ### 4.2 插件必须实现的三个端点（全部只听 127.0.0.1）
 
@@ -251,10 +255,10 @@ session_file = "session.json"
    `TERN_PLUGIN_PORT` 和参数 `--port <端口>` 同时传给插件
    （两个都传，插件只用其中一个就行，另一个是防插件作者
    只读了一种）。
-2. tern 为本次进程生成高熵随机 `TERN_PLUGIN_TOKEN`，启动时通过环境变量提供；插件绑定 `127.0.0.1:$TERN_PLUGIN_PORT`。5 秒内携带 `X-Tern-Plugin-Token` 请求 `GET /health` 必须返回 200，否则 tern 杀掉进程，记一次启动失败，面板显示“插件启动超时”，不无限重试。
+2. tern 为本次进程生成随机 `TERN_PLUGIN_TOKEN`，启动时通过环境变量提供；插件绑定 `127.0.0.1:$TERN_PLUGIN_PORT`。5 秒内携带 `X-Tern-Plugin-Token` 请求 `GET /health` 必须返回 200，否则 tern 杀掉进程并返回插件启动错误（当前错误由网关/agent 记录，尚无插件面板状态）。
 3. 插件工作目录固定为 manifest 所在目录。`command` 绝不经 shell：绝对路径直接执行；含路径的相对命令按插件目录解析；裸命令只从启动时的 `PATH` 查找。启动前校验解析后的可执行文件存在。`args` 按 manifest 原样传入，不做 shell、环境变量展开或路径改写；插件将其解释为路径时，相对路径基于该工作目录。
 4. 插件进程不继承整个 tern 环境。只传启动必需的系统运行时变量，以及 `TERN_PLUGIN_PORT`、`TERN_PLUGIN_TOKEN`；其它环境变量须由用户显式声明，禁止自动透传 tern 的供应商凭据。
-5. 标准输出 / 标准错误重定向到 `%APPDATA%\tern\plugins\<id>\logs\`，按天切分；任何密钥都不得原样写入日志。
+5. 当前实现将标准输出 / 标准错误重定向到 null，避免持久化任意插件输出中的密钥或令牌；因此暂无 sidecar 自身日志。agent 的启动/健康检查错误通过 agent 日志报告。
 
 端口被占用的竞态（tern 释放后、插件绑定前的窗口期）：v1 将它按启动失败处理并向用户报告，不自动无限重试；不要为此引入端口协商协议。
 
@@ -373,9 +377,7 @@ let url = if let Some(plugin) = spec.plugin.as_ref() {
   和现在的“联网工具”“故障转移 / 熔断状态”并列。
 - `tern-agent`：拥有 `PluginSupervisor`（常驻层），面板不直接
   spawn 插件。面板是纯遥控器，通过 `127.0.0.1:15801` 问 agent。
-- `tern-app`（Tauri）：面板加一页“插件”，只做三件事：
-  启用 / 禁用、看状态和日志、看模型列表。key 不进渲染进程
-  的老规矩不变，插件的 session 文件也不在面板里打开。
+- `tern-app`（Tauri）：插件管理页尚未实现。当前面板拉模型命令对插件绑定返回明确的“不支持”错误；避免面板自行创建与 agent 生命周期冲突的 supervisor。未来应通过 agent 控制接口查询状态、模型和启停。key 不进渲染进程，插件的 session 文件也不在面板里打开。
 
 ### 5.8 依赖：不加
 
@@ -444,63 +446,49 @@ Python 参考骨架：stdlib only，无 pip 依赖，`--mock` 模式
 插件进程杀掉后网关还在，下一次请求能重新拉起或报出
 清楚的 502，而不是网关一起死。
 
-## 7. 演进路线：三步，不一步到位
+## 7. 实现状态与后续
 
-### Step 0：本文档（本 PR，只有文档，没有代码）
+### 已落地（当前分支）
 
-- 落 `docs/plugins-external-process-design-zh.md`，ROADMAP 里
-  加一节链接到本文档，说明“插件”在路线图里的位置。
-- 不改任何 `.rs`，不改 `Cargo.toml`，不加依赖。
-  验收：`cargo test --workspace --offline` 不用跑也知道还是绿的，
-  因为没动代码。
+- `ProviderSpec.plugin` 显式绑定、`auth: none` 强制校验、manifest 与 command 非启动式预检。
+- Gateway/agent 请求路径懒启动 sidecar，注入 loopback 端口与每进程随机令牌；专用 `no_proxy` client、健康检查、停止和空闲回收。
+- CLI 提供 `plugin list/status/logs` 基础诊断；list/status 不启动 sidecar，logs 明确说明 stdout/stderr 未持久化。
+- sidecar 模型读取只展示 manifest 静态 `models`，尚未对 `/v1/models` 做请求。
+- 增加 sidecar e2e，覆盖懒启动、协议转换、凭据隔离和停止后重启。
 
-### Step 1：鉴权外包（约 200 行，先做这一步）
+### 尚未落地
 
-- 加 `ProviderAuth::PluginCommand { command: String, args: Vec<String> }`，
-  实现一个 `TokenProvider`：每次需要 token 时跑一次命令，
-  命令在 stdout 输出一行 JSON `{"token": "...", "account_id": "..."}`，
-  超时 5 秒，失败就报 `AuthError`。
-- 这一步先解决 ROADMAP 里“订阅类 OAuth token 交换没实现”的
-  一半：Copilot / ChatGPT / xAI / WorkBuddy 的登录逻辑可以先
-  放在外部命令里，网关只管按需取 token，不用在 Rust 里实现
-  每一家的 OAuth。
-- 验收：`tern check` 能显示插件命令的 token 是否能取到；
-  现有供应商回归不破。
+- agent 控制协议尚无插件状态、启停、模型查询接口；CLI status 不是实时状态。
+- Tauri 插件管理 UI 尚未实现，面板模型查询对插件明确返回不支持。
+- stdout/stderr 目前丢弃，不提供插件日志；错误仅由网关/agent 诊断。
+- 无真实 WorkBuddy 登录、签名、会话刷新或上游转发实现。`tools/tern-plugin-workbuddy/` 是契约参考/mock-capable 样例，不代表真实 WorkBuddy 集成。
 
-### Step 2：Sidecar 进程（新模块 `plugin.rs`，约 300 行目标）
+### 后续步骤
 
-- 实现 §5.2 的 `PluginSupervisor` + §4 的 manifest / 健康检查 /
-  生命周期，`tern plugin list/status/logs` 三个 CLI 命令，
-  一个 WorkBuddy 参考插件（Python，先不进仓库主分支，
-  放 `tools/` 或单独的示例仓库，由用户定）。
-- 验收：见 §8。
-
-### Step 3：面板（最后做）
-
-- 面板加“插件”页：启用 / 禁用、状态、日志、模型列表。
-- 不做插件市场，不做自动更新。面板只做遥控器，不直接 spawn 插件。
+1. 扩展 agent 控制协议和 Tauri UI：查询实时状态、模型与启停。生命周期仍由 agent 持有。
+2. 评估安全的日志方案；在证明凭据不会泄漏前，继续丢弃 sidecar stdout/stderr。
+3. 按真实 WorkBuddy 协议和账户授权另行实现并测试登录、签名和请求转发；当前不能宣称已支持真实 WorkBuddy。
+4. 不做插件市场、自动更新、Bun/WASM host 或 OS 沙箱；插件仍以当前用户权限运行。
 
 明确推迟到 v2 以后再讨论的：网关中间件（`onRequest` 改请求体）、
 WASM 插件、插件市场、插件自动更新、50+ agent 适配。
 
-## 8. 验收
+## 8. 验证状态
 
-改 `gateway/handlers.rs` 的转发路径后，除了 `cargo test -p tern-gateway`，
-还必须跑 `--test usage_e2e` 和 `--test gateway_e2e`
-（DECISIONS §5：任何改动 `RequestMeta` / `UsageEvent` 填充逻辑的
-提交都要用 e2e 验证，单测全绿也可能漏 `session_id`）。
+本分支验证：`cargo test --workspace --offline` 已通过，含 plugin e2e、
+`gateway_e2e` 与 `usage_e2e`；`cargo check --workspace --offline` 已通过。
+常规 clippy 运行成功但仍有仓库既有警告；`-D warnings` 未通过，
+包括既有 `private_interfaces` 与其它未清理的 warning，详见开发验证记录。
 
-- [ ] `cargo test --workspace --offline` 通过（含新增的插件单测）。
-- [ ] `cargo clippy --workspace --all-targets` 通过。
-- [ ] e2e：插件进程被杀后网关还在，下一次请求能重新拉起或报清楚的 502；
-  `usage_e2e` 里 `session_id` 不为 None。
-- [ ] `tern check` 能显示插件健康状态；`tern plugin list` 能列出模型。
-- [ ] 真实会话：Claude Code + Codex 各跑一次，`workbuddy/<模型>`
-  能出回答，用量面板里花费和 token 对得上，失败行单独聚类。
-- [ ] 回归：DeepSeek / StepFun 等现有供应商不受影响，
-  `provider/model` 显式路由和 `defaultProvider` 兜底行为不变。
-- [ ] 真核对（ROADMAP 第 3 步的地基）：`tern usage --from/--to`
-  钉死账期后，能和上游账单对上，插件走的账也一样。
+- [x] workspace 离线测试通过（含插件单测和 e2e）。
+- [x] sidecar 被停止后，Gateway 仍可服务并在下一次请求懒重启。
+- [x] 凭据隔离及模型前缀剥离由 `plugin_e2e` 覆盖。
+- [x] `tern check` 预检插件 manifest 和 command，但不启动进程；CLI list 显示 manifest 声明模型。
+- [ ] clippy `-D warnings` 干净通过。
+- [ ] agent 实时插件状态、Tauri 管理 UI、动态 `/v1/models` 抓取。
+- [ ] 真实 WorkBuddy 登录/签名/转发会话及账单核对；当前 Python 样例仅为参考/mock。
+- [ ] 额外 Claude Code + Codex 真实插件会话验证；现有 e2e 覆盖契约转换与用量记录。
+- [x] 常规 Gateway 与 usage 回归 e2e 通过；不代表已测试真实第三方插件上游。
 
 ## 9. 已决定项与待决定项
 
@@ -513,12 +501,14 @@ WASM 插件、插件市场、插件自动更新、50+ agent 适配。
 5. 插件由用户显式信任和启用；sidecar 运行时不是沙箱，不能声称它只能读取自己的数据。
 6. 每次启动使用独立随机 token 做 tern→sidecar 的 HTTP 认证；token 不是 OS 安全边界，见 §4.2、§4.3。
 
-### 仍待实现时确认
+### 待实现 / 待确认
 
-1. 插件数据目录跟随 `TERN_CONFIG` 改动时的迁移与备份行为。
-2. Windows 运行时变量 allowlist 的精确清单（Python/DLL 等依赖需要哪些变量）。
-3. 安装器如何显示插件代码来源、权限警告和显式启用确认。
-（无。v1 端口绑定竞态按启动失败处理，见 §4.3。）
+1. 插件目录当前默认跟随系统配置目录或 `TERN_PLUGIN_DIR`，不随 `TERN_CONFIG` 自动迁移；迁移与备份流程尚无。
+2. Windows 运行时变量 allowlist 目前仅包含常用系统 / 用户路径变量；Python/DLL 插件的依赖变量仍需实机验证。
+3. 安装器尚未显示插件来源、权限警告或显式启用确认；当前只通过 `ProviderSpec.plugin` 显式绑定。
+4. 插件数据文件权限尚未由运行时设置；`session_file` 只做存在时的可读/普通文件预检。
+
+端口绑定竞态按启动失败处理，见 §4.3。
 
 ## 附录 A：`tern.json` 里的插件供应商长什么样
 
@@ -536,14 +526,11 @@ WASM 插件、插件市场、插件自动更新、50+ agent 适配。
       "auth": { "type": "none" },
       "plugin": { "pluginId": "workbuddy" }
     }
-  ],
-  "plugins": [
-    { "id": "workbuddy", "enabled": true }
   ]
 }
 ```
 
-注意：`baseUrl` 里的 `127.0.0.1:0` 只是配置占位，不是可用端点；真正地址由 supervisor 在启动插件后填。不要写死临时端口。`apiFormat` 要和 manifest 一致；插件模型列表填裸上游 ID，Tern 路由器会将客户端的 `workbuddy/<上游模型>` 转成只含 `<上游模型>` 的上游请求。sidecar HTTP 另用 `X-Tern-Plugin-Token` 认证，`auth: none` 表示不把假的供应商 API key 当作本地插件认证。`plugins[]` 里 `enabled: false` 的插件即使发现 manifest 也不启动。
+注意：`baseUrl` 里的 `127.0.0.1:0` 只是配置占位，不是可用端点；真正地址由 supervisor 在启动插件后填。不要写死临时端口。`apiFormat` 要和 manifest 一致；插件模型列表填裸上游 ID，Tern 路由器会将客户端的 `workbuddy/<上游模型>` 转成只含 `<上游模型>` 的上游请求。sidecar HTTP 另用 `X-Tern-Plugin-Token` 认证，`auth: none` 表示不把假的供应商 API key 当作本地插件认证。当前没有独立 `plugins[]` / `enabled` 配置；显式设置 `ProviderSpec.plugin` 即为绑定。
 
 ## 附录 B：请求流（文字版时序）
 

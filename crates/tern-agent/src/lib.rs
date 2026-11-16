@@ -189,13 +189,18 @@ pub fn start_gateway(state: &Arc<GatewayState>) -> anyhow::Result<SocketAddr> {
                     return;
                 }
             };
-            let result = runtime.block_on(gateway.serve(async move {
-                // Ctrl+C 也接上：从任务管理器结束进程时能正常补记 aborted
-                tokio::select! {
-                    _ = serve_shutdown.notified() => log::info!("[agent] 收到停止信号"),
-                    _ = tokio::signal::ctrl_c() => log::info!("[agent] 收到 Ctrl+C"),
-                }
-            }));
+            let result = runtime.block_on(async move {
+                gateway.validate_plugins()?;
+                gateway
+                    .serve(async move {
+                        // Ctrl+C 也接上：从任务管理器结束进程时能正常补记 aborted
+                        tokio::select! {
+                            _ = serve_shutdown.notified() => log::info!("[agent] 收到停止信号"),
+                            _ = tokio::signal::ctrl_c() => log::info!("[agent] 收到 Ctrl+C"),
+                        }
+                    })
+                    .await
+            });
             // 先停 runtime：进行中的流被丢弃时会补记 aborted，
             // 再让写入线程把队列里剩下的写完
             drop(runtime);

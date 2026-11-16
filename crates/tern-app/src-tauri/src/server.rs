@@ -309,6 +309,12 @@ pub async fn fetch_provider_models(id: String) -> Result<Vec<String>> {
         .ok_or_else(|| crate::error::AppError::Config(format!("供应商 {id} 不在配置里")))?
         .clone();
 
+    if spec.plugin.is_some() {
+        return Err(crate::error::AppError::Config(
+            "插件由 tern-agent 持有；面板暂不支持查询其运行时模型列表".into(),
+        ));
+    }
+
     let (base_url, api_key, full_url) = match &spec.auth {
         tern_gateway::ProviderAuth::ApiKey { key, .. } => (
             spec.effective_base_url(),

@@ -5061,6 +5061,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",
+ "toml 1.1.6+spec-1.1.0",
  "url",
  "uuid",
  "webpki-roots 0.26.11",

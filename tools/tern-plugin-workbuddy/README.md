@@ -41,7 +41,9 @@ curl -X POST http://127.0.0.1:18080/v1/chat/completions \
 
 ## 与 Tern 插件集成的状态
 
-当前 Tern 还没有 sidecar 插件管理器，也不会注入 `X-Tern-Plugin-Token`。因此该受保护的参考服务**不能直接作为普通 ProviderSpec 接入 Tern**。上面的 curl 只验证插件 HTTP 契约；待插件 supervisor 实现后，再验证 Tern 注入本地 token、剥离本地认证头，以及流式记账。
+当前分支已实现 sidecar supervisor：显式绑定 `ProviderSpec.plugin` 后，Tern 首次路由请求时懒启动插件并注入每进程随机 `X-Tern-Plugin-Token`；专用代理隔离的 loopback client 不转发客户端凭据。可用 `tern check` 预检；`tern plugin list/status/logs` 提供基础诊断，其中 status 不是 agent 实时状态，logs 说明插件 stdout/stderr 不落盘。插件 e2e 已覆盖 mock 请求、协议转换、凭据隔离和停止后重启。
+
+Tauri 插件管理页、agent 实时状态/启停控制和 sidecar `/v1/models` 动态抓取尚未实现。此样例的 manifest 静态 models 只供 CLI list 展示。真实 WorkBuddy 登录、签名和上游转发也仍未实现。
 
 ## 真实 WorkBuddy 支持
 

@@ -50,7 +50,22 @@ pub(crate) async fn send(
     state: &GatewayState,
     req: &UpstreamRequest<'_>,
 ) -> Result<reqwest::Response, ProxyError> {
-    let headers = build_headers(state, req).await?;
+    let mut headers = build_headers(state, req).await?;
+    let is_plugin = req.spec.plugin.is_some();
+    let url = if let Some(reference) = &req.spec.plugin {
+        let supervisor = state.plugins.as_ref().ok_or_else(|| {
+            ProxyError::ConfigError("该供应商绑定了插件，但 Gateway 未配置 PluginSupervisor".into())
+        })?;
+        let connection = supervisor.ensure_running(reference, req.spec).await?;
+        retain_plugin_headers(&mut headers);
+        headers.insert(
+            http::HeaderName::from_static("x-tern-plugin-token"),
+            connection.token_header()?,
+        );
+        rewrite_plugin_url(&req.prepared.url, connection.addr)?
+    } else {
+        req.prepared.url.clone()
+    };
     let body = serde_json::to_vec(&req.prepared.body)
         .map_err(|e| ProxyError::Internal(format!("序列化请求体失败: {e}")))?;
     let streaming = req.is_streaming();
@@ -58,7 +73,7 @@ pub(crate) async fn send(
     log::info!(
         "[Gateway] >>> {} {} (model={})",
         req.spec.id,
-        redact_url(&req.prepared.url),
+        redact_url(&url),
         req.prepared
             .body
             .get("model")
@@ -66,11 +81,12 @@ pub(crate) async fn send(
             .unwrap_or("<url>")
     );
 
-    let mut builder = state
-        .client
-        .post(&req.prepared.url)
-        .headers(headers)
-        .body(body);
+    let client = if is_plugin {
+        &state.plugin_client
+    } else {
+        &state.client
+    };
+    let mut builder = client.post(&url).headers(headers).body(body);
     // reqwest 的 timeout 管整个请求；流式响应可能持续很久，只限制等响应头的时间，
     // 之后由响应层的空闲超时接管
     if !streaming {
@@ -274,6 +290,72 @@ fn merge_betas(client: Option<&str>, one_m_context: bool) -> Option<String> {
 }
 
 /// 连接、实体、认证、代理链路追踪类的头一律不转发
+fn retain_plugin_headers(headers: &mut HeaderMap) {
+    let allowed = [
+        "anthropic-version",
+        "anthropic-beta",
+        "accept",
+        "content-type",
+    ];
+    let remove: Vec<_> = headers
+        .keys()
+        .filter(|name| !allowed.contains(&name.as_str()))
+        .cloned()
+        .collect();
+    for name in remove {
+        headers.remove(name);
+    }
+}
+
+fn rewrite_plugin_url(raw_url: &str, addr: std::net::SocketAddr) -> Result<String, ProxyError> {
+    let mut url = url::Url::parse(raw_url)
+        .map_err(|error| ProxyError::ConfigError(format!("插件上游 URL 无效: {error}")))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(ProxyError::ConfigError(
+            "插件 sidecar URL 只允许 HTTP(S) 后再重写为本机回环地址".into(),
+        ));
+    }
+    url.set_scheme("http")
+        .map_err(|_| ProxyError::ConfigError("无法将插件 sidecar URL 改为 HTTP".into()))?;
+    url.set_username("")
+        .map_err(|_| ProxyError::ConfigError("无法清理插件 URL 用户名".into()))?;
+    url.set_password(None)
+        .map_err(|_| ProxyError::ConfigError("无法清理插件 URL 密码".into()))?;
+    url.set_host(Some("127.0.0.1"))
+        .map_err(|_| ProxyError::ConfigError("无法设置插件回环地址".into()))?;
+    url.set_port(Some(addr.port()))
+        .map_err(|_| ProxyError::ConfigError("无法设置插件临时端口".into()))?;
+    let safe_query: Vec<(String, String)> = url
+        .query_pairs()
+        .filter(|(name, _)| !is_sensitive_query_parameter(name))
+        .map(|(name, value)| (name.into_owned(), value.into_owned()))
+        .collect();
+    url.set_query(None);
+    if !safe_query.is_empty() {
+        url.query_pairs_mut().extend_pairs(safe_query);
+    }
+    Ok(url.into())
+}
+
+fn is_sensitive_query_parameter(name: &str) -> bool {
+    let normalized: String = name
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect();
+    [
+        "key",
+        "token",
+        "auth",
+        "secret",
+        "password",
+        "signature",
+        "credential",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
 fn should_drop_client_header(key: &str) -> bool {
     matches!(
         key,
@@ -291,6 +373,8 @@ fn should_drop_client_header(key: &str) -> bool {
             | "upgrade"
             | "accept-encoding"
             | "authorization"
+            | "cookie"
+            | "x-tern-plugin-token"
             | "x-api-key"
             | "x-goog-api-key"
             | "x-forwarded-for"
@@ -451,5 +535,56 @@ mod tests {
         }
         assert!(!should_drop_client_header("user-agent"));
         assert!(!should_drop_client_header("anthropic-beta"));
+    }
+
+    #[test]
+    fn plugin_rewrite_removes_url_credentials_and_secret_query_parameters() {
+        let addr = "127.0.0.1:12345".parse().unwrap();
+        let rewritten = rewrite_plugin_url(
+            "https://user:pass@example.com/v1beta/models/x:generateContent?key=secret&alt=sse&access_token=also-secret",
+            addr,
+        )
+        .unwrap();
+        assert_eq!(
+            rewritten,
+            "http://127.0.0.1:12345/v1beta/models/x:generateContent?alt=sse"
+        );
+    }
+
+    #[test]
+    fn plugin_header_allowlist_removes_content_and_client_secrets() {
+        let mut headers = HeaderMap::new();
+        headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer client-secret"),
+        );
+        headers.insert("cookie", HeaderValue::from_static("session=client"));
+        headers.insert(
+            "x-tern-plugin-token",
+            HeaderValue::from_static("attacker-token"),
+        );
+        retain_plugin_headers(&mut headers);
+        assert!(headers.contains_key("anthropic-version"));
+        assert!(headers.contains_key("content-type"));
+        assert!(!headers.contains_key("authorization"));
+        assert!(!headers.contains_key("cookie"));
+        assert!(!headers.contains_key("x-tern-plugin-token"));
+    }
+
+    #[test]
+    fn plugin_url_rewrite_clears_credentials_and_targets_loopback() {
+        let addr = "127.0.0.1:43210".parse().unwrap();
+        let rewritten =
+            rewrite_plugin_url("https://user:secret@example.com/v1/chat?key=keep", addr).unwrap();
+        let parsed = url::Url::parse(&rewritten).unwrap();
+        assert_eq!(parsed.scheme(), "http");
+        assert_eq!(parsed.host_str(), Some("127.0.0.1"));
+        assert_eq!(parsed.port(), Some(43210));
+        assert_eq!(parsed.path(), "/v1/chat");
+        assert_eq!(parsed.query(), None);
+        assert_eq!(parsed.username(), "");
+        assert_eq!(parsed.password(), None);
     }
 }

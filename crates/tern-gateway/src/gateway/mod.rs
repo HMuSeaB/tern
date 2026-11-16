@@ -24,6 +24,7 @@ use axum::routing::{get, post};
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 
+use crate::plugin::PluginSupervisor;
 use crate::provider::{ProviderAuth, ProviderSpec};
 use crate::proxy::providers::codex_chat_history::CodexChatHistoryStore;
 use crate::proxy::providers::gemini_shadow::GeminiShadowStore;
@@ -124,6 +125,7 @@ pub(crate) struct Timeouts {
 pub(crate) struct GatewayState {
     router: RwLock<Arc<ModelRouter>>,
     pub client: reqwest::Client,
+    pub plugin_client: reqwest::Client,
     pub access_token: Option<String>,
     pub timeouts: Timeouts,
     pub tokens: Option<Arc<dyn TokenProvider>>,
@@ -135,6 +137,7 @@ pub(crate) struct GatewayState {
     /// 故障转移与熔断。每个供应商一个熔断器，**进程内有效、不落盘**
     pub breakers: Breakers,
     pub resilience: ResilienceConfig,
+    pub plugins: Option<Arc<PluginSupervisor>>,
 }
 
 impl GatewayState {
@@ -155,17 +158,41 @@ pub struct Gateway {
 
 impl Gateway {
     pub fn new(config: GatewayConfig) -> Result<Self, ProxyError> {
+        let has_plugins = config.providers.iter().any(|spec| spec.plugin.is_some());
         let router = ModelRouter::new(config.providers, config.default_provider)?;
         let client = build_client(&config.upstream_proxy)?;
+        let plugin_client = reqwest::Client::builder()
+            .no_proxy()
+            // Never forward the sidecar token or request body to a redirect target.
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(30))
+            .pool_max_idle_per_host(10)
+            .tcp_keepalive(Duration::from_secs(60))
+            .no_gzip()
+            .no_brotli()
+            .no_deflate()
+            .no_zstd()
+            .build()
+            .map_err(|error| {
+                ProxyError::Internal(format!("创建 sidecar HTTP 客户端失败: {error}"))
+            })?;
         let access_token = config
             .access_token
             .map(|token| token.trim().to_string())
             .filter(|token| !token.is_empty());
+        let plugins = if has_plugins {
+            Some(Arc::new(PluginSupervisor::new(
+                PluginSupervisor::default_root(),
+            )?))
+        } else {
+            None
+        };
 
         Ok(Self {
             state: Arc::new(GatewayState {
                 router: RwLock::new(Arc::new(router)),
                 client,
+                plugin_client,
                 access_token,
                 timeouts: Timeouts {
                     request: Duration::from_secs(config.request_timeout_secs.max(1)),
@@ -177,6 +204,7 @@ impl Gateway {
                 gemini_shadow: Arc::new(GeminiShadowStore::default()),
                 breakers: Breakers::default(),
                 resilience: config.resilience,
+                plugins,
             }),
             listen: config.listen,
         })
@@ -187,6 +215,30 @@ impl Gateway {
         match Arc::get_mut(&mut self.state) {
             Some(state) => state.tokens = Some(tokens),
             None => log::warn!("[Gateway] 网关已在运行，忽略 token provider"),
+        }
+        self
+    }
+
+    /// Validate explicitly bound plugin manifests and commands without starting them.
+    pub fn validate_plugins(&self) -> Result<usize, ProxyError> {
+        let Some(plugins) = &self.state.plugins else {
+            return Ok(0);
+        };
+        let router = self.state.router();
+        let providers: Vec<_> = router.providers().map(AsRef::as_ref).collect();
+        let count = providers
+            .iter()
+            .filter(|spec| spec.plugin.is_some())
+            .count();
+        plugins.validate_providers(providers)?;
+        Ok(count)
+    }
+
+    /// 接入外部 sidecar 插件管理器。必须在 `serve` / `app` 之前调用。
+    pub fn with_plugin_supervisor(mut self, plugins: Arc<PluginSupervisor>) -> Self {
+        match Arc::get_mut(&mut self.state) {
+            Some(state) => state.plugins = Some(plugins),
+            None => log::warn!("[Gateway] 网关已在运行，忽略 plugin supervisor"),
         }
         self
     }
@@ -207,10 +259,19 @@ impl Gateway {
         default_provider: Option<String>,
     ) -> Result<(), ProxyError> {
         let router = Arc::new(ModelRouter::new(providers, default_provider)?);
+        // 启动中的插件即使仅从某供应商解绑，也必须马上停止。
+        let providers: Vec<ProviderSpec> = router
+            .providers()
+            .map(|spec| spec.as_ref().clone())
+            .collect();
         // 顺手把不存在的供应商的熔断器摘掉。不摘的话进程活得越久里面的死条目
         // 越多，用户删过的供应商的失败计数一直占着内存不释放
         let alive: Vec<String> = router.providers().map(|spec| spec.id.clone()).collect();
         self.state.breakers.retain(&alive);
+        if let Some(plugins) = &self.state.plugins {
+            let plugins = plugins.clone();
+            tokio::spawn(async move { plugins.prune(&providers).await });
+        }
         *self
             .state
             .router
@@ -268,6 +329,7 @@ impl Gateway {
         listener: tokio::net::TcpListener,
         shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     ) -> Result<(), ProxyError> {
+        self.validate_plugins()?;
         if let Ok(addr) = listener.local_addr() {
             log::info!("[Gateway] 监听 http://{addr}");
             if !addr.ip().is_loopback() && self.state.access_token.is_none() {
@@ -280,7 +342,11 @@ impl Gateway {
         axum::serve(listener, self.app())
             .with_graceful_shutdown(shutdown)
             .await
-            .map_err(|e| ProxyError::Internal(format!("网关异常退出: {e}")))
+            .map_err(|e| ProxyError::Internal(format!("网关异常退出: {e}")))?;
+        if let Some(plugins) = &self.state.plugins {
+            plugins.shutdown().await;
+        }
+        Ok(())
     }
 }
 

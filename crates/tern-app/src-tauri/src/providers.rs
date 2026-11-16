@@ -506,6 +506,13 @@ pub fn probe(spec: &tern_gateway::ProviderSpec) -> ProbeReport {
         elapsed_ms: started.elapsed().as_millis(),
     };
 
+    if spec.plugin.is_some() {
+        return ProbeReport {
+            message: "插件由 tern-agent 持有，面板暂不支持通过插件探测上游连通性。启动网关后发一条真实请求即可验证。".into(),
+            ..fail(String::new())
+        };
+    }
+
     // 订阅登录的 token 在网关手里，这里拿不到：硬打只会得到 401，
     // 那和"配错了"长得一样。说清楚比给个假红灯好
     if tern_gateway::adapter::requires_managed_token(&spec.auth) {

@@ -83,23 +83,41 @@ pub fn fetch_models(
     if api_key.is_empty() {
         return Err("没有 API Key，拉不到模型列表".to_string());
     }
+    fetch_models_with_headers(
+        base_url,
+        &[("authorization".into(), format!("Bearer {api_key}"))],
+        full_url,
+        models_url_override,
+    )
+}
+
+fn fetch_models_with_headers(
+    base_url: &str,
+    headers: &[(String, String)],
+    full_url: bool,
+    models_url_override: Option<&str>,
+) -> Result<Vec<FetchedModel>, String> {
+    if headers.is_empty() {
+        return Err("没有 API Key，拉不到模型列表".to_string());
+    }
     let candidates = build_models_url_candidates(base_url, full_url, models_url_override)?;
 
     // 用阻塞客户端：调用方（tauri 命令 / agent）已经在非 async 的上下文里。
     // 每次拉列表新建一个 client 而不是全局复用——这个操作一天点不了几次，
     // 不值得为它引入连接池的生命周期管理；顺带避免复用一个可能被配置污染的 client。
     let client = reqwest::blocking::Client::builder()
+        .no_proxy()
         .timeout(FETCH_TIMEOUT)
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
 
     let mut last_error: Option<String> = None;
     for url in &candidates {
-        let response = match client
-            .get(url)
-            .header("authorization", format!("Bearer {api_key}"))
-            .send()
-        {
+        let mut request = client.get(url);
+        for (name, value) in headers {
+            request = request.header(name, value);
+        }
+        let response = match request.send() {
             Ok(response) => response,
             Err(error) => {
                 // 连接失败（DNS、超时、拒绝）对所有候选都一样，
