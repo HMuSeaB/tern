@@ -10,8 +10,7 @@
 //!   `{"token": "...", "account_id": "..."}`（`account_id` 可选）。
 //!   输出不是合法 JSON、token 为空、退出码非 0、超时，一律报 `AuthError`。
 //! - 安全：token 永不原样进日志，只记前 4 后 4（和 `ProviderAuth` 的
-//!   `Debug` 遮蔽同一条规则）；stderr 只截取前 500 字符放进错误信息，
-//!   且命令本身应当只把诊断写进 stderr、绝不把 token 写进去。
+//!   `Debug` 遮蔽同一条规则）；stderr 会被排空但绝不记录或放进错误信息。
 //! - 这是通用基础设施，不是某一家服务的登录实现：不实现 WorkBuddy
 //!   或任何真实服务的端点 / 签名。
 
@@ -31,10 +30,6 @@ pub const DEFAULT_TOKEN_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// stdout 最多读 1 MiB：token 命令的输出本该只有一行 JSON，超了就是异常。
 const MAX_STDOUT_BYTES: u64 = 1024 * 1024;
-/// stderr 只保留前 64 KiB，错误信息里再截到 500 字符。
-const MAX_STDERR_BYTES: u64 = 64 * 1024;
-const MAX_STDERR_CHARS_IN_ERROR: usize = 500;
-
 /// `TokenProvider` 的一种：每次需要 token 就运行一次外部命令。
 ///
 /// 无状态，可多线程共享；超时时间可配（默认 5 秒），单测里用短超时。
@@ -95,15 +90,13 @@ impl CommandTokenProvider {
         let mut stderr = child.stderr.take().expect("stderr 已设为 piped");
         let wait = async {
             let mut out_buf = Vec::new();
-            let mut err_buf = Vec::new();
             let mut out_limited = (&mut stdout).take(MAX_STDOUT_BYTES);
-            let mut err_limited = (&mut stderr).take(MAX_STDERR_BYTES);
             let (read_out, read_err, status) = tokio::join!(
                 out_limited.read_to_end(&mut out_buf),
-                err_limited.read_to_end(&mut err_buf),
+                tokio::io::copy(&mut stderr, &mut tokio::io::sink()),
                 child.wait(),
             );
-            (read_out.map(|_| out_buf), read_err.map(|_| err_buf), status)
+            (read_out.map(|_| out_buf), read_err, status)
         };
         let (read_out, read_err, status) = match tokio::time::timeout(self.timeout, wait).await {
             Ok(result) => result,
@@ -117,7 +110,7 @@ impl CommandTokenProvider {
                 )));
             }
         };
-        let (stdout_bytes, stderr_bytes, status) = match (read_out, read_err, status) {
+        let (stdout_bytes, _stderr_bytes_drained, status) = match (read_out, read_err, status) {
             (Ok(out), Ok(err), Ok(status)) => (out, err, status),
             (Err(error), _, _) | (_, Err(error), _) => {
                 return Err(ProxyError::AuthError(format!(
@@ -131,15 +124,9 @@ impl CommandTokenProvider {
             }
         };
         if !status.success() {
-            let stderr_text = String::from_utf8_lossy(&stderr_bytes);
-            let stderr_text: String = stderr_text
-                .chars()
-                .take(MAX_STDERR_CHARS_IN_ERROR)
-                .collect();
             return Err(ProxyError::AuthError(format!(
-                "供应商 {provider_id} 的插件 token 命令退出码 {}：{}",
+                "供应商 {provider_id} 的插件 token 命令失败（退出码 {}）",
                 status.code().map_or("-".to_string(), |c| c.to_string()),
-                stderr_text.trim(),
             )));
         }
         let stdout_text = String::from_utf8_lossy(&stdout_bytes);
@@ -277,23 +264,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn nonzero_exit_reports_stderr_truncated() {
+    async fn nonzero_exit_does_not_expose_stderr() {
         let provider = CommandTokenProvider::new();
+        let secret = "sentinel-secret-from-stderr";
         let error = fetch_err(
             &provider,
             &spec(
                 "python3",
                 vec![
                     "-c".to_string(),
-                    "import sys; sys.stderr.write('boom\\n'); sys.exit(3)".to_string(),
+                    "import sys; sys.stderr.write(sys.argv[1]); sys.exit(3)".to_string(),
+                    secret.to_string(),
                 ],
             ),
         )
         .await;
-        let message = format!("{error:?}");
-        assert!(matches!(error, ProxyError::AuthError(_)), "{message}");
-        assert!(message.contains('3'), "{message}");
-        assert!(message.contains("boom"), "{message}");
+        let display = format!("{error}");
+        let debug = format!("{error:?}");
+        assert!(matches!(error, ProxyError::AuthError(_)), "{debug}");
+        assert!(display.contains('3'), "{display}");
+        assert!(!display.contains(secret), "{display}");
+        assert!(!debug.contains(secret), "{debug}");
     }
 
     #[tokio::test]
