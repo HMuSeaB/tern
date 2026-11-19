@@ -24,8 +24,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Python 插件契约测试
+      - name: WorkBuddy 插件契约测试
         run: python3 -m unittest discover -s tools/tern-plugin-workbuddy/tests -v
+
+      - name: ZCode 插件离线测试
+        run: python3 tools/tern-plugin-zcode/tests/test_plugin.py
 
       - uses: dtolnay/rust-toolchain@stable
 

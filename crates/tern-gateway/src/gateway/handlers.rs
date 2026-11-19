@@ -44,17 +44,31 @@ pub(crate) async fn models(State(state): SharedState, headers: HeaderMap) -> Res
     if let Err(error) = check_access(&state, &headers) {
         return error_response(ApiFormat::OpenaiResponses, &error, &ErrorContext::default());
     }
-    let data: Vec<Value> = state
-        .router()
-        .providers()
-        .map(|spec| {
-            json!({
+    let mut data = Vec::new();
+    for spec in state.router().providers() {
+        let plugin_models = spec.plugin.as_ref().and_then(|reference| {
+            state
+                .plugins
+                .as_ref()
+                .and_then(|plugins| plugins.manifest_models(reference).ok())
+                .filter(|models| !models.is_empty())
+        });
+        if let Some(models) = plugin_models {
+            data.extend(models.into_iter().map(|model| {
+                json!({
+                    "id": format!("{}/{}", spec.id, model),
+                    "object": "model",
+                    "owned_by": spec.name,
+                })
+            }));
+        } else {
+            data.push(json!({
                 "id": format!("{}/*", spec.id),
                 "object": "model",
                 "owned_by": spec.name,
-            })
-        })
-        .collect();
+            }));
+        }
+    }
     Json(json!({ "object": "list", "data": data })).into_response()
 }
 

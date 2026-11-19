@@ -1,0 +1,21 @@
+# tern 外挂插件 manifest（契约见 docs/plugins-external-process-design-zh.md §4.1）
+# 由 tern-agent 按需懒启动；手动固定端口测试见 README。
+
+id = "zcode"
+name = "ZCode 赠送档（GLM）"
+version = "0.1.1"
+description = "ZCode 账号赠送档（Start Plan / 周末档）的 GLM 模型：读本机 ZCode 登录态，伪装 ZCode 客户端转发。自用，有风控与封号风险。"
+
+# tern-agent supervisor 使用；手动固定端口模式忽略。
+command = "python"
+args = ["tern_plugin_zcode.py", "serve"]
+
+# 插件对 tern 说的协议：Anthropic Messages（POST /v1/messages，原生直通）。
+api_format = "anthropic"
+
+# 裸上游模型 ID。真实模型列表由 /v1/models 动态给出（赠送档不同账号不同）；
+# 这里填最常见的 WEEKEND BUILD 赠送档。
+models = ["glm-5.3-flash-Trial"]
+
+# 插件读的登录态不在本目录，而在 %USERPROFILE%\.zcode\v2\credentials.json
+# （ZCode 自己管的文件，本插件只读）。

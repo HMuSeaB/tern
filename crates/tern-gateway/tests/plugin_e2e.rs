@@ -122,6 +122,16 @@ HTTPServer(('127.0.0.1',int(sys.argv[1])),H).serve_forever()
     );
     tokio::time::sleep(Duration::from_millis(50)).await;
 
+    // Manifest-declared plugin models are listed without starting the sidecar.
+    let listed = reqwest::Client::new()
+        .get(format!("http://{gateway_addr}/v1/models"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), reqwest::StatusCode::OK);
+    let listed: Value = listed.json().await.unwrap();
+    assert_eq!(listed["data"][0]["id"], "demo/test-model");
+
     // Gateway::new does not eagerly launch the sidecar; routing the first request does.
     let response = reqwest::Client::new()
         .post(format!("http://{gateway_addr}/v1/messages"))
