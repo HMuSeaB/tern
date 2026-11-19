@@ -27,6 +27,7 @@ pub fn requires_managed_token(auth: &ProviderAuth) -> bool {
         ProviderAuth::GithubCopilot { .. }
             | ProviderAuth::CodexOauth { .. }
             | ProviderAuth::XaiOauth { .. }
+            | ProviderAuth::PluginCommand { .. }
     )
 }
 
@@ -81,6 +82,16 @@ pub fn resolve_auth(spec: &ProviderSpec) -> Option<AuthInfo> {
             Some(AuthInfo::new(String::new(), AuthStrategy::CodexOAuth))
         }
         ProviderAuth::XaiOauth { .. } => Some(AuthInfo::new(String::new(), AuthStrategy::XaiOAuth)),
+        ProviderAuth::PluginCommand { .. } => {
+            // 空 key 的占位：转发层通过 TokenProvider 换到 token 后填入
+            // `api_key`。请求头按上游协议选，和静态 key 的 Auto 一样。
+            let strategy = match spec.effective_api_format() {
+                ApiFormat::Anthropic => AuthStrategy::Anthropic,
+                ApiFormat::GeminiNative => AuthStrategy::Google,
+                ApiFormat::OpenaiChat | ApiFormat::OpenaiResponses => AuthStrategy::Bearer,
+            };
+            Some(AuthInfo::new(String::new(), strategy))
+        }
     }
 }
 
@@ -323,6 +334,32 @@ mod tests {
             ));
         }
         assert!(!requires_managed_token(&ProviderAuth::api_key("k")));
+    }
+
+    #[test]
+    fn plugin_command_placeholder_follows_upstream_format() {
+        let cases = [
+            (ApiFormat::Anthropic, AuthStrategy::Anthropic),
+            (ApiFormat::OpenaiChat, AuthStrategy::Bearer),
+            (ApiFormat::OpenaiResponses, AuthStrategy::Bearer),
+            (ApiFormat::GeminiNative, AuthStrategy::Google),
+        ];
+        for (format, expected) in cases {
+            let auth = resolve_auth(&spec(
+                format,
+                ProviderAuth::PluginCommand {
+                    command: "my-token-cmd".to_string(),
+                    args: vec![],
+                },
+            ))
+            .unwrap();
+            assert_eq!(auth.strategy, expected, "{format}");
+            assert!(auth.api_key.is_empty(), "占位 key 必须为空，等转发层填入");
+        }
+        assert!(requires_managed_token(&ProviderAuth::PluginCommand {
+            command: "cmd".to_string(),
+            args: vec![],
+        }));
     }
 
     #[test]

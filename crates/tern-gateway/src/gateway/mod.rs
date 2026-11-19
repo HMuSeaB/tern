@@ -322,5 +322,6 @@ pub(crate) fn needs_token_provider(spec: &ProviderSpec) -> bool {
         ProviderAuth::GithubCopilot { .. }
             | ProviderAuth::CodexOauth { .. }
             | ProviderAuth::XaiOauth { .. }
+            | ProviderAuth::PluginCommand { .. }
     )
 }

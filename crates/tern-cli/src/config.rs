@@ -118,6 +118,9 @@ pub fn warnings(config: &GatewayConfig) -> Vec<String> {
                     spec.id
                 ));
             }
+            ProviderAuth::PluginCommand { command, .. } if command.trim().is_empty() => {
+                warnings.push(format!("供应商 {} 的插件 token 命令为空", spec.id));
+            }
             _ => {}
         }
     }

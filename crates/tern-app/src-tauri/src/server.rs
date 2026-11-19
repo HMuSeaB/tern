@@ -521,6 +521,7 @@ fn auth_kind(auth: &tern_gateway::ProviderAuth) -> &'static str {
         tern_gateway::ProviderAuth::GithubCopilot { .. } => "github_copilot",
         tern_gateway::ProviderAuth::CodexOauth { .. } => "codex_oauth",
         tern_gateway::ProviderAuth::XaiOauth { .. } => "xai_oauth",
+        tern_gateway::ProviderAuth::PluginCommand { .. } => "plugin_command",
     }
 }
 

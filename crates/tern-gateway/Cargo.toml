@@ -21,7 +21,9 @@ reqwest = { version = "0.12", features = ["rustls-tls", "json", "stream", "socks
 flate2 = "1"
 brotli = "7"
 zstd = "0.13"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "net", "io-util"] }
+# process：plugin_token.rs 用 tokio::process::Command 跑 token 命令。
+# 只是给已有依赖多开一个特性，不新增依赖、不改版本。
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "net", "io-util", "process"] }
 futures = "0.3"
 async-stream = "0.3"
 bytes = "1.5"

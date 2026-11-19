@@ -12,7 +12,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
-use tern_gateway::{Gateway, GatewayConfig, Outcome, ProviderAuth};
+use tern_gateway::{CommandTokenProvider, Gateway, GatewayConfig, Outcome, ProviderAuth};
 use tern_store::{Inserted, ModelPrice, PriceSource, Store};
 
 use crate::args::{Command, Paths, PriceAction};
@@ -315,9 +315,14 @@ fn serve(path: &Path, db: &Path, listen: Option<SocketAddr>) -> Result<()> {
     );
     let (recorder, recorder_handle) = tern_store::spawn_recorder(store, log_usage);
 
-    let gateway = Gateway::new(config)
+    // PluginCommand 供应商才需要 token 命令；没有时网关行为和原来一样
+    let needs_plugin_tokens = CommandTokenProvider::needed_for(&config);
+    let mut gateway = Gateway::new(config)
         .context("配置无效")?
         .with_usage_sink(recorder);
+    if needs_plugin_tokens {
+        gateway = gateway.with_token_provider(Arc::new(CommandTokenProvider::new()));
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -609,6 +614,7 @@ fn auth_kind(auth: &ProviderAuth) -> &'static str {
         ProviderAuth::GithubCopilot { .. } => "github_copilot",
         ProviderAuth::CodexOauth { .. } => "codex_oauth",
         ProviderAuth::XaiOauth { .. } => "xai_oauth",
+        ProviderAuth::PluginCommand { .. } => "plugin_command",
     }
 }
 

@@ -10,6 +10,7 @@ pub mod ccswitch_import;
 pub mod claude_settings;
 pub mod gateway;
 pub mod models;
+pub mod plugin_token;
 pub mod provider;
 // 转换层里仍有不少函数只被 cc-switch 的故障转移 / 用量 / Copilot 优化器使用。
 // 加在这里而不是被搬运的文件里，保持它们与上游逐字节一致。
@@ -23,6 +24,7 @@ pub use gateway::usage::{
     ClientKind, ErrorKind, Outcome, RequestRole, TokenCounts, UsageEvent, UsageSink,
 };
 pub use gateway::{Gateway, GatewayConfig, ManagedToken, TokenProvider, UpstreamProxy};
+pub use plugin_token::{CommandTokenProvider, DEFAULT_TOKEN_COMMAND_TIMEOUT};
 pub use provider::{ApiFormat, KeyHeader, ProviderAuth, ProviderSpec};
 pub use resilience::{Breakers, ResilienceConfig};
 pub use router::{ModelRouter, Route, RouteKind};
