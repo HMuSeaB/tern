@@ -91,9 +91,10 @@ impl CommandTokenProvider {
         let wait = async {
             let mut out_buf = Vec::new();
             let mut out_limited = (&mut stdout).take(MAX_STDOUT_BYTES);
+            let mut stderr_sink = tokio::io::sink();
             let (read_out, read_err, status) = tokio::join!(
                 out_limited.read_to_end(&mut out_buf),
-                tokio::io::copy(&mut stderr, &mut tokio::io::sink()),
+                tokio::io::copy(&mut stderr, &mut stderr_sink),
                 child.wait(),
             );
             (read_out.map(|_| out_buf), read_err, status)
